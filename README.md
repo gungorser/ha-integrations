@@ -36,3 +36,5 @@ pairs are the YAML in ha-configs `packages/covers.yaml` and `packages/heating.ya
 
 Bump `version` in `custom_components/gungors/manifest.json`, commit, publish a GitHub release
 (`vX.Y.Z`), update it in HACS and restart Home Assistant.
+
+Claude agent: `integration` (`.claude/agents/`); rules and the other agents: [CLAUDE.md](CLAUDE.md).
