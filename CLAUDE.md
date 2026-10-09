@@ -22,7 +22,7 @@ Each agent lives in the repository it owns (`.claude/agents/`). Clone the reposi
 
 | Agent | Repo | Does | Never |
 |---|---|---|---|
-| `architect` | ha-floorplan | Draws the house in Blender: geometry, furniture, where things go; perspective screenshots | Render cameras, renders, deploys, HA |
+| `modeler` | ha-floorplan | Draws the house in Blender: geometry, furniture, where things go; perspective screenshots | Render cameras, renders, deploys, HA |
 | `baking` | ha-floorplan | Ortho render cameras, render layers, light effects, the page and UI, renders, deploy | Draws or moves things in the house |
 | `config` | ha-configs | HA YAML, entities, dashboards, all cards in ha-dashboards | Touches Blender |
 | `integration` | ha-integrations | Python of the `gungors` integration, tests, releases | Edits ha-configs |
@@ -32,14 +32,14 @@ Each agent lives in the repository it owns (`.claude/agents/`). Clone the reposi
   chain. No separate verifier: each agent checks its own work before its handoff note. No
   screenshots or previews unless a step needs one or Sercan asks.
 - The main session calls the agents in order and passes each handoff note on; agents do not call
-  each other. Independent steps may run in parallel (architect draws while baking renders).
+  each other. Independent steps may run in parallel (modeler draws while baking renders).
 - Blender has no owner: every agent uses it for its own function and never does another agent's.
   The live Blender answers one call at a time, so calls stay short; renders and builds run in a
   background Blender (ha-floorplan `src/render/bake.py`) and never block it.
-- Flows: new thing on the 3D view: config (old 2D position, HA entity) -> architect -> baking ->
+- Flows: new thing on the 3D view: config (old 2D position, HA entity) -> modeler -> baking ->
   config (`floorplan_3d.yaml` mapping). Page/card protocol change: baking (page + `docs/page.md`) ->
   config (card). Integration change: integration -> config (YAML, `gungors.reload`).
-- Contracts (change one side, update the other): Blender object names (architect -> baking), page
+- Contracts (change one side, update the other): Blender object names (modeler -> baking), page
   entity ids and `docs/page.md` (baking -> config), HA entity ids (config -> all), `gungors`
   options and attributes in the ha-integrations README (integration -> config, baking).
 
