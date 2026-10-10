@@ -30,6 +30,9 @@ _LOGGER = logging.getLogger(__name__)
 
 KEY = "link"
 ECHO_WINDOW = 5.0  # s after a command in which changes are its echo
+# Not sent on: "on" is the service, and HA hands entities the deprecated mired
+# "color_temp" next to "color_temp_kelvin", which light.turn_on rejects together.
+_NOT_SENT = {"on", "color_temp"}
 
 # Modes that can't be listed together with colour modes.
 _SIMPLE_MODES = {ColorMode.ONOFF, ColorMode.BRIGHTNESS}
@@ -152,7 +155,7 @@ class LightLink(Feature):
         await super().gw_apply(request)
         if request.from_device or not self._link_available:
             return
-        kwargs = {k: v for k, v in request.data.items() if k != "on"}
+        kwargs = {k: v for k, v in request.data.items() if k not in _NOT_SENT}
         await self._link_send(bool(request.data.get("on")), kwargs)
 
     async def gw_push(self) -> None:
