@@ -241,6 +241,9 @@ class ClimateLink(Feature):
             return
 
         if not _usable(new_state):
+            # e.g. unknown: requests made meanwhile are not sent, so push the
+            # wrapper's state once the device reports again (as after unavailable).
+            self._link_synced = False
             return
         if not self._link_synced:
             self.hass.async_create_task(self._link_initial_push())

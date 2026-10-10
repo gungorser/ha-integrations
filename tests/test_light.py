@@ -135,3 +135,73 @@ async def test_hold_light(hass: HomeAssistant, calls, freezer: FrozenDateTimeFac
     lamp(hass, "on", brightness=10)
     await hass.async_block_till_done()
     assert calls.of("light", "turn_off", LAMP)
+
+
+def entity(hass: HomeAssistant, entity_id: str = WRAPPER):
+    return hass.data["gungors"]["entities"][entity_id]
+
+
+async def test_mirror_colour_tuple(hass: HomeAssistant, calls) -> None:
+    hass.states.async_set(
+        LAMP, "on",
+        {"supported_color_modes": ["hs"], "color_mode": "hs", "hs_color": [30.0, 50.0],
+         "brightness": 255, "supported_features": 0},
+    )
+    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
+    state = hass.states.get(WRAPPER)
+    assert state.attributes["color_mode"] == "hs"
+    assert state.attributes["hs_color"] == (30.0, 50.0)
+    assert entity(hass).hs_color == (30.0, 50.0)
+
+
+async def test_mode_fallback_outside_the_usual_modes(hass: HomeAssistant, calls) -> None:
+    # An RGBW lamp that is off reports no color_mode.
+    hass.states.async_set(
+        LAMP, "off", {"supported_color_modes": ["rgbw"], "color_mode": None,
+                      "supported_features": 0},
+    )
+    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
+    assert entity(hass).color_mode == "rgbw"
+    assert hass.states.get(WRAPPER).attributes["supported_color_modes"] == ["rgbw"]
+
+
+async def test_restore_while_original_missing_and_save(hass: HomeAssistant, calls) -> None:
+    from homeassistant.core import State
+    from pytest_homeassistant_custom_component.common import mock_restore_cache_with_extra_data
+
+    mock_restore_cache_with_extra_data(
+        hass,
+        [
+            (State("light.a_light", "off"), {"base": {"on": True}}),
+            (State("light.b_light", "on"), {}),
+        ],
+    )
+    await setup_platform(
+        hass,
+        "light",
+        {"name": "a_light", "features": [{"link": "light.a_lamp"}]},
+        {"name": "b_light", "features": [{"link": "light.b_lamp"}]},
+    )
+    # Unavailable until the originals exist, but the on state is restored.
+    assert hass.states.get("light.a_light").state == "unavailable"
+    assert entity(hass, "light.a_light").is_on is True
+    assert entity(hass, "light.b_light").is_on is True
+    assert entity(hass, "light.a_light").extra_restore_state_data.as_dict() == {
+        "base": {"on": True}
+    }
+
+
+async def test_remove_cancels_echo_timer(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    lamp(hass, "off")
+    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
+    await light(hass, "turn_on")
+    ent = entity(hass)
+    await ent.async_remove()
+    await hass.async_block_till_done()
+    assert ent._link_echo_unsub is None
+    freezer.tick(timedelta(seconds=6))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert WRAPPER not in hass.data["gungors"]["entities"]
