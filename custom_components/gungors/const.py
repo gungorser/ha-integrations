@@ -1,41 +1,30 @@
 """Constants for the gungors integration."""
-from datetime import timedelta
 
 DOMAIN = "gungors"
 
-# --- window_guard cover type ---
-CONF_TYPE = "type"
-TYPE_WINDOW_GUARD = "window_guard"
+CONF_FEATURES = "features"
 
-CONF_COVER = "cover"
-CONF_WINDOW = "window"
-CONF_START_TIMEOUT = "start_timeout"
-CONF_STOP_SILENCE = "stop_silence"
-
-DEFAULT_START_TIMEOUT = 8  # seconds to wait for the first position report after a command
-DEFAULT_STOP_SILENCE = 3  # seconds of no reports (or reaching target) before we call it stopped
-
-# Fired by the pushbutton blueprint for window_guard covers. Movement triggered
-# through this event is physical: allowed regardless of window state.
+# Fired by the pushbutton blueprint for covers with the `buttons` feature.
 # event_data: {entity_id: str | list[str], action: "open" | "close"}
 EVENT_PHYSICAL_COVER = "gungors_physical_cover"
 
-ATTR_IS_SYNC = "is_sync"
+# --- cover -----------------------------------------------------------------------
 ATTR_ACTUAL_POSITION = "actual_position"
+ATTR_PHYSICAL_BUTTONS = "physical_buttons"
+ATTR_PENDING_POSITION = "pending_position"
 
 # Position reports within this tolerance of the target count as "reached".
 POSITION_TOLERANCE = 1
 
-# Zigbee2MQTT echoes the *target* position immediately after a
-# set_cover_position command, before the blind has moved. Real movement is
-# ~2-3 units per report (one report per second), so a jump larger than this
-# straight to the commanded target is treated as that echo and ignored.
+# Zigbee2MQTT echoes the *target* position right after a set_cover_position
+# command, before the blind has moved. Real movement is ~2-3 units per report
+# (one per second), so a jump larger than this straight to the commanded target
+# is that echo.
 MAX_REAL_STEP = 5
 
-# --- timed_curtain cover type ---
-TYPE_TIMED_CURTAIN = "timed_curtain"
-CONF_INVERT = "invert"  # flip open/close and positions between room and motor
-CONF_Z2M_BASE_TOPIC = "z2m_base_topic"
+DEFAULT_START_TIMEOUT = 8  # s to wait for the first report after a command
+DEFAULT_STOP_SILENCE = 3  # s without reports before a move counts as stopped
+
 DEFAULT_TRAVEL_TIME = 10  # initial full-run time (s) per direction, then learned
 MIN_LEARN_DISTANCE = 30  # % a move must cover to update the learned time
 DEFAULT_Z2M_BASE_TOPIC = "zigbee2mqtt"
@@ -44,33 +33,21 @@ ATTR_POSITION_SOURCE = "position_source"  # "reported" | "estimated"
 ATTR_OPEN_TIME = "open_time"  # learned full-run times (s), room frame
 ATTR_CLOSE_TIME = "close_time"
 
-# --- climate: sync thermostat ---
-# `input_device`: the physical thermostat the sync thermostat is kept in sync with.
-CONF_INPUT_DEVICE = "input_device"
-CONF_ENTITY = "entity"
-CONF_COOLDOWN_TIME = "cooldown_time"
-DEFAULT_COOLDOWN_TIME = timedelta(seconds=1)
-# State attribute exposing the input device's entity id.
+# --- climate ---------------------------------------------------------------------
 ATTR_PHYSICAL_THERMOSTAT = "physical_thermostat"
-
-# `heater` may be a dict instead of an entity id: the internal heater value
-# (0-100, what smart_thermostat would write to an input_number) is then scaled
-# onto the TRV's valve opening/closing degree number entities.
-CONF_VALVE_OPENING = "valve_opening"
-CONF_VALVE_CLOSING = "valve_closing"
-CONF_VALVE_MIN = "valve_min"
-DEFAULT_VALVE_MIN = 0
-
-# Internal parameter name used to hand the parsed heater dict to the entity.
-PARAM_HEATER_VALVES = "heater_valves"
-
-# Extra state attribute used to remember the target temperature from before
-# the thermostat was switched OFF (restored when switched back to heat).
 ATTR_PRE_OFF_TARGET_TEMP = "pre_off_target_temp"
 
-# How long (seconds) events from the physical thermostat are treated as echoes
-# of a command we just sent, before we consider them real manual changes again.
+# How long (s) events from the physical thermostat are treated as echoes of a
+# command we just sent.
 PUSH_ECHO_TIMEOUT = 15
-
+# When the physical thermostat is switched on from OFF, wait (s) for it to report
+# the new mode before writing the setpoint (EMS-ESP stores a setpoint received
+# while OFF as its "off temperature").
+PHYSICAL_MODE_WAIT = 10
 # Minimum temperature difference (°C) considered a real change.
 TEMP_TOLERANCE = 0.05
+
+# --- hold ------------------------------------------------------------------------
+ATTR_HOLD = "hold"
+HOLD_STRICT = "strict"  # every deviation is rejected or pushed back
+HOLD_MANUAL = "manual"  # the state is set at the start, changes are allowed
