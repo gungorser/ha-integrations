@@ -5,9 +5,12 @@ from datetime import timedelta
 
 from freezegun.api import FrozenDateTimeFactory
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant_custom_component.common import (
+    async_fire_time_changed,
+    mock_restore_cache_with_extra_data,
+)
 
 from .conftest import setup_platform
 
@@ -187,7 +190,7 @@ async def test_restore_while_original_missing_and_save(hass: HomeAssistant, call
     assert entity(hass, "light.a_light").is_on is True
     assert entity(hass, "light.b_light").is_on is True
     assert entity(hass, "light.a_light").extra_restore_state_data.as_dict() == {
-        "base": {"on": True}
+        "base": {"on": True}, "link": {"last_on": None}
     }
 
 
@@ -205,3 +208,56 @@ async def test_remove_cancels_echo_timer(
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert WRAPPER not in hass.data["gungors"]["entities"]
+
+
+async def test_turn_on_shows_last_look(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    """Turned on from off, the wrapper shows the last on look, not on without brightness."""
+    lamp(hass, "on", brightness=80, color_temp_kelvin=2700)
+    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
+    await light(hass, "turn_off")
+    lamp(hass, "off", brightness=None, color_temp_kelvin=None, color_mode=None)
+    await hass.async_block_till_done()
+    state = hass.states.get(WRAPPER)
+    assert state.state == "off"
+
+    freezer.tick(timedelta(seconds=10))
+    await light(hass, "turn_on")
+    assert calls.of("light", "turn_on", LAMP)[-1] == {"entity_id": [LAMP]}
+    state = hass.states.get(WRAPPER)
+    assert state.state == "on"
+    assert state.attributes["brightness"] == 80
+    assert state.attributes["color_temp_kelvin"] == 2700
+    assert state.attributes["color_mode"] == "color_temp"
+
+    # Requested brightness and colour go on top of the last look.
+    await light(hass, "turn_off")
+    lamp(hass, "off", brightness=None, color_temp_kelvin=None, color_mode=None)
+    await hass.async_block_till_done()
+    freezer.tick(timedelta(seconds=10))
+    await light(hass, "turn_on", brightness=200, color_temp_kelvin=4000)
+    state = hass.states.get(WRAPPER)
+    assert state.attributes["brightness"] == 200
+    assert state.attributes["color_temp_kelvin"] == 4000
+
+    # The original's report wins.
+    lamp(hass, "on", brightness=190, color_temp_kelvin=3900)
+    await hass.async_block_till_done()
+    assert hass.states.get(WRAPPER).attributes["brightness"] == 190
+
+
+async def test_last_look_survives_restart(hass: HomeAssistant, calls) -> None:
+    mock_restore_cache_with_extra_data(
+        hass,
+        [(State(WRAPPER, "off"),
+          {"link": {"last_on": {"brightness": 60, "color_mode": "color_temp",
+                                "color_temp_kelvin": 3000, "hs_color": None,
+                                "xy_color": None, "rgb_color": None}}})],
+    )
+    lamp(hass, "off")
+    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
+    await light(hass, "turn_on")
+    state = hass.states.get(WRAPPER)
+    assert state.attributes["brightness"] == 60
+    assert state.attributes["color_temp_kelvin"] == 3000
