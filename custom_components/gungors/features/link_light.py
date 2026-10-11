@@ -3,15 +3,13 @@
 `link: light.x_lamp` (a light or a switch) or a list of entities (a group: on while
 any member is on, commands go to all of them; members may be gungors lights).
 
-- The wrapper mirrors the original's state, attributes and capabilities.
-- Accepted requests are sent to the original (switches get on/off only).
-- Turned on from off, the wrapper shows the light's last on brightness and colour
-  (and the requested ones) until the original reports, instead of an "on" without
-  brightness or colour that dashboards draw as full white.
-- A change of the on state that we did not command is a physical request. A
-  change within a few seconds after our own command is its echo; when the echo
-  window ends without the device matching, the device's state is taken as
-  physical too.
+- The wrapper is a puppet of the original: its on state, attributes and
+  capabilities are always the original's. It keeps no state of its own.
+- Accepted requests are sent to the original (switches get on/off only); the
+  wrapper changes only when the original reports.
+- A change of the on state that we did not command is a physical request (it
+  goes through the features, e.g. a strict `hold` pushes it back). A report
+  within a few seconds after our own command is its result and is taken as is.
 """
 from __future__ import annotations
 
@@ -21,40 +19,21 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components.light import (
-    ATTR_BRIGHTNESS,
-    ATTR_COLOR_MODE,
-    ATTR_COLOR_TEMP_KELVIN,
-    ATTR_HS_COLOR,
-    ATTR_RGB_COLOR,
-    ATTR_SUPPORTED_COLOR_MODES,
-    ATTR_XY_COLOR,
-    ColorMode,
-)
+from homeassistant.components.light import ATTR_SUPPORTED_COLOR_MODES, ColorMode
 from homeassistant.const import ATTR_ENTITY_ID, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, State, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event
 
 from ..core import Feature, Request, register
 
 _LOGGER = logging.getLogger(__name__)
 
 KEY = "link"
-ECHO_WINDOW = 5.0  # s after a command in which changes are its echo
+ECHO_WINDOW = 5.0  # s after a command in which reports are its result
 # Not sent on: "on" is the service, and HA hands entities the deprecated mired
 # "color_temp" next to "color_temp_kelvin", which light.turn_on rejects together.
 _NOT_SENT = {"on", "color_temp"}
-
-# A colour request attribute -> the colour mode it puts the light in.
-_COLORS = {
-    ATTR_COLOR_TEMP_KELVIN: ColorMode.COLOR_TEMP,
-    ATTR_HS_COLOR: ColorMode.HS,
-    ATTR_XY_COLOR: ColorMode.XY,
-    ATTR_RGB_COLOR: ColorMode.RGB,
-}
-# Remembered from the original while it is on, shown when turned on from off.
-_LOOK = (ATTR_BRIGHTNESS, ATTR_COLOR_MODE, *_COLORS)
 
 # Modes that can't be listed together with colour modes.
 _SIMPLE_MODES = {ColorMode.ONOFF, ColorMode.BRIGHTNESS}
@@ -71,8 +50,6 @@ class LightLink(Feature):
 
     _link_available = False
     _link_sent_at = 0.0
-    _link_echo_unsub = None
-    _link_last_on: dict[str, Any] | None = None
 
     @classmethod
     def gw_claims(cls, conf: Any) -> set[str]:
@@ -128,15 +105,10 @@ class LightLink(Feature):
         self.async_on_remove(
             async_track_state_change_event(self.hass, self._link_entities, self._link_changed)
         )
-        self.async_on_remove(self._link_cancel_echo)
         device = self._link_device()
         if device is not None:
             self._attr_is_on = device["on"]
             self.gw_mirror(device)
-
-    async def async_will_remove_from_hass(self) -> None:
-        self._link_cancel_echo()
-        await super().async_will_remove_from_hass()
 
     @callback
     def _link_changed(self, event: Event) -> None:
@@ -148,60 +120,23 @@ class LightLink(Feature):
         if device is None:
             self.async_write_ha_state()
             return
-        self._link_take(device, echo_window_over=False)
-
-    def _link_take(self, device: dict[str, Any], echo_window_over: bool) -> None:
-        in_echo = not echo_window_over and time.monotonic() - self._link_sent_at < ECHO_WINDOW
+        in_echo = time.monotonic() - self._link_sent_at < ECHO_WINDOW
         if device["on"] == self._attr_is_on or in_echo:
-            on = self._attr_is_on
+            self._attr_is_on = device["on"]
             self.gw_mirror(device)
-            self._attr_is_on = on
             self.async_write_ha_state()
             return
         self.hass.async_create_task(self.gw_physical(device))
 
-    @callback
-    def _link_echo_over(self, _now) -> None:
-        self._link_echo_unsub = None
-        device = self._link_device()
-        if device is not None:
-            self._link_take(device, echo_window_over=True)
-
-    def _link_cancel_echo(self) -> None:
-        if self._link_echo_unsub is not None:
-            self._link_echo_unsub()
-            self._link_echo_unsub = None
-
     # --- chain ---------------------------------------------------------------
 
-    def gw_mirror(self, attributes: dict[str, Any]) -> None:
-        super().gw_mirror(attributes)
-        if attributes.get("on") and any(attributes.get(k) is not None for k in _LOOK):
-            self._link_last_on = {k: attributes.get(k) for k in _LOOK}
-
-    def _link_turn_on_look(self, data: dict[str, Any]) -> dict[str, Any]:
-        """The last on look with the requested brightness and colour on top."""
-        look = dict(self._link_last_on or {})
-        if data.get(ATTR_BRIGHTNESS) is not None:
-            look[ATTR_BRIGHTNESS] = data[ATTR_BRIGHTNESS]
-        for key, mode in _COLORS.items():
-            if data.get(key) is not None:
-                look.update({k: None for k in _COLORS})
-                look[key] = data[key]
-                look[ATTR_COLOR_MODE] = mode
-                break
-        return look
-
     async def gw_apply(self, request: Request) -> None:
-        if (
-            not request.from_device
-            and request.data.get("on")
-            and not self._attr_is_on
-            and self._link_last_on
-        ):
-            self.gw_mirror(self._link_turn_on_look(request.data))
-        await super().gw_apply(request)
-        if request.from_device or not self._link_available:
+        if request.from_device:
+            await super().gw_apply(request)
+            return
+        # Not passed on to the base on purpose: the wrapper changes when the
+        # original reports, not when it is commanded.
+        if not self._link_available:
             return
         kwargs = {k: v for k, v in request.data.items() if k not in _NOT_SENT}
         await self._link_send(bool(request.data.get("on")), kwargs)
@@ -213,8 +148,6 @@ class LightLink(Feature):
 
     async def _link_send(self, on: bool, kwargs: dict[str, Any]) -> None:
         self._link_sent_at = time.monotonic()
-        self._link_cancel_echo()
-        self._link_echo_unsub = async_call_later(self.hass, ECHO_WINDOW, self._link_echo_over)
         service = "turn_on" if on else "turn_off"
         lights = [e for e in self._link_entities if e.startswith("light.")]
         switches = [e for e in self._link_entities if not e.startswith("light.")]
@@ -226,17 +159,6 @@ class LightLink(Feature):
             await self.hass.services.async_call(
                 "switch", service, {ATTR_ENTITY_ID: switches}, blocking=False
             )
-
-    def gw_restore(self, last: State | None, extra: dict[str, Any]) -> None:
-        super().gw_restore(last, extra)
-        own = extra.get(KEY)
-        if isinstance(own, dict) and isinstance(own.get("last_on"), dict):
-            self._link_last_on = own["last_on"]
-
-    def gw_save(self) -> dict[str, Any]:
-        data = super().gw_save()
-        data[KEY] = {"last_on": self._link_last_on}
-        return data
 
     # --- state ---------------------------------------------------------------
 

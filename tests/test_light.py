@@ -5,12 +5,9 @@ from datetime import timedelta
 
 from freezegun.api import FrozenDateTimeFactory
 
-from homeassistant.core import HomeAssistant, State
+from homeassistant.core import HomeAssistant
 
-from pytest_homeassistant_custom_component.common import (
-    async_fire_time_changed,
-    mock_restore_cache_with_extra_data,
-)
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from .conftest import setup_platform
 
@@ -47,15 +44,18 @@ async def test_mirror_and_commands(
 
     await light(hass, "turn_on", brightness=200)
     assert calls.of("light", "turn_on", LAMP)[-1]["brightness"] == 200
+    # A puppet: nothing changes until the original reports.
+    assert hass.states.get(WRAPPER).attributes["brightness"] == 120
     lamp(hass, "on", brightness=200, color_temp_kelvin=3000)
     await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).attributes["brightness"] == 200
 
     await light(hass, "turn_off")
     assert calls.of("light", "turn_off", LAMP)
-    assert hass.states.get(WRAPPER).state == "off"
+    assert hass.states.get(WRAPPER).state == "on"
     lamp(hass, "off")
     await hass.async_block_till_done()
+    assert hass.states.get(WRAPPER).state == "off"
 
     # Turned on at the wall (not by us): physical, the wrapper follows.
     freezer.tick(timedelta(seconds=10))
@@ -72,11 +72,28 @@ async def test_command_that_does_not_arrive(
     lamp(hass, "off")
     await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
     await light(hass, "turn_on")
-    assert hass.states.get(WRAPPER).state == "on"
+    assert calls.of("light", "turn_on", LAMP)
     freezer.tick(timedelta(seconds=6))
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
+    # The original never turned on: neither did the wrapper.
     assert hass.states.get(WRAPPER).state == "off"
+
+
+async def test_turn_on_has_no_in_between_state(hass: HomeAssistant, calls) -> None:
+    """The wrapper goes from off straight to the original's on look."""
+    lamp(hass, "off")
+    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
+    seen = []
+    hass.bus.async_listen(
+        "state_changed",
+        lambda e: seen.append(e.data["new_state"]) if e.data["entity_id"] == WRAPPER else None,
+    )
+    await light(hass, "turn_on")
+    assert seen == []
+    lamp(hass, "on", brightness=80, color_temp_kelvin=2700)
+    await hass.async_block_till_done()
+    assert [(s.state, s.attributes["brightness"]) for s in seen] == [("on", 80)]
 
 
 async def test_switch_original(hass: HomeAssistant, calls) -> None:
@@ -190,74 +207,5 @@ async def test_restore_while_original_missing_and_save(hass: HomeAssistant, call
     assert entity(hass, "light.a_light").is_on is True
     assert entity(hass, "light.b_light").is_on is True
     assert entity(hass, "light.a_light").extra_restore_state_data.as_dict() == {
-        "base": {"on": True}, "link": {"last_on": None}
+        "base": {"on": True}
     }
-
-
-async def test_remove_cancels_echo_timer(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
-    lamp(hass, "off")
-    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
-    await light(hass, "turn_on")
-    ent = entity(hass)
-    await ent.async_remove()
-    await hass.async_block_till_done()
-    assert ent._link_echo_unsub is None
-    freezer.tick(timedelta(seconds=6))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
-    assert WRAPPER not in hass.data["gungors"]["entities"]
-
-
-async def test_turn_on_shows_last_look(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
-    """Turned on from off, the wrapper shows the last on look, not on without brightness."""
-    lamp(hass, "on", brightness=80, color_temp_kelvin=2700)
-    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
-    await light(hass, "turn_off")
-    lamp(hass, "off", brightness=None, color_temp_kelvin=None, color_mode=None)
-    await hass.async_block_till_done()
-    state = hass.states.get(WRAPPER)
-    assert state.state == "off"
-
-    freezer.tick(timedelta(seconds=10))
-    await light(hass, "turn_on")
-    assert calls.of("light", "turn_on", LAMP)[-1] == {"entity_id": [LAMP]}
-    state = hass.states.get(WRAPPER)
-    assert state.state == "on"
-    assert state.attributes["brightness"] == 80
-    assert state.attributes["color_temp_kelvin"] == 2700
-    assert state.attributes["color_mode"] == "color_temp"
-
-    # Requested brightness and colour go on top of the last look.
-    await light(hass, "turn_off")
-    lamp(hass, "off", brightness=None, color_temp_kelvin=None, color_mode=None)
-    await hass.async_block_till_done()
-    freezer.tick(timedelta(seconds=10))
-    await light(hass, "turn_on", brightness=200, color_temp_kelvin=4000)
-    state = hass.states.get(WRAPPER)
-    assert state.attributes["brightness"] == 200
-    assert state.attributes["color_temp_kelvin"] == 4000
-
-    # The original's report wins.
-    lamp(hass, "on", brightness=190, color_temp_kelvin=3900)
-    await hass.async_block_till_done()
-    assert hass.states.get(WRAPPER).attributes["brightness"] == 190
-
-
-async def test_last_look_survives_restart(hass: HomeAssistant, calls) -> None:
-    mock_restore_cache_with_extra_data(
-        hass,
-        [(State(WRAPPER, "off"),
-          {"link": {"last_on": {"brightness": 60, "color_mode": "color_temp",
-                                "color_temp_kelvin": 3000, "hs_color": None,
-                                "xy_color": None, "rgb_color": None}}})],
-    )
-    lamp(hass, "off")
-    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": LAMP}]})
-    await light(hass, "turn_on")
-    state = hass.states.get(WRAPPER)
-    assert state.attributes["brightness"] == 60
-    assert state.attributes["color_temp_kelvin"] == 3000
