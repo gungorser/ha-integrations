@@ -30,7 +30,7 @@ entry that breaks a rule is not created and the log says why.
 
 | Feature | Domains | Value | What it does |
 |---|---|---|---|
-| `link` | all | entity id, or a list (group) | Two-way sync with the original; the wrapper is unavailable while it is. Cover: a cover or an `input_number`/`number` 0-100. Climate: a climate, or `{entity, cooldown_time}`. Light: a light or a switch; the light wrapper keeps no state of its own and changes only when the original reports |
+| `link` | all | entity id, or a list (group) | The original the wrapper drives; the wrapper is unavailable while it is. With only `link` the wrapper is the original: it keeps no state of its own and changes only when the original reports; other features change the behaviour. Cover: a cover or an `input_number`/`number` 0-100 (a list: their average). Climate: a climate (mode and target are the thermostat's). Light: a light or a switch |
 | `hold` | all | - | `gungors.hold` / `gungors.release`: set a state for a while, `strict` (enforced) or `manual` |
 | `direction` | cover | - or `{start_timeout, stop_silence}` | Movement tracking for blinds that only report positions (IKEA via Z2M) |
 | `travel_time` | cover | - or `{z2m_base_topic}` | Position estimation for curtain motors that report only at the end (Tuya via Z2M) |
@@ -48,7 +48,7 @@ attributes. Base classes: `cover.py`, `climate.py`, `light.py`.
 Attributes other repositories read: cover `actual_position`, `pending_position`,
 `physical_buttons` (true with `buttons`; the pushbutton blueprint selects covers by it),
 `calibrated`, `position_source`, `open_time`, `close_time`; climate `hvac_action`,
-`physical_thermostat`, `pre_off_target_temp`, `control_output`, `heater_value`, `kp`, `ki`,
+`physical_thermostat`, `control_output`, `heater_value`, `kp`, `ki`,
 `kd`, `pid_i`, `pid_mode`; every entity with `hold`: `hold`. A group wrapper has `entity_id`
 (its members) so `expand()` works.
 

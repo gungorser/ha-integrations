@@ -35,9 +35,8 @@ ATTR_CLOSE_TIME = "close_time"
 
 # --- climate ---------------------------------------------------------------------
 ATTR_PHYSICAL_THERMOSTAT = "physical_thermostat"
-ATTR_PRE_OFF_TARGET_TEMP = "pre_off_target_temp"
 
-# How long (s) events from the physical thermostat are treated as echoes of a
+# How long (s) reports of the physical thermostat are taken as the result of a
 # command we just sent.
 PUSH_ECHO_TIMEOUT = 15
 # When the physical thermostat is switched on from OFF, wait (s) for it to report

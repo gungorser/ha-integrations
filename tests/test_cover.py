@@ -74,7 +74,12 @@ async def test_number_link(hass: HomeAssistant, calls) -> None:
     assert calls.of("input_number", "set_value") == [
         {"entity_id": ["input_number.mutfak_position"], "value": 70}
     ]
+    # Only link: the wrapper is the number; it changes when the number does.
+    assert pos(hass, "cover.mutfak_cover") == 40
+    hass.states.async_set("input_number.mutfak_position", "70")
+    await hass.async_block_till_done()
     assert pos(hass, "cover.mutfak_cover") == 70
+    assert len(calls.of("input_number", "set_value")) == 1
 
     # The number changed by something else: the wrapper follows.
     hass.states.async_set("input_number.mutfak_position", "10")
@@ -143,7 +148,7 @@ async def test_direction_retry_once(hass: HomeAssistant, calls) -> None:
     await cover(hass, "set_cover_position", position=40)
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=9))
     await hass.async_block_till_done()
-    assert len(calls.of("cover", "set_cover_position", RAW)) == 2
+    assert [c["position"] for c in calls.of("cover", "set_cover_position", RAW)] == [40, 40]
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=20))
     await hass.async_block_till_done()
     assert len(calls.of("cover", "set_cover_position", RAW)) == 2
@@ -287,6 +292,40 @@ async def test_group(hass: HomeAssistant, calls) -> None:
     assert calls.of("input_number", "set_value", "input_number.b")[-1]["value"] == 0
 
 
+async def test_group_follows_its_members(hass: HomeAssistant, calls) -> None:
+    """The group's position is its members' (link only): our move is taken as it
+    goes, a move against it is physical (here pushed back by a strict hold)."""
+    hass.states.async_set("input_number.a", "100")
+    hass.states.async_set("input_number.b", "100")
+    await setup_platform(
+        hass,
+        "cover",
+        {"name": "a_cover", "features": [{"link": "input_number.a"}]},
+        {"name": "b_cover", "features": [{"link": "input_number.b"}]},
+        {"name": "ab_cover", "features": ["hold", {"link": ["cover.a_cover", "cover.b_cover"]}]},
+    )
+    await hass.services.async_call(
+        "gungors", "hold", {"entity_id": "cover.ab_cover", "state": {"position": 0}},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert pos(hass, "cover.ab_cover") == 100  # nothing reported yet
+    for a, b in (("0", "100"), ("0", "40"), ("0", "0")):
+        hass.states.async_set("input_number.a", a)
+        hass.states.async_set("input_number.b", b)
+        await hass.async_block_till_done()
+        await hass.async_block_till_done()  # the members' new states reach the group
+    assert pos(hass, "cover.ab_cover") == 0
+    calls.clear()
+
+    # b opened by hand: physical, the hold sends the group back to 0.
+    hass.states.async_set("input_number.b", "60")
+    await hass.async_block_till_done()
+    await hass.async_block_till_done()
+    assert pos(hass, "cover.ab_cover") == 0
+    assert calls.of("cover", "set_cover_position", "cover.b_cover")[-1]["position"] == 0
+
+
 # --- hold --------------------------------------------------------------------
 
 
@@ -404,21 +443,6 @@ async def test_original_missing_at_start(hass: HomeAssistant, calls) -> None:
     hass.states.async_set("input_number.x", "30")
     await hass.async_block_till_done()
     assert pos(hass, "cover.x_cover") == 30
-
-
-async def test_restore_target_from_last_state_while_original_unknown(
-    hass: HomeAssistant, calls
-) -> None:
-    from pytest_homeassistant_custom_component.common import mock_restore_cache
-
-    mock_restore_cache(hass, [State("cover.x_cover", "open", {"current_position": 65})])
-    hass.states.async_set("input_number.x", "unknown")
-    await setup_platform(hass, "cover", {"name": "x_cover", "features": [{"link": "input_number.x"}]})
-    state = hass.states.get("cover.x_cover")
-    assert (state.state, state.attributes["current_position"]) == ("open", 65)
-    assert entity(hass, "cover.x_cover").extra_restore_state_data.as_dict() == {
-        "base": {"target": 65}
-    }
 
 
 async def test_unknown_without_restore_is_unknown(hass: HomeAssistant, calls) -> None:
@@ -591,9 +615,8 @@ async def test_window_restore_and_save(hass: HomeAssistant, calls) -> None:
     raw(hass, 100)
     await setup_guarded(hass)
     assert hass.states.get(WRAPPER).attributes["pending_position"] == 30
-    assert entity(hass).extra_restore_state_data.as_dict() == {
-        "base": {"target": 100}, "window": {"pending": 30},
-    }
+    # The position is the blind's, so only the pending command is saved.
+    assert entity(hass).extra_restore_state_data.as_dict() == {"window": {"pending": 30}}
 
 
 # --- buttons: more -------------------------------------------------------------

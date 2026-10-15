@@ -196,9 +196,9 @@ class TravelTime(Feature):
         await super().gw_apply(request)
 
     async def gw_push(self) -> None:
-        target = self._gw_target
-        if target is not None:
-            self._tt_begin(float(target))
+        position = self._gw_position
+        if position is not None:
+            self._tt_begin(float(position))
         await super().gw_push()
 
     def _tt_begin(self, target: float) -> None:
@@ -242,7 +242,7 @@ class TravelTime(Feature):
         if self._tt_restored and self._tt_position is not None:
             # First start: the restored position beats HA's last MQTT state.
             self._tt_restored = False
-            self._gw_target = int(round(self._tt_position))
+            self.gw_mirror(self._tt_position)
             self.async_write_ha_state()
             return
         self._tt_restored = False
@@ -291,7 +291,9 @@ class TravelTime(Feature):
             # curtain, another controller), or a late correction after a stop.
             self._tt_position = position
             self._tt_source = SOURCE_REPORTED
-            if self._gw_target is None or not _near(position, self._gw_target):
+            if self._gw_position is not None and _near(position, self._gw_position):
+                self.gw_mirror(position)
+            else:
                 self.hass.async_create_task(self.gw_physical({"position": int(round(position))}))
             self.async_write_ha_state()
             return
@@ -350,10 +352,10 @@ class TravelTime(Feature):
 
     def _tt_finish(self, position: float, source: str) -> None:
         self._tt_cancel_timers()
-        if self._tt_our_stop or self._tt_state == _STOPPING:
-            self._gw_target = int(round(position))
-        elif _near(position, self._tt_target):
-            self._gw_target = int(round(position))
+        if self._tt_our_stop or self._tt_state == _STOPPING or _near(position, self._tt_target):
+            # Where our move ended. Elsewhere it was stopped physically: the
+            # caller requests that position.
+            self.gw_mirror(position)
         self._tt_state = _IDLE
         self._tt_cmd = None
         self._tt_our_stop = False

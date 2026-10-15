@@ -4,7 +4,7 @@ For blinds (IKEA via Zigbee2MQTT) that publish no opening/closing state, only a
 position about once a second while moving. This feature:
 
 - derives is_opening / is_closing from consecutive position reports,
-- shows the real position while the blind moves and the target at rest,
+- shows the real position while the blind moves (at rest the wrapper is the blind),
 - ignores Zigbee2MQTT's echo of a commanded target (a jump straight to it),
 - treats a move it did not command, or a reversal mid-move, as physical,
 - ends a move when the target is reached or reports stop for `stop_silence` s;
@@ -30,7 +30,7 @@ from ..const import (
     MAX_REAL_STEP,
     POSITION_TOLERANCE,
 )
-from ..core import Feature, Request, register
+from ..core import SOURCE_INTERNAL, Feature, Request, register
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +71,6 @@ class Direction(Feature):
     _dir_closing = False
     _dir_target: int | None = None  # commanded target of the current move
     _dir_retried = False
-    _dir_retrying = False
     _dir_settle_until = 0.0
     _dir_stall_unsub = None
     _dir_start_unsub = None
@@ -108,7 +107,7 @@ class Direction(Feature):
             self._dir_opening = self._dir_closing = False
             await super().gw_apply(request)
             if self._dir_actual is not None:
-                self._gw_target = self._dir_actual
+                self.gw_mirror(self._dir_actual)
             self._dir_arm_stall()
             self.async_write_ha_state()
             return
@@ -132,13 +131,11 @@ class Direction(Feature):
         self._dir_arm_start()
 
     async def gw_push(self) -> None:
-        target = self._gw_target
-        if target is not None and not (
-            self._dir_actual is not None and abs(target - self._dir_actual) <= POSITION_TOLERANCE
+        position = self._gw_position
+        if position is not None and not (
+            self._dir_actual is not None and abs(position - self._dir_actual) <= POSITION_TOLERANCE
         ):
-            retrying = self._dir_retrying
-            self._dir_begin(target)
-            self._dir_retried = retrying
+            self._dir_begin(position)
             await super().gw_push()
             self._dir_arm_start()
             return
@@ -218,15 +215,15 @@ class Direction(Feature):
         if self._dir_state == _IDLE and position == previous:
             return  # attribute-only update, nothing moved
 
-        target = self._gw_target
+        shown = self._gw_position
         if (
             self._dir_state == _IDLE
-            and target is not None
+            and shown is not None
             and time.monotonic() < self._dir_settle_until
-            and abs(position - target) <= POSITION_TOLERANCE
+            and abs(position - shown) <= POSITION_TOLERANCE
         ):
             # Last report of a finished commanded move: settling, not physical.
-            self._gw_target = position
+            self.gw_mirror(position)
             return
 
         # Not something we commanded: physical movement (a bound button, or
@@ -240,7 +237,7 @@ class Direction(Feature):
         self.hass.async_create_task(self.gw_physical({"position": position}))
 
     def _dir_finish(self, position: int) -> None:
-        self._gw_target = position
+        self.gw_mirror(position)
         self._dir_state = _IDLE
         self._dir_opening = self._dir_closing = False
         self._dir_target = None
@@ -261,7 +258,7 @@ class Direction(Feature):
         """No report for stop_silence seconds: the blind stopped."""
         self._dir_stall_unsub = None
         if self._dir_actual is not None:
-            self._gw_target = self._dir_actual
+            self.gw_mirror(self._dir_actual)
         self._dir_state = _IDLE
         self._dir_opening = self._dir_closing = False
         self._dir_target = None
@@ -288,12 +285,13 @@ class Direction(Feature):
         self.async_write_ha_state()
 
     async def _dir_retry(self) -> None:
-        self._dir_retrying = True
-        try:
-            await self.gw_push()
-        finally:
-            self._dir_retrying = False
+        """Send the move's command again (to the link only: it was accepted)."""
+        target = self._dir_target
+        if target is None:
+            return
         self._dir_retried = True
+        await super().gw_apply(Request({"position": target}, source=SOURCE_INTERNAL))
+        self._dir_arm_start()
 
     def _dir_cancel_stall(self) -> None:
         if self._dir_stall_unsub is not None:

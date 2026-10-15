@@ -440,9 +440,7 @@ async def test_restore_and_save_round_trip(hass: HomeAssistant, mqtt_mock, calls
     s = state(hass)
     assert s.attributes["current_position"] == 35
     assert (s.attributes["open_time"], s.attributes["close_time"]) == (15.0, 12.0)
-    assert entity(hass).extra_restore_state_data.as_dict() == {
-        "base": {"target": 35}, "travel_time": own,
-    }
+    assert entity(hass).extra_restore_state_data.as_dict() == {"travel_time": own}
 
 
 async def test_remove_mid_move_cancels_timers(

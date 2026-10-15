@@ -38,6 +38,7 @@ class Window(Feature):
 
     _win_pending: int | None = None
     _win_remote_move = False  # the last applied move came from a remote request
+    _win_target: int | None = None  # where that move goes
 
     @property
     def _win_open(self) -> bool:
@@ -72,8 +73,10 @@ class Window(Feature):
         return await super().gw_request(request)
 
     async def gw_apply(self, request: Request) -> None:
-        if request.data.get("position") is not None:
+        position = request.data.get("position")
+        if position is not None:
             self._win_remote_move = request.source != SOURCE_PHYSICAL and not request.from_device
+            self._win_target = int(position)
         await super().gw_apply(request)
 
     # --- window --------------------------------------------------------------
@@ -85,7 +88,7 @@ class Window(Feature):
         if self._win_open:
             if self._win_remote_move and (self.is_opening or self.is_closing):
                 # Opened mid-move: stop, keep the target for later.
-                pending = self._gw_target
+                pending = self._win_target
                 self.hass.async_create_task(self._win_stop(pending))
             return
         if self._win_pending is not None:
