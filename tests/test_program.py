@@ -491,3 +491,46 @@ async def test_custom_defaults(hass: HomeAssistant, calls, freezer: FrozenDateTi
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
     state = hass.states.get(LIGHT)
     assert state.state == "on"
+
+
+async def test_pause_and_resume(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    from custom_components.gungors.program import async_get_manager  # noqa: PLC0415
+
+    await setup_all(hass)
+    lamp(hass, False)
+    await hass.async_block_till_done()
+    await add_entry(hass, "parti", {"target": LIGHT, "light": {"on": True}},
+                    timedelta(minutes=1), timedelta(hours=1))
+    uid = async_get_manager(hass).calendar.events[0].uid
+    with pytest.raises(HomeAssistantError):  # not running yet
+        await hass.services.async_call(
+            "gungors", "pause_program", {"entity_id": CALENDAR, "uid": uid}, blocking=True
+        )
+    await tick(hass, freezer, timedelta(minutes=1, seconds=2))
+    assert hass.states.get(LIGHT).state == "on"
+
+    # Paused: as at an end, `on` returns to its default and the light is free.
+    await hass.services.async_call(
+        "gungors", "pause_program", {"entity_id": CALENDAR, "uid": uid}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "off"
+    assert hass.states.get(LIGHT).attributes["program"] == []
+    assert hass.states.get(CALENDAR).attributes["paused"] == [uid]
+
+    # Resumed (right away): applied again as at a start.
+    await hass.services.async_call(
+        "gungors", "resume_program", {"entity_id": CALENDAR, "uid": uid}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "on"
+    assert hass.states.get(CALENDAR).attributes["paused"] == []
+
+    # A pause ends with its occurrence.
+    await hass.services.async_call(
+        "gungors", "pause_program", {"entity_id": CALENDAR, "uid": uid}, blocking=True
+    )
+    await tick(hass, freezer, timedelta(hours=1))
+    assert async_get_manager(hass).paused == set()
