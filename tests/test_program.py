@@ -19,6 +19,7 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.gungors.rules import (
     Constraint,
+    dump_program,
     parse_defaults,
     parse_program,
     rules_conflict,
@@ -50,6 +51,37 @@ def test_parse_program() -> None:
     assert program.rules["color"] == Constraint(eq=(255, 0, 0))
 
 
+def test_parse_program_by_domain() -> None:
+    program = parse_program(
+        "target: [Yatak]\nlight:\n  on: false\nclimate:\n  hvac_mode: off\n"
+        "  temperature: {min: 21}\n"
+    )
+    assert program.target == ("Yatak",)
+    assert program.rules == {
+        "on": Constraint(eq=False),
+        "hvac_mode": Constraint(eq="off"),
+        "temperature": Constraint(min=21),
+    }
+
+
+def test_dump_program_round_trip() -> None:
+    program = parse_program(
+        "target: [Yatak, light.x, 'on']\nlight: {on: true, brightness: {max: 40}, color: red}\n"
+        "climate: {hvac_mode: heat, temperature: 21.5}\ncover: {position: {min: 0, max: 30}}"
+    )
+    text = dump_program(program)
+    assert text == (
+        'target: [Yatak, light.x, "on"]\n'
+        "light:\n  on: true\n  brightness: {max: 40}\n  color: [255, 0, 0]\n"
+        "climate:\n  hvac_mode: heat\n  temperature: 21.5\n"
+        "cover:\n  position: {min: 0, max: 30}\n"
+    )
+    assert parse_program(text) == program
+    off = parse_program("target: x\nclimate: {hvac_mode: 'off'}")
+    assert 'hvac_mode: "off"' in dump_program(off)
+    assert parse_program(dump_program(off)) == off
+
+
 @pytest.mark.parametrize(
     "description",
     [
@@ -63,6 +95,10 @@ def test_parse_program() -> None:
         "target: salon\nrules: {color: nocolour}",
         "target: salon\nrules: {color: red, color_temp: 3000}",
         "target: salon\nrules: {hvac_mode: cool}",
+        "target: salon\nlight: {temperature: 21}",
+        "target: salon\nclimate: {}",
+        "target: salon\nheating: {temperature: 21}",
+        "target: salon\nrules: {on: true}\nlight: {on: false}",
     ],
 )
 def test_parse_program_invalid(description: str) -> None:

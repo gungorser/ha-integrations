@@ -1,24 +1,27 @@
 """Program rules: the content of a `calendar.program` entry.
 
-An entry's description holds the program as JSON or YAML::
+An entry's description holds the program as YAML, the rules grouped by domain::
 
-    target: [salon, light.melike_light]   # area ids/names and entity ids
-    rules:
+    target: [Salon, light.melike_light]   # area ids/names and entity ids
+    light:
       on: true                 # a plain value is `eq`
       brightness: {max: 40}    # percent
       color: red               # a colour name or [r, g, b]
+    climate:
       temperature: {min: 19, max: 22}
 
-A rule is a constraint on one attribute: `eq`, `min` and/or `max`. Each attribute
-belongs to one domain, so a rule only touches the targeted entities of that
-domain. Two programs conflict on an entity when they overlap in time and the
-same attribute's constraints can't hold together (`color` and `color_temp`
-count as one attribute: a light can't follow both).
+(The older form with all attributes under one `rules:` key is still read.)
+
+A rule is a constraint on one attribute: `eq`, `min` and/or `max`. A rule only
+touches the targeted entities of its domain. Two programs conflict on an entity
+when they overlap in time and the same attribute's constraints can't hold
+together (`color` and `color_temp` count as one attribute: a light can't follow
+both).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import json
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -123,7 +126,8 @@ def _constraint(attr: str, value: Any) -> Constraint:
                 raise vol.Invalid(f"{attr}: only an exact value (eq)")
             value = value["eq"]
         if attr == "hvac_mode":
-            value = str(value).lower()
+            # YAML 1.1 reads a bare `off` as False.
+            value = "off" if value is False else str(value).lower()
         if value not in CHOICES[attr]:
             raise vol.Invalid(f"{attr}: one of {', '.join(map(str, CHOICES[attr]))}")
         return Constraint(eq=value)
@@ -156,6 +160,10 @@ def _constraint(attr: str, value: Any) -> Constraint:
     return result
 
 
+def _attr(key: Any) -> Any:
+    return "on" if key is True else key  # YAML 1.1 reads a bare `on:` key as True
+
+
 def parse_program(description: str | None) -> Program:
     """Parse an entry description; raise vol.Invalid with a readable message."""
     if not description or not description.strip():
@@ -163,12 +171,16 @@ def parse_program(description: str | None) -> Program:
     try:
         data = yaml.safe_load(description)
     except yaml.YAMLError as err:
-        raise vol.Invalid(f"the description is not valid JSON/YAML: {err}") from err
+        raise vol.Invalid(f"the description is not valid YAML: {err}") from err
     if not isinstance(data, dict):
         raise vol.Invalid("the description must be a mapping with target and rules")
-    unknown = set(data) - {"target", "rules"}
+    domains = sorted(set(DOMAINS.values()))
+    unknown = set(data) - {"target", "rules", *domains}
     if unknown:
-        raise vol.Invalid(f"unknown keys: {', '.join(sorted(map(str, unknown)))}")
+        raise vol.Invalid(
+            f"unknown keys: {', '.join(sorted(map(str, unknown)))}"
+            f" (known: target, {', '.join(domains)})"
+        )
     target = data.get("target")
     if isinstance(target, str):
         target = [target]
@@ -176,28 +188,72 @@ def parse_program(description: str | None) -> Program:
         isinstance(t, str) and t.strip() for t in target
     ):
         raise vol.Invalid("target: an area, an entity id or a list of them")
-    rules = data.get("rules")
-    if not isinstance(rules, dict) or not rules:
-        raise vol.Invalid("rules: at least one rule")
+    pairs: list[tuple[Any, Any]] = []
+    if "rules" in data:
+        if not isinstance(data["rules"], dict):
+            raise vol.Invalid("rules: a mapping of attribute: value")
+        pairs += [(_attr(k), v) for k, v in data["rules"].items()]
+    for domain in domains:
+        if domain not in data:
+            continue
+        values = data[domain]
+        if not isinstance(values, dict) or not values:
+            raise vol.Invalid(f"{domain}: a mapping of attribute: value")
+        for key, value in values.items():
+            attr = _attr(key)
+            if DOMAINS.get(attr) != domain:
+                known = ", ".join(a for a, d in DOMAINS.items() if d == domain)
+                raise vol.Invalid(f"{domain}: unknown attribute '{attr}' (known: {known})")
+            pairs.append((attr, value))
+    if not pairs:
+        raise vol.Invalid(f"at least one rule under {', '.join(domains)}")
     parsed: dict[str, Constraint] = {}
-    for attr, value in rules.items():
-        if attr is True:  # YAML 1.1 reads a bare `on:` key as True
-            attr = "on"
+    for attr, value in pairs:
         if attr not in DOMAINS:
             raise vol.Invalid(f"unknown rule '{attr}' (known: {', '.join(DOMAINS)})")
+        if attr in parsed:
+            raise vol.Invalid(f"'{attr}' is given twice")
         parsed[attr] = _constraint(attr, value)
     if "color" in parsed and "color_temp" in parsed:
         raise vol.Invalid("color and color_temp can't be in the same program")
     return Program(target=tuple(t.strip() for t in target), rules=parsed)
 
 
+_PLAIN = re.compile(r"^[^\s\-?:,\[\]{}#&*!|>'\"%@`][^:#,\[\]{}]*$")
+_RESERVED = re.compile(
+    r"^(y|n|yes|no|true|false|on|off|null|~|[-+.]?\d.*|\.(inf|nan))$", re.IGNORECASE
+)
+
+
+def _scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(int(value)) if float(value).is_integer() else str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_scalar(v) for v in value) + "]"
+    text = str(value)
+    if _PLAIN.match(text) and not _RESERVED.match(text) and text == text.strip():
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def dump_program(program: Program) -> str:
-    """The description text of a program (JSON)."""
-    rules: dict[str, Any] = {}
-    for attr, constraint in program.rules.items():
-        as_dict = constraint.as_dict()
-        rules[attr] = as_dict["eq"] if "eq" in as_dict else as_dict
-    return json.dumps({"target": list(program.target), "rules": rules})
+    """The description text of a program (YAML, rules grouped by domain)."""
+    lines = [f"target: {_scalar(list(program.target))}"]
+    for domain in dict.fromkeys(DOMAINS.values()):
+        rules = {a: c for a, c in program.rules.items() if DOMAINS[a] == domain}
+        if not rules:
+            continue
+        lines.append(f"{domain}:")
+        for attr, constraint in rules.items():
+            as_dict = constraint.as_dict()
+            if "eq" in as_dict:
+                value = _scalar(as_dict["eq"])
+            else:
+                value = "{" + ", ".join(f"{k}: {_scalar(v)}" for k, v in as_dict.items()) + "}"
+            lines.append(f"  {attr}: {value}")
+    return "\n".join(lines) + "\n"
 
 
 def constraints_conflict(attr: str, a: Constraint, b: Constraint) -> bool:

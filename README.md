@@ -63,17 +63,25 @@ Tests: `pip install pytest-homeassistant-custom-component`, then `pytest`.
 ## Programs
 
 `calendar.program` (`calendar: - platform: gungors`, see `calendar.py`) holds the programs.
-Each entry is a time window (it may repeat) whose description is the program, in JSON or YAML:
+Each entry is a time window (it may repeat) whose description is the program, in YAML, the
+rules grouped by domain:
 
-```json
-{"target": ["salon", "light.melike_light"], "rules": {"on": true, "brightness": {"max": 40}}}
+```yaml
+target: [Salon, light.melike_light]
+light:
+  on: true
+  brightness: {max: 40}
+climate:
+  temperature: {min: 21}
 ```
 
 - `target`: area ids or names and entity ids (entities with the `program` feature). Areas
   are resolved again at every start.
-- `rules`: one constraint per attribute, a value (`eq`) or `{min, max}`. Attributes: light
-  `on`, `brightness` (%), `color` (a name or `[r, g, b]`, eq only), `color_temp` (K);
-  climate `hvac_mode` (`heat`/`off`), `temperature`; cover `position`.
+- `light`, `climate`, `cover`: one constraint per attribute, a value (`eq`) or `{min, max}`.
+  Attributes: light `on`, `brightness` (%), `color` (a name or `[r, g, b]`, eq only),
+  `color_temp` (K); climate `hvac_mode` (`heat`/`off`), `temperature`; cover `position`. A
+  rule only touches the targeted entities of its domain. (The older form with every
+  attribute under one `rules:` key is still read.)
 - An entry that two programs' rules can't both hold on an entity while they overlap is
   refused with an error (also from Home Assistant's calendar dialog), as is an unreadable one.
 - While active: requests are clamped, the state is corrected at the start and after a
