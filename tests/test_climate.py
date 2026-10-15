@@ -8,7 +8,8 @@ from freezegun.api import FrozenDateTimeFactory
 
 import pytest
 
-from homeassistant.core import HomeAssistant, State
+from homeassistant.const import EVENT_CALL_SERVICE
+from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
 
 from pytest_homeassistant_custom_component.common import (
@@ -35,7 +36,28 @@ def trv(hass: HomeAssistant, mode: str = "heat", temperature: float = 19, **attr
     )
 
 
-async def setup_trv(hass: HomeAssistant, *extra) -> None:
+def echo_trv(hass: HomeAssistant, entity: str = TRV) -> None:
+    """The thermostat reports what it is told, like the real device does."""
+
+    @callback
+    def echo(event) -> None:
+        data = event.data["service_data"]
+        if event.data["domain"] != "climate" or data.get("entity_id") != entity:
+            return
+        state = hass.states.get(entity)
+        mode, attrs = state.state, dict(state.attributes)
+        if "hvac_mode" in data:
+            mode = data["hvac_mode"]
+        if "temperature" in data:
+            attrs["temperature"] = data["temperature"]
+        hass.states.async_set(entity, mode, attrs)
+
+    hass.bus.async_listen(EVENT_CALL_SERVICE, echo)
+
+
+async def setup_trv(hass: HomeAssistant, *extra, echo: bool = False) -> None:
+    if echo:
+        echo_trv(hass)
     hass.states.async_set(SENSOR, "18")
     hass.states.async_set(OPENING, "0")
     hass.states.async_set(CLOSING, "100")
@@ -44,14 +66,13 @@ async def setup_trv(hass: HomeAssistant, *extra) -> None:
         "climate",
         {
             "name": "sercan_thermostat",
-            "target_temp": 19,
             "features": [
                 *extra,
                 {"pid": {"kp": 16, "ki": 0.01, "kd": 4, "keep_alive": {"minutes": 15},
                          "force_off": False}},
                 {"valve": {"opening": OPENING, "closing": CLOSING, "min": 10}},
                 {"temperature": SENSOR},
-                {"link": {"entity": TRV, "cooldown_time": 1}},
+                {"link": TRV},
             ],
         },
     )
@@ -65,16 +86,15 @@ async def climate(hass: HomeAssistant, service: str, **data) -> None:
 
 
 async def test_pid_drives_valves(hass: HomeAssistant, calls) -> None:
-    trv(hass)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
+    trv(hass, temperature=21)
     await setup_trv(hass)
     state = hass.states.get(WRAPPER)
+    # Mode and target are the TRV's; nothing is pushed to it.
     assert state.state == "heat"
     assert state.attributes["temperature"] == 21
     assert state.attributes["current_temperature"] == 18
     assert state.attributes["min_temp"] == 5  # from the TRV
-    # Startup: the wrapper's target is pushed to the TRV.
-    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 21
+    assert not calls.of("climate", "set_temperature", TRV)
 
     # error 3 * kp 16 = 48 -> opening 10 + 48 * 0.9 = 53
     assert state.attributes["control_output"] == 48
@@ -95,60 +115,70 @@ async def test_pid_drives_valves(hass: HomeAssistant, calls) -> None:
 
 async def test_wrapper_to_trv_and_off(hass: HomeAssistant, calls) -> None:
     trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
-    await setup_trv(hass)
+    await setup_trv(hass, echo=True)
     calls.clear()
 
     await climate(hass, "set_temperature", temperature=22.5)
     assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 22.5
+    assert hass.states.get(WRAPPER).attributes["temperature"] == 22.5
 
     await climate(hass, "set_hvac_mode", hvac_mode="off")
     assert calls.of("climate", "set_hvac_mode", TRV)[-1]["hvac_mode"] == "off"
     state = hass.states.get(WRAPPER)
     assert state.state == "off"
-    assert state.attributes["pre_off_target_temp"] == 22.5
+    assert "pre_off_target_temp" not in state.attributes
     assert state.attributes["hvac_action"] == "off"
     # Switching off writes demand 0 once.
     assert calls.of("number", "set_value", OPENING)[-1]["value"] == 10
 
     # Setting a temperature while OFF switches to heat.
-    trv(hass, mode="off", temperature=5)
-    await hass.async_block_till_done()
     calls.clear()
     await climate(hass, "set_temperature", temperature=20)
-    assert hass.states.get(WRAPPER).state == "heat"
-    assert calls.of("climate", "set_hvac_mode", TRV)[-1]["hvac_mode"] == "heat"
+    state = hass.states.get(WRAPPER)
+    assert (state.state, state.attributes["temperature"]) == ("heat", 20)
+    services = [s for d, s, data in calls.items if d == "climate" and data["entity_id"] == TRV]
+    assert sorted(services) == ["set_hvac_mode", "set_temperature"]
 
 
-async def test_leaving_off_restores_target(hass: HomeAssistant, calls) -> None:
-    trv(hass, mode="off", temperature=5)
-    mock_restore_cache(
-        hass, [State(WRAPPER, "off", {"temperature": 5, "pre_off_target_temp": 21})]
-    )
-    await setup_trv(hass)
-    await climate(hass, "set_hvac_mode", hvac_mode="heat")
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 21
-
-
-async def test_trv_change_applied_after_cooldown(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
+async def test_command_shows_only_when_the_trv_reports(hass: HomeAssistant, calls) -> None:
+    """A wrapper with only `link` is the TRV: a command changes nothing by itself."""
     trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
+    await setup_trv(hass)
+    await climate(hass, "set_temperature", temperature=22.5)
+    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 22.5
+    assert hass.states.get(WRAPPER).attributes["temperature"] == 21
+    trv(hass, temperature=22.5)
+    await hass.async_block_till_done()
+    assert hass.states.get(WRAPPER).attributes["temperature"] == 22.5
+
+    await climate(hass, "set_hvac_mode", hvac_mode="off")
+    assert hass.states.get(WRAPPER).state == "heat"
+    # The TRV's own off setpoint comes with it.
+    trv(hass, mode="off", temperature=5)
+    await hass.async_block_till_done()
+    state = hass.states.get(WRAPPER)
+    assert (state.state, state.attributes["temperature"]) == ("off", 5)
+
+
+async def test_leaving_off_uses_the_trv_target(hass: HomeAssistant, calls) -> None:
+    trv(hass, mode="off", temperature=5)
+    await setup_trv(hass, echo=True)
+    await climate(hass, "set_hvac_mode", hvac_mode="heat")
+    state = hass.states.get(WRAPPER)
+    assert (state.state, state.attributes["temperature"]) == ("heat", 5)
+    assert not calls.of("climate", "set_temperature", TRV)
+
+
+async def test_trv_change_is_taken_at_once(hass: HomeAssistant, calls) -> None:
+    trv(hass, temperature=21)
     await setup_trv(hass)
     trv(hass, temperature=23)
     await hass.async_block_till_done()
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 21
-    freezer.tick(timedelta(seconds=2))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).attributes["temperature"] == 23
+    assert not calls.of("climate", "set_temperature", TRV)
 
     # Unsupported mode on the device (auto): ignored.
     trv(hass, mode="auto", temperature=23)
-    await hass.async_block_till_done()
-    freezer.tick(timedelta(seconds=2))
-    async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).state == "heat"
 
@@ -166,29 +196,11 @@ async def test_unavailable_trv(hass: HomeAssistant, calls) -> None:
     await hass.async_block_till_done()
     assert not calls.of("number", "set_value")
 
-    # Back: the wrapper's state is pushed again.
+    # Back: the wrapper takes the TRV's state; nothing is pushed.
     trv(hass, temperature=15)
     await hass.async_block_till_done()
-    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 21
-
-
-async def test_legacy_restore(hass: HomeAssistant, calls) -> None:
-    """SmartThermostat attributes and an unavailable last state are restored."""
-    snapshot = State(
-        WRAPPER, "heat",
-        {"temperature": 20.5, "kp": 30, "ki": 0.02, "kd": 5, "ke": 0, "pid_i": 12.5,
-         "pid_mode": "auto", "pre_off_target_temp": 21},
-    ).as_dict()
-    mock_restore_cache_with_extra_data(
-        hass, [(State(WRAPPER, "unavailable"), {"last_available_state": snapshot})]
-    )
-    trv(hass, temperature=20.5)
-    await setup_trv(hass)
-    state = hass.states.get(WRAPPER)
-    assert state.state == "heat"
-    assert state.attributes["temperature"] == 20.5
-    assert state.attributes["kp"] == 30
-    assert state.attributes["pid_i"] == 12.5
+    assert hass.states.get(WRAPPER).attributes["temperature"] == 15
+    assert not calls.of("climate", "set_temperature", TRV)
 
 
 async def test_pid_services(hass: HomeAssistant, calls) -> None:
@@ -212,8 +224,7 @@ async def test_pid_services(hass: HomeAssistant, calls) -> None:
 
 async def test_hold_climate(hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory) -> None:
     trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
-    await setup_trv(hass, "hold")
+    await setup_trv(hass, "hold", echo=True)
     await hass.services.async_call(
         "gungors", "hold",
         {"entity_id": WRAPPER, "state": {"hvac_mode": "heat", "temperature": 17}},
@@ -222,15 +233,11 @@ async def test_hold_climate(hass: HomeAssistant, calls, freezer: FrozenDateTimeF
     await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).attributes["temperature"] == 17
     assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 17
-    trv(hass, temperature=17)
-    await hass.async_block_till_done()
 
-    # Someone turns the TRV knob: pushed back after the cooldown.
+    # Someone turns the TRV knob later: pushed back.
+    freezer.tick(timedelta(seconds=20))
     calls.clear()
     trv(hass, temperature=24)
-    await hass.async_block_till_done()
-    freezer.tick(timedelta(seconds=2))
-    async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).attributes["temperature"] == 17
     assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 17
@@ -315,7 +322,7 @@ async def setup_pwm(hass: HomeAssistant, sensor: str = "19", **pid) -> None:
     hass.states.async_set(HC1, "heat", {"hvac_modes": ["heat", "off"], "temperature": 21})
     hass.states.async_set(HC1_SENSOR, sensor)
     hass.states.async_set(SOCKET, "off")
-    mock_restore_cache(hass, [State(SALON, "heat", {"temperature": 21})])
+    echo_trv(hass, HC1)
     await setup_platform(
         hass,
         "climate",
@@ -507,7 +514,7 @@ async def test_pid_save(hass: HomeAssistant, calls) -> None:
     saved = entity(hass, SALON).extra_restore_state_data.as_dict()
     assert saved["pid"] == {"kp": 25, "ki": 0.5, "kd": 0, "ke": 0, "integral": 3.5,
                             "mode": "AUTO"}
-    assert saved["base"] == {"hvac_mode": "heat", "target": 21, "pre_off": None}
+    assert "base" not in saved  # mode and target are the thermostat's
 
 
 async def test_pid_restore_new_format(hass: HomeAssistant, calls) -> None:
@@ -531,8 +538,7 @@ async def test_pid_restore_new_format(hass: HomeAssistant, calls) -> None:
         ]},
     )
     state = hass.states.get(SALON)
-    assert state.attributes["temperature"] == 20
-    assert state.attributes["pre_off_target_temp"] == 18
+    assert state.attributes["temperature"] == 20  # the thermostat's, not the restored 99
     assert (state.attributes["kp"], state.attributes["pid_i"]) == (30, 7.0)
     assert state.attributes["pid_mode"] == "off"
     assert state.attributes["min_temp"] == 10
@@ -543,15 +549,15 @@ async def test_pid_restore_new_format(hass: HomeAssistant, calls) -> None:
 
 
 async def test_climate_without_link(hass: HomeAssistant, calls) -> None:
-    """Only a sensor: no device min_temp, no restore -> defaults."""
+    """Only a sensor: no device, so no mode or target."""
     hass.states.async_set(SENSOR, "18")
     await setup_platform(
         hass, "climate", {"name": "sercan_thermostat", "features": [{"temperature": SENSOR}]}
     )
     state = hass.states.get(WRAPPER)
-    assert state.state == "off"
+    assert state.state == "unknown"
     assert state.attributes["min_temp"] == 7
-    assert state.attributes["temperature"] == 7
+    assert state.attributes["temperature"] is None
     assert state.attributes["current_temperature"] == 18
     # The sensor removed: the last value stays.
     hass.states.async_remove(SENSOR)
@@ -563,8 +569,7 @@ async def test_set_temperature_with_mode(
     hass: HomeAssistant, calls
 ) -> None:
     trv(hass, mode="off", temperature=5)
-    mock_restore_cache(hass, [State(WRAPPER, "off", {"temperature": 19})])
-    await setup_trv(hass)
+    await setup_trv(hass, echo=True)
     calls.clear()
     await climate(hass, "set_temperature", temperature=21, hvac_mode="heat")
     state = hass.states.get(WRAPPER)
@@ -599,113 +604,78 @@ async def test_pwm_minimum_off_stretch(hass: HomeAssistant, calls) -> None:
 # --- climate link: more ----------------------------------------------------------
 
 
-async def test_trv_not_usable_at_start_then_synced(hass: HomeAssistant, calls) -> None:
+async def test_trv_not_usable_at_start(hass: HomeAssistant, calls) -> None:
     hass.states.async_set(TRV, "unknown")
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
     await setup_trv(hass)
-    assert not calls.of("climate", "set_temperature", TRV)
-    # First real report: the wrapper is the source.
+    assert hass.states.get(WRAPPER).attributes["temperature"] is None
+    # First real report: the wrapper is the TRV.
     trv(hass, temperature=17)
     await hass.async_block_till_done()
-    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 21
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 21
+    assert hass.states.get(WRAPPER).attributes["temperature"] == 17
+    assert not calls.of("climate", "set_temperature", TRV)
 
 
-async def test_request_while_trv_unknown_is_pushed_when_it_returns(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
+async def test_request_while_trv_unknown_is_not_sent(hass: HomeAssistant, calls) -> None:
     trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
     await setup_trv(hass)
     await set_state(hass, TRV, "unknown")  # e.g. Zigbee2MQTT restarted
     calls.clear()
     await climate(hass, "set_temperature", temperature=22)
-    assert not calls.of("climate", "set_temperature", TRV)  # nothing to send to yet
-    trv(hass, temperature=21)  # reports again, with its old setpoint
+    assert not calls.of("climate", "set_temperature", TRV)  # nothing to send to
+    trv(hass, temperature=21)  # reports again
     await hass.async_block_till_done()
-    await advance(hass, freezer, 2)
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 22
-    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 22
+    assert hass.states.get(WRAPPER).attributes["temperature"] == 21
+    assert not calls.of("climate", "set_temperature", TRV)
 
 
-async def test_trv_attribute_only_change_is_ignored(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
+async def test_trv_attribute_only_change_is_ignored(hass: HomeAssistant, calls) -> None:
     trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
     await setup_trv(hass)
     calls.clear()
     trv(hass, temperature=21, current_temperature=19.5)
     await hass.async_block_till_done()
-    await advance(hass, freezer, 2)
     assert hass.states.get(WRAPPER).attributes["temperature"] == 21
     assert not calls.items
 
 
-async def test_trv_unknown_during_cooldown(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
+async def test_trv_unknown_keeps_the_last_report(hass: HomeAssistant, calls) -> None:
     trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
     await setup_trv(hass)
     trv(hass, temperature=23)
     await hass.async_block_till_done()
     await set_state(hass, TRV, "unknown")
-    await advance(hass, freezer, 2)
-    state = hass.states.get(WRAPPER)
-    assert (state.state, state.attributes["temperature"]) == ("heat", 21)
-
-
-async def test_trv_state_outside_hvac_modes(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
-    trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
-    await setup_trv(hass)
-    trv(hass, mode="manual", temperature=23)
-    await hass.async_block_till_done()
-    await advance(hass, freezer, 2)
     state = hass.states.get(WRAPPER)
     assert (state.state, state.attributes["temperature"]) == ("heat", 23)
 
 
-async def test_reports_before_the_echo_are_ignored(
-    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
-) -> None:
+async def test_trv_state_outside_hvac_modes(hass: HomeAssistant, calls) -> None:
     trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
     await setup_trv(hass)
-
-    await climate(hass, "set_temperature", temperature=22.5)
-    # A report still carrying the old setpoint: not our echo, not physical.
-    trv(hass, temperature=21, current_temperature=19)
+    trv(hass, mode="manual", temperature=23)
     await hass.async_block_till_done()
-    await advance(hass, freezer, 2)
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 22.5
-    trv(hass, temperature=22.5, current_temperature=19)  # the echo
-    await hass.async_block_till_done()
-    await advance(hass, freezer, 2)
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 22.5
-
-    await climate(hass, "set_hvac_mode", hvac_mode="off")
-    # Still heat: not the echo of off.
-    trv(hass, temperature=22.5, current_temperature=19.5)
-    await hass.async_block_till_done()
-    await advance(hass, freezer, 2)
-    assert hass.states.get(WRAPPER).state == "off"
-    # The echo with the TRV's own off setpoint, mirrored back.
-    trv(hass, mode="off", temperature=5)
-    await hass.async_block_till_done()
-    await advance(hass, freezer, 2)
     state = hass.states.get(WRAPPER)
-    assert (state.state, state.attributes["temperature"]) == ("off", 5)
-    assert state.attributes["pre_off_target_temp"] == 22.5
+    assert (state.state, state.attributes["temperature"]) == ("heat", 23)
+
+
+async def test_command_to_what_the_trv_already_has_is_not_sent(
+    hass: HomeAssistant, calls
+) -> None:
+    trv(hass, mode="off", temperature=5)
+    await setup_trv(hass)
+    calls.clear()
+    await climate(hass, "set_hvac_mode", hvac_mode="off")
+    # Off: no setpoint is written either.
+    await hass.services.async_call(
+        "climate", "set_temperature",
+        {"entity_id": WRAPPER, "temperature": 20, "hvac_mode": "off"}, blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert not [c for c in calls.items if c[0] == "climate" and c[2]["entity_id"] == TRV]
 
 
 async def test_switch_on_from_off_waits_for_mode(hass: HomeAssistant, calls) -> None:
     """The setpoint is sent only after the TRV reports heat (here: at once)."""
     trv(hass, mode="off", temperature=5)
-    mock_restore_cache(hass, [State(WRAPPER, "off", {"temperature": 19})])
     await setup_trv(hass)
 
     async def set_hvac_mode(call) -> None:
@@ -721,7 +691,6 @@ async def test_switch_on_from_off_waits_for_mode(hass: HomeAssistant, calls) -> 
 
 async def test_switch_on_from_off_mode_reported_later(hass: HomeAssistant, calls) -> None:
     trv(hass, mode="off", temperature=5)
-    mock_restore_cache(hass, [State(WRAPPER, "off", {"temperature": 19})])
     await setup_trv(hass)
     calls.clear()
     task = hass.async_create_task(
@@ -758,7 +727,7 @@ async def test_trv_service_failure_is_logged(
     )
     await hass.async_block_till_done()
     assert "climate.set_temperature on climate.sercan_climate failed" in caplog.text
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 22
+    assert hass.states.get(WRAPPER).attributes["temperature"] == 21  # the TRV's
 
 
 # --- valve: more ---------------------------------------------------------------

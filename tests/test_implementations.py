@@ -292,37 +292,37 @@ async def test_trv_thermostat(
     hass.states.async_set(closing, "100")
     await setup_platform(
         hass, "climate",
-        {"name": "sercan_thermostat", "target_temp": 19, "max_temp": 35,
+        {"name": "sercan_thermostat", "max_temp": 35,
          "features": [
              "hold",
              {"pid": {"kp": 16, "ki": 0.01, "kd": 4, "keep_alive": {"minutes": 15},
                       "force_off": False, "debug": True}},
              {"valve": {"opening": opening, "closing": closing, "min": 10}},
              {"temperature": sensor},
-             {"link": {"entity": trv, "cooldown_time": 1}},
+             {"link": trv},
          ]},
     )
     assert attr(hass, wrapper, "temperature") == 19
     assert attr(hass, wrapper, "current_temperature") == 18
 
-    # wrapper -> original: target to the TRV, demand to the valve.
+    # wrapper -> original: target to the TRV; the wrapper follows its report,
+    # then the demand goes to the valve.
     await call(hass, "climate", "set_temperature", wrapper, temperature=21)
     assert calls.of("climate", "set_temperature", trv)[-1]["temperature"] == 21
-    assert calls.of("number", "set_value", opening)[-1]["value"] > 10
+    assert attr(hass, wrapper, "temperature") == 19
     await set_state(hass, trv, "heat", **trv_attrs, temperature=21)
-    await advance(hass, freezer, 2)
     assert attr(hass, wrapper, "temperature") == 21
+    assert calls.of("number", "set_value", opening)[-1]["value"] > 10
 
     await call(hass, "climate", "set_hvac_mode", wrapper, hvac_mode="off")
     assert calls.of("climate", "set_hvac_mode", trv)[-1]["hvac_mode"] == "off"
-    assert calls.of("number", "set_value", opening)[-1]["value"] == 10
     await set_state(hass, trv, "off", **trv_attrs, temperature=5)
-    await advance(hass, freezer, 2)
     assert hass.states.get(wrapper).state == "off"
+    assert calls.of("number", "set_value", opening)[-1]["value"] == 10
 
     # original -> wrapper: the TRV switched on and turned at its knob.
+    await advance(hass, freezer, 20)
     await set_state(hass, trv, "heat", **trv_attrs, temperature=23)
-    await advance(hass, freezer, 2)
     state = hass.states.get(wrapper)
     assert (state.state, state.attributes["temperature"]) == ("heat", 23)
 
@@ -341,17 +341,16 @@ async def test_pwm_thermostat(
     hass.states.async_set(hc1, "heat", {**hc1_attrs, "temperature": 19})
     hass.states.async_set(sensor, "19")
     hass.states.async_set(socket, "off")
-    mock_restore_cache(hass, [State(wrapper, "heat", {"temperature": 19})])
     await setup_platform(
         hass, "climate",
-        {"name": "salon_thermostat", "target_temp": 19, "max_temp": 35,
+        {"name": "salon_thermostat", "max_temp": 35,
          "features": [
              "hold",
              {"pid": {"kp": 150, "ki": 0, "kd": 0, "keep_alive": {"minutes": 15},
                       "force_off": False, "debug": True}},
              {"pwm": {"entity": socket, "period": "00:15:00", "min_cycle_duration": 60}},
              {"temperature": sensor},
-             {"link": {"entity": hc1, "cooldown_time": 1}},
+             {"link": hc1},
          ]},
     )
     assert not calls.of("switch", "turn_on", socket)  # at target: no demand
@@ -359,12 +358,11 @@ async def test_pwm_thermostat(
     # wrapper -> original: target to hc1, demand switches the socket.
     await call(hass, "climate", "set_temperature", wrapper, temperature=22)
     assert calls.of("climate", "set_temperature", hc1)[-1]["temperature"] == 22
+    await set_state(hass, hc1, "heat", **hc1_attrs, temperature=22)  # hc1 reports
     assert calls.of("switch", "turn_on", socket)
     await set_state(hass, socket, "on")
     assert attr(hass, wrapper, "hvac_action") == "heating"
-
-    await set_state(hass, hc1, "heat", **hc1_attrs, temperature=22)  # echo
-    await advance(hass, freezer, 2)
+    await advance(hass, freezer, 20)
 
     # original -> wrapper: hc1 changed on the boiler panel.
     await set_state(hass, hc1, "heat", **hc1_attrs, temperature=18)
@@ -374,6 +372,7 @@ async def test_pwm_thermostat(
     # The socket switched off by hand: shown at once, switched on again by
     # keep_alive while there is demand.
     await call(hass, "climate", "set_temperature", wrapper, temperature=23)
+    await set_state(hass, hc1, "heat", **hc1_attrs, temperature=23)
     await set_state(hass, socket, "off")
     assert attr(hass, wrapper, "hvac_action") == "idle"
     calls.clear()
