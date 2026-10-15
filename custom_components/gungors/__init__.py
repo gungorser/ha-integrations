@@ -24,7 +24,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 
-PLATFORMS = [Platform.CLIMATE, Platform.COVER, Platform.LIGHT]
+PLATFORMS = [Platform.CALENDAR, Platform.CLIMATE, Platform.COVER, Platform.LIGHT]
 
 __all__ = ["DOMAIN", "PLATFORMS"]
 

@@ -8,6 +8,7 @@ from . import (  # noqa: F401
     link_cover,
     link_light,
     pid,
+    program,
     pwm,
     temperature,
     travel_time,
