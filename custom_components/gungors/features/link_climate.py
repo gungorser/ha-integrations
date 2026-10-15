@@ -1,27 +1,25 @@
-"""`link` for climates: two-way sync with a physical thermostat (TRV, boiler circuit).
+"""`link` for climates: the physical thermostat (TRV, boiler circuit).
 
-`link: climate.x` or `link: {entity: climate.x, cooldown_time: 1}`.
+`link: climate.x`.
 
-- Wrapper -> device: every accepted request and every push writes the mode and
-  target to the device (only what differs). Around OFF only the mode is written:
-  the device applies its own off setpoint, which is mirrored back. When the
-  device is switched on from OFF, the setpoint waits until it reports the new mode
-  (EMS-ESP stores a setpoint received while OFF as its off temperature).
-- Device -> wrapper: a change on the device is applied after `cooldown_time`
-  seconds without further changes, as a physical request. Events right after our
-  own write are echoes.
-- At startup and when the device comes back, the wrapper is the source: its state
-  is pushed to the device.
-- The wrapper is unavailable while the device is; the device's min_temp is used
-  when the wrapper has none configured.
+- The wrapper is a puppet of the thermostat: its HVAC mode and target are always
+  the thermostat's. It keeps neither of its own, so nothing has to be synced.
+- Accepted requests are sent to the thermostat (only what differs); the wrapper
+  changes when the thermostat reports. When the thermostat is switched on from
+  OFF, the setpoint waits until it reports the new mode (EMS-ESP stores a
+  setpoint received while OFF as its off temperature).
+- A change on the thermostat that we did not command is a physical request (it
+  goes through the features, e.g. a strict `hold` pushes it back). Reports within
+  a few seconds after our own command are its result and are taken as is.
+- The wrapper is unavailable while the thermostat is; the thermostat's min_temp
+  is used when the wrapper has none configured.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
-
-import voluptuous as vol
 
 from homeassistant.components.climate import HVACMode
 from homeassistant.const import (
@@ -30,10 +28,9 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import CoreState, Event, State, callback
+from homeassistant.core import Event, State, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
-from homeassistant.helpers.start import async_at_start
+from homeassistant.helpers.event import async_track_state_change_event
 
 from ..const import (
     ATTR_PHYSICAL_THERMOSTAT,
@@ -41,28 +38,11 @@ from ..const import (
     PUSH_ECHO_TIMEOUT,
     TEMP_TOLERANCE,
 )
-from ..core import Feature, Request, as_float, register
+from ..core import SOURCE_PHYSICAL, Feature, Request, as_float, register
 
 _LOGGER = logging.getLogger(__name__)
 
 KEY = "link"
-CONF_ENTITY = "entity"
-CONF_COOLDOWN_TIME = "cooldown_time"
-DEFAULT_COOLDOWN = 1.0
-
-
-def _schema(value: Any) -> dict[str, Any]:
-    if isinstance(value, str):
-        value = {CONF_ENTITY: value}
-    value = vol.Schema(
-        {
-            vol.Required(CONF_ENTITY): cv.entity_domain("climate"),
-            vol.Optional(CONF_COOLDOWN_TIME, default=DEFAULT_COOLDOWN): vol.All(
-                cv.time_period, cv.positive_timedelta, lambda t: t.total_seconds()
-            ),
-        }
-    )(value)
-    return value
 
 
 def _usable(state: State | None) -> bool:
@@ -72,23 +52,20 @@ def _usable(state: State | None) -> bool:
 @register("climate")
 class ClimateLink(Feature):
     feature_name = KEY
-    schema = _schema
+    schema = cv.entity_domain("climate")
     last = True
 
     _link_available = False
-    _link_synced = False
     _link_min_temp: float | None = None
-    _link_pending: dict[str, Any] | None = None
-    _link_pending_unsub = None
-    _link_cooling_unsub = None
+    _link_sent_at = -PUSH_ECHO_TIMEOUT
 
     @classmethod
     def gw_claims(cls, conf: Any) -> set[str]:
-        return {conf[CONF_ENTITY]}
+        return {conf}
 
     @property
     def _link_entity(self) -> str:
-        return self.gw_conf(KEY)[CONF_ENTITY]
+        return self.gw_conf(KEY)
 
     def _link_state(self) -> State | None:
         return self.hass.states.get(self._link_entity)
@@ -98,85 +75,62 @@ class ClimateLink(Feature):
     async def async_added_to_hass(self) -> None:
         state = self._link_state()
         self._link_available = state is not None and state.state != STATE_UNAVAILABLE
+        if state is not None:
+            self._link_update_min_temp(state)
+        if _usable(state):
+            device = self._link_device(state)
+            self._gw_hvac_mode = device.get("hvac_mode")
+            self._gw_target_temp = device.get("temperature")
         await super().async_added_to_hass()
-        self.async_on_remove(self._link_cancel_timers)
         self.async_on_remove(
             async_track_state_change_event(self.hass, [self._link_entity], self._link_changed)
         )
-        if state is not None:
-            self._link_update_min_temp(state)
-        self.async_on_remove(async_at_start(self.hass, self._link_on_start))
-
-    async def _link_on_start(self, _hass) -> None:
-        await self._link_initial_push()
-
-    async def _link_initial_push(self) -> None:
-        if self._link_synced or not _usable(self._link_state()):
-            return  # retried when the device becomes available
-        self._link_synced = True
-        await self._link_push()
 
     # --- chain ---------------------------------------------------------------
 
     async def gw_apply(self, request: Request) -> None:
-        await super().gw_apply(request)
-        if not request.from_device:
-            await self._link_push()
+        if request.from_device:
+            await super().gw_apply(request)
+            return
+        # Not passed on to the base on purpose: the wrapper changes when the
+        # thermostat reports, not when it is commanded.
+        await self._link_send(request.data.get("hvac_mode"), as_float(request.data.get("temperature")))
 
     async def gw_push(self) -> None:
         await super().gw_push()
-        await self._link_push()
+        await self._link_send(self._gw_hvac_mode, self._gw_target_temp)
 
     def gw_device_min_temp(self) -> float | None:
         return self._link_min_temp
 
-    # --- wrapper -> device ---------------------------------------------------
+    # --- wrapper -> thermostat -----------------------------------------------
 
-    async def _link_push(self) -> None:
+    async def _link_send(self, mode: Any, target: float | None) -> None:
         physical = self._link_state()
         if not _usable(physical):
             return
-        self._link_cancel_cooling()  # the wrapper is the truth now
-
-        mode = self._gw_hvac_mode
-        mode_str = mode.value if isinstance(mode, HVACMode) else (str(mode) if mode else None)
-        target = self._gw_target_temp
+        mode_str = HVACMode(mode).value if mode is not None else None
         physical_modes = [str(m) for m in (physical.attributes.get("hvac_modes") or [])]
         physical_temp = as_float(physical.attributes.get(ATTR_TEMPERATURE))
-        mode_supported = mode_str in physical_modes
-        temp_differs = target is not None and (
-            physical_temp is None or abs(physical_temp - target) > TEMP_TOLERANCE
+        mode_change = (
+            mode_str is not None and mode_str in physical_modes and physical.state != mode_str
         )
-
-        calls: list[tuple[str, dict[str, Any]]] = []
-        expected_mode: str | None = None
-        expected_temp: float | None = None
-        wait_for_mode = False
-        if mode_str == HVACMode.OFF.value:
-            if mode_supported and physical.state != HVACMode.OFF.value:
-                calls.append(("set_hvac_mode", {"hvac_mode": mode_str}))
-                expected_mode = mode_str
-        else:
-            if mode_supported and physical.state != mode_str:
-                calls.append(("set_hvac_mode", {"hvac_mode": mode_str}))
-                expected_mode = mode_str
-                wait_for_mode = physical.state == HVACMode.OFF.value
-            if temp_differs and (mode_supported or physical.state != HVACMode.OFF.value):
-                calls.append(("set_temperature", {ATTR_TEMPERATURE: target}))
-                expected_temp = target
-        if not calls:
+        heating = (mode_str or physical.state) != HVACMode.OFF.value
+        temp_change = (
+            heating
+            and target is not None
+            and (physical_temp is None or abs(physical_temp - target) > TEMP_TOLERANCE)
+        )
+        if not mode_change and not temp_change:
             return
-
-        self._link_clear_pending()
-        self._link_pending = {"mode": expected_mode, "temp": expected_temp}
-        for service, data in calls:
-            await self._link_call(service, data)
-            if service == "set_hvac_mode" and wait_for_mode and len(calls) > 1:
+        self._link_sent_at = time.monotonic()
+        if mode_change:
+            await self._link_call("set_hvac_mode", {"hvac_mode": mode_str})
+            if temp_change and physical.state == HVACMode.OFF.value:
                 await self._link_wait_mode(mode_str)
-        if self._link_pending is not None:
-            self._link_pending_unsub = async_call_later(
-                self.hass, PUSH_ECHO_TIMEOUT, self._link_pending_expired
-            )
+        if temp_change:
+            self._link_sent_at = time.monotonic()
+            await self._link_call("set_temperature", {ATTR_TEMPERATURE: target})
 
     async def _link_wait_mode(self, mode: str) -> None:
         state = self._link_state()
@@ -211,17 +165,11 @@ class ClimateLink(Feature):
                 "%s: climate.%s on %s failed", self.entity_id, service, self._link_entity
             )
 
-    @callback
-    def _link_pending_expired(self, _now) -> None:
-        self._link_pending_unsub = None
-        self._link_pending = None
-
-    # --- device -> wrapper ---------------------------------------------------
+    # --- thermostat -> wrapper -----------------------------------------------
 
     @callback
     def _link_changed(self, event: Event) -> None:
         new_state: State | None = event.data["new_state"]
-        old_state: State | None = event.data["old_state"]
         if new_state is not None:
             self._link_update_min_temp(new_state)
 
@@ -230,97 +178,56 @@ class ClimateLink(Feature):
             self._link_available = available
             if available:
                 _LOGGER.info("%s: %s is available again", self.entity_id, self._link_entity)
-                self._link_synced = False
             else:
                 _LOGGER.warning("%s: %s is unavailable", self.entity_id, self._link_entity)
-                self._link_cancel_timers()
             self.gw_device_available(available)
             self.async_write_ha_state()
-            if available and self.hass.state == CoreState.running:
-                self.hass.async_create_task(self._link_initial_push())
-            return
-
         if not _usable(new_state):
-            # e.g. unknown: requests made meanwhile are not sent, so push the
-            # wrapper's state once the device reports again (as after unavailable).
-            self._link_synced = False
             return
-        if not self._link_synced:
-            self.hass.async_create_task(self._link_initial_push())
+        data = self._link_changes(self._link_device(new_state))
+        if not data:
             return
-        if self._link_pending is not None:
-            if self._link_pending_matches(new_state):
-                self._link_clear_pending()
-                # The echo may carry values we did not command (the device's off
-                # setpoint): read the device once it settles.
-                self._link_schedule_apply()
-            return
-        if old_state is not None and _signature(old_state) == _signature(new_state):
-            return  # e.g. only current_temperature changed
-        self._link_schedule_apply()
+        if time.monotonic() - self._link_sent_at < PUSH_ECHO_TIMEOUT:
+            # The result of our own command: taken as is.
+            self.hass.async_create_task(
+                self.gw_apply(Request(data, source=SOURCE_PHYSICAL, from_device=True))
+            )
+        else:
+            self.hass.async_create_task(self.gw_physical(data))
 
-    @callback
-    def _link_schedule_apply(self) -> None:
-        self._link_cancel_cooling()
-        self._link_cooling_unsub = async_call_later(
-            self.hass, self.gw_conf(KEY)[CONF_COOLDOWN_TIME], self._link_apply
-        )
+    # --- helpers -------------------------------------------------------------
 
-    async def _link_apply(self, _now) -> None:
-        """Cooldown elapsed: apply the device's mode and target as physical."""
-        self._link_cooling_unsub = None
-        physical = self._link_state()
-        if not _usable(physical):
-            return
+    def _link_device(self, state: State) -> dict[str, Any]:
+        """The thermostat's mode and target as request data (what the wrapper knows)."""
         data: dict[str, Any] = {}
         try:
-            mode = HVACMode(physical.state)
+            mode = HVACMode(state.state)
         except ValueError:
             mode = None
-        if mode is not None and mode in self.hvac_modes and mode != self._gw_hvac_mode:
+        if mode is not None and mode in self.hvac_modes:
             data["hvac_mode"] = mode
-        temp = as_float(physical.attributes.get(ATTR_TEMPERATURE))
+        temp = as_float(state.attributes.get(ATTR_TEMPERATURE))
+        if temp is not None:
+            data["temperature"] = temp
+        return data
+
+    def _link_changes(self, device: dict[str, Any]) -> dict[str, Any]:
+        """What in the thermostat's data differs from the wrapper."""
+        data: dict[str, Any] = {}
+        mode = device.get("hvac_mode")
+        if mode is not None and mode != self._gw_hvac_mode:
+            data["hvac_mode"] = mode
+        temp = device.get("temperature")
         if temp is not None and (
             self._gw_target_temp is None or abs(temp - self._gw_target_temp) > TEMP_TOLERANCE
         ):
             data["temperature"] = temp
-        if data:
-            await self.gw_physical(data)
-
-    # --- helpers -------------------------------------------------------------
-
-    def _link_pending_matches(self, state: State) -> bool:
-        pending = self._link_pending or {}
-        if pending.get("mode") is not None and state.state != pending["mode"]:
-            return False
-        if pending.get("temp") is not None:
-            temp = as_float(state.attributes.get(ATTR_TEMPERATURE))
-            step = as_float(state.attributes.get("target_temp_step"))
-            tolerance = max(TEMP_TOLERANCE, step / 2 + 0.01) if step else TEMP_TOLERANCE
-            if temp is None or abs(temp - pending["temp"]) > tolerance:
-                return False
-        return True
+        return data
 
     def _link_update_min_temp(self, state: State) -> None:
         value = as_float(state.attributes.get("min_temp"))
         if value is not None:
             self._link_min_temp = value
-
-    def _link_cancel_cooling(self) -> None:
-        if self._link_cooling_unsub is not None:
-            self._link_cooling_unsub()
-            self._link_cooling_unsub = None
-
-    def _link_clear_pending(self) -> None:
-        if self._link_pending_unsub is not None:
-            self._link_pending_unsub()
-            self._link_pending_unsub = None
-        self._link_pending = None
-
-    @callback
-    def _link_cancel_timers(self) -> None:
-        self._link_cancel_cooling()
-        self._link_clear_pending()
 
     # --- state ---------------------------------------------------------------
 
@@ -333,7 +240,3 @@ class ClimateLink(Feature):
         attrs = dict(super().extra_state_attributes or {})
         attrs[ATTR_PHYSICAL_THERMOSTAT] = self._link_entity
         return attrs
-
-
-def _signature(state: State) -> tuple[Any, Any]:
-    return state.state, state.attributes.get(ATTR_TEMPERATURE)

@@ -124,9 +124,10 @@ class Pid(Feature):
 
     async def gw_apply(self, request: Request) -> None:
         previous_mode = self._gw_hvac_mode
+        previous_target = self._gw_target_temp
         await super().gw_apply(request)
-        if "hvac_mode" not in request.data and "temperature" not in request.data:
-            return
+        if previous_mode == self._gw_hvac_mode and previous_target == self._gw_target_temp:
+            return  # nothing changed (e.g. a command the thermostat has yet to report)
         if self._gw_hvac_mode == HVACMode.OFF:
             if previous_mode != HVACMode.OFF:
                 # Leaving heat: output to 0 once, forget the samples so the
