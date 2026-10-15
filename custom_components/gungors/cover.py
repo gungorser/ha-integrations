@@ -1,18 +1,23 @@
 """Cover platform for the gungors integration.
 
-`GungorsCover` knows only Home Assistant's cover contract. It keeps the
-wrapper's target position (the setpoint) and turns the cover services into
-requests that travel down the feature chain:
+`GungorsCover` knows only Home Assistant's cover contract. It turns the cover
+services into requests that travel down the feature chain:
 
 - open / close / set_position -> Request({"position": p})
 - stop -> Request({"stop": True})
 
+Its position is the device's (room frame): it changes only with requests from
+the device (``from_device``), i.e. what the link reports. With only `link` the
+wrapper is the original; features change what is shown (an estimate while
+moving, a pending command) and what is sent.
+
 Cover-specific hooks (on top of the GungorsEntity ones):
 
-- ``gw_device_report(position)``: the link saw a new device position (room frame).
-  The base treats any change away from the target as physical.
+- ``gw_device_report(position)``: the link saw a new device position (room frame);
+  the link decides whether it is the result of our command or physical.
 - ``gw_baseline(position)``: first valid device position after a start or after
-  the device came back; the base takes it as the target.
+  the device came back; the base takes it.
+- ``gw_mirror(position)``: take a device position as the wrapper's (no request).
 - ``gw_to_device(position)`` / ``gw_from_device(position)``: room <-> device frame.
 - ``gw_device_command(position) -> (service, data)``: how the link moves the device.
 """
@@ -30,12 +35,11 @@ from homeassistant.components.cover import (
     CoverEntityFeature,
 )
 from homeassistant.const import CONF_DEVICE_CLASS
-from homeassistant.core import HomeAssistant, State, callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from .const import POSITION_TOLERANCE
-from .core import BASE_KEY, GungorsEntity, Request, as_float
+from .core import GungorsEntity, Request
 from .platform import async_setup_features_platform, features_schema
 
 DOMAIN_COVER = "cover"
@@ -59,7 +63,7 @@ async def async_setup_platform(
 
 
 class GungorsCover(GungorsEntity, CoverEntity):
-    """Feature-agnostic cover: a target position and the request chain."""
+    """Feature-agnostic cover: the device's position and the request chain."""
 
     _attr_supported_features = (
         CoverEntityFeature.OPEN
@@ -71,7 +75,7 @@ class GungorsCover(GungorsEntity, CoverEntity):
     def __init__(self, name, unique_id, features, options) -> None:
         super().__init__(name, unique_id, features, options)
         self._attr_device_class = options.get(CONF_DEVICE_CLASS)
-        self._gw_target: int | None = None
+        self._gw_position: int | None = None
 
     # --- HA cover API -> requests ------------------------------------------
 
@@ -92,23 +96,23 @@ class GungorsCover(GungorsEntity, CoverEntity):
 
     async def gw_apply(self, request: Request) -> None:
         position = request.data.get("position")
-        if position is not None:
-            self._gw_target = int(position)
+        if position is not None and request.from_device:
+            self._gw_position = int(round(position))
         await super().gw_apply(request)
         self.async_write_ha_state()
 
     @callback
     def gw_device_report(self, position: float | None) -> None:
-        """Default: a device position away from the target is a physical change."""
-        if position is None or self.is_opening or self.is_closing:
-            return
-        if self._gw_target is None or abs(position - self._gw_target) > POSITION_TOLERANCE:
-            self.hass.async_create_task(self.gw_physical({"position": int(round(position))}))
+        """End of the report chain (the link handles reports)."""
+
+    @callback
+    def gw_mirror(self, position: float) -> None:
+        self._gw_position = int(round(position))
 
     @callback
     def gw_baseline(self, position: float) -> None:
-        """Default: after a start the device's real position is the truth."""
-        self._gw_target = int(round(position))
+        """After a start the device's position is the wrapper's."""
+        self.gw_mirror(position)
         self.async_write_ha_state()
 
     def gw_to_device(self, position: float) -> float:
@@ -120,28 +124,11 @@ class GungorsCover(GungorsEntity, CoverEntity):
     def gw_device_command(self, position: float) -> tuple[str, dict[str, Any]]:
         return "set_cover_position", {ATTR_POSITION: int(round(position))}
 
-    def gw_restore(self, last: State | None, extra: dict[str, Any]) -> None:
-        super().gw_restore(last, extra)
-        base = extra.get(BASE_KEY) or {}
-        target = as_float(base.get("target"))
-        if target is None:
-            # Legacy flat extra data: window_guard "setpoint", timed_curtain "position".
-            target = as_float(extra.get("setpoint", extra.get("position")))
-        if target is None and last is not None:
-            target = as_float(last.attributes.get("current_position"))
-        if target is not None:
-            self._gw_target = int(round(target))
-
-    def gw_save(self) -> dict[str, Any]:
-        data = super().gw_save()
-        data[BASE_KEY] = {"target": self._gw_target}
-        return data
-
     # --- state -------------------------------------------------------------
 
     @property
     def current_cover_position(self) -> int | None:
-        return self._gw_target
+        return self._gw_position
 
     @property
     def is_closed(self) -> bool | None:

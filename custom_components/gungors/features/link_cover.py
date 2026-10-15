@@ -7,12 +7,17 @@ The original can be:
 - a list of entities (a group): the position is their average, commands go to all
   of them. Members are usually other gungors wrappers.
 
-The link is the only feature that writes to the original. It reports every new
-device position up the chain (`gw_device_report`), sends accepted requests
-(`gw_apply`) and re-sends the target when a feature enforces it (`gw_push`).
+The link is the only feature that writes to the original. Accepted requests are
+sent (`gw_apply`); the wrapper's position changes only when the original reports.
+Every new position goes up the chain (`gw_device_report`, where a movement feature
+may take it); by default a report on the way to our last command (from where the
+move started to its target) is its result and is taken as is, anything else is a
+physical change (a strict `hold` pushes it back: `gw_push` re-sends the wrapper's
+position).
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -31,6 +36,7 @@ from ..const import ATTR_ACTUAL_POSITION, POSITION_TOLERANCE
 from ..core import Feature, Request, as_float, register
 
 KEY = "link"
+MOVE_TIMEOUT = 60  # s without a report after which a move is no longer ours
 
 
 def _position_of(state: State | None) -> float | None:
@@ -49,6 +55,8 @@ class CoverLink(Feature):
 
     _link_available = False
     _link_baseline_needed = True
+    _link_move: tuple[float, float] | None = None  # (from, to) of our last command
+    _link_move_seen = 0.0
 
     @classmethod
     def gw_claims(cls, conf: Any) -> set[str]:
@@ -96,7 +104,12 @@ class CoverLink(Feature):
             blocking=False,
         )
 
-    async def _link_move(self, position: float) -> None:
+    async def _link_move_to(self, position: float) -> None:
+        start = self.gw_actual_position
+        if start is None:
+            start = self._gw_position if self._gw_position is not None else position
+        self._link_move = (float(start), float(position))
+        self._link_move_seen = time.monotonic()
         device = self.gw_to_device(position)
         domain = self._link_entities[0].split(".", 1)[0]
         if domain == "cover":
@@ -142,11 +155,46 @@ class CoverLink(Feature):
         self.gw_device_report(position)
         self.async_write_ha_state()
 
+    @callback
+    def gw_device_report(self, position: float | None) -> None:
+        """Default: the result of our command is taken, anything else is physical."""
+        if position is None:
+            return
+        if self._gw_position is not None and abs(position - self._gw_position) <= POSITION_TOLERANCE:
+            return
+        if self._link_ours(position):
+            self.gw_mirror(position)
+            return
+        self._link_move = None
+        self.hass.async_create_task(self.gw_physical({"position": int(round(position))}))
+
+    def _link_ours(self, position: float) -> bool:
+        move = self._link_move
+        now = time.monotonic()
+        if move is None or now - self._link_move_seen > MOVE_TIMEOUT:
+            return False
+        low, high = sorted(move)
+        if not low - POSITION_TOLERANCE <= position <= high + POSITION_TOLERANCE:
+            return False
+        self._link_move_seen = now
+        if abs(position - move[1]) <= POSITION_TOLERANCE:
+            self._link_move = None  # arrived
+        return True
+
     # --- chain -----------------------------------------------------------
 
     async def gw_apply(self, request: Request) -> None:
-        await super().gw_apply(request)
-        if request.from_device or not self._link_available:
+        if request.from_device:
+            await super().gw_apply(request)
+            return
+        # Not passed on to the base on purpose: the wrapper changes when the
+        # original reports, not when it is commanded. Features above may have
+        # changed what they show (moving, pending).
+        await self._link_command(request)
+        self.async_write_ha_state()
+
+    async def _link_command(self, request: Request) -> None:
+        if not self._link_available:
             return
         if request.data.get("stop"):
             if self._link_entities[0].startswith("cover."):
@@ -159,13 +207,13 @@ class CoverLink(Feature):
         moving = self.is_opening or self.is_closing
         if not moving and actual is not None and abs(actual - position) <= POSITION_TOLERANCE:
             return  # already there: the device would not move or report
-        await self._link_move(position)
+        await self._link_move_to(position)
 
     async def gw_push(self) -> None:
         await super().gw_push()
-        target = self._gw_target
-        if target is not None and self._link_available:
-            await self._link_move(target)
+        position = self._gw_position
+        if position is not None and self._link_available:
+            await self._link_move_to(position)
 
     # --- state -----------------------------------------------------------
 

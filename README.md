@@ -30,7 +30,7 @@ entry that breaks a rule is not created and the log says why.
 
 | Feature | Domains | Value | What it does |
 |---|---|---|---|
-| `link` | all | entity id, or a list (group) | The original the wrapper drives; the wrapper is unavailable while it is. Cover: a cover or an `input_number`/`number` 0-100 (two-way sync). Climate: a climate; the wrapper keeps no mode or target of its own, they are the thermostat's. Light: a light or a switch; the wrapper keeps no state of its own. Climate and light change only when the original reports |
+| `link` | all | entity id, or a list (group) | The original the wrapper drives; the wrapper is unavailable while it is. With only `link` the wrapper is the original: it keeps no state of its own and changes only when the original reports; other features change the behaviour. Cover: a cover or an `input_number`/`number` 0-100 (a list: their average). Climate: a climate (mode and target are the thermostat's). Light: a light or a switch |
 | `hold` | all | - | `gungors.hold` / `gungors.release`: set a state for a while, `strict` (enforced) or `manual` |
 | `direction` | cover | - or `{start_timeout, stop_silence}` | Movement tracking for blinds that only report positions (IKEA via Z2M) |
 | `travel_time` | cover | - or `{z2m_base_topic}` | Position estimation for curtain motors that report only at the end (Tuya via Z2M) |
