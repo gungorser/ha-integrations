@@ -155,6 +155,22 @@ async def test_direction_retry_once(hass: HomeAssistant, calls) -> None:
     assert hass.states.get(WRAPPER).state == "open"
 
 
+async def test_direction_command_while_unknown_already_there(
+    hass: HomeAssistant, calls, caplog
+) -> None:
+    hass.states.async_set(WINDOW, "off")
+    hass.states.async_set(RAW, "unknown", {"supported_features": 15})
+    await setup_guarded(hass)
+    await cover(hass, "close_cover")
+    await report(hass, 0)  # first real position: already closed
+    for seconds in (9, 18, 30):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=seconds))
+        await hass.async_block_till_done()
+    assert len(calls.of("cover", "set_cover_position", RAW)) == 1  # no retry
+    assert "no response from the device" not in caplog.text
+    assert hass.states.get(WRAPPER).state == "closed"
+
+
 # --- window ------------------------------------------------------------------
 
 

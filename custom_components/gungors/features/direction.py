@@ -156,6 +156,13 @@ class Direction(Feature):
     def gw_baseline(self, position: float) -> None:
         self._dir_actual = int(round(position))
         super().gw_baseline(position)
+        target = self._dir_target
+        if self._dir_state == _COMMANDED and target is not None and (
+            abs(self._dir_actual - target) <= POSITION_TOLERANCE
+        ):
+            # Commanded while the blind was unknown (e.g. at startup) and it is
+            # already there: no move will be reported, so no retry either.
+            self._dir_finish(self._dir_actual)
 
     @callback
     def gw_device_available(self, available: bool) -> None:
