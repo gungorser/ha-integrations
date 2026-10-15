@@ -30,6 +30,7 @@ entry that breaks a rule is not created and the log says why.
 
 | Feature | Domains | Value | What it does |
 |---|---|---|---|
+| `program` | all | - or `{<attr>: <default>}` | Follows the active entries of `calendar.program` (below); put it first. The value overrides the calendar's defaults for this entity |
 | `link` | all | entity id, or a list (group) | The original the wrapper drives; the wrapper is unavailable while it is. With only `link` the wrapper is the original: it keeps no state of its own and changes only when the original reports; other features change the behaviour. Cover: a cover or an `input_number`/`number` 0-100 (a list: their average). Climate: a climate (mode and target are the thermostat's). Light: a light or a switch |
 | `hold` | all | - | `gungors.hold` / `gungors.release`: set a state for a while, `strict` (enforced) or `manual` |
 | `direction` | cover | - or `{start_timeout, stop_silence}` | Movement tracking for blinds that only report positions (IKEA via Z2M) |
@@ -49,7 +50,8 @@ Attributes other repositories read: cover `actual_position`, `pending_position`,
 `physical_buttons` (true with `buttons`; the pushbutton blueprint selects covers by it),
 `calibrated`, `position_source`, `open_time`, `close_time`; climate `hvac_action`,
 `physical_thermostat`, `control_output`, `heater_value`, `kp`, `ki`,
-`kd`, `pid_i`, `pid_mode`; every entity with `hold`: `hold`. A group wrapper has `entity_id`
+`kd`, `pid_i`, `pid_mode`; every entity with `hold`: `hold`; every entity with `program`:
+`program` (its active programs: `uid`, `summary`, `start`, `end`, `rules`). A group wrapper has `entity_id`
 (its members) so `expand()` works.
 
 Services: `gungors.hold`, `gungors.release`, `gungors.set_pid_gain`, `gungors.set_pid_mode`,
@@ -57,6 +59,32 @@ Services: `gungors.hold`, `gungors.release`, `gungors.set_pid_gain`, `gungors.se
 still need a restart).
 
 Tests: `pip install pytest-homeassistant-custom-component`, then `pytest`.
+
+## Programs
+
+`calendar.program` (`calendar: - platform: gungors`, see `calendar.py`) holds the programs.
+Each entry is a time window (it may repeat) whose description is the program, in JSON or YAML:
+
+```json
+{"target": ["salon", "light.melike_light"], "rules": {"on": true, "brightness": {"max": 40}}}
+```
+
+- `target`: area ids or names and entity ids (entities with the `program` feature). Areas
+  are resolved again at every start.
+- `rules`: one constraint per attribute, a value (`eq`) or `{min, max}`. Attributes: light
+  `on`, `brightness` (%), `color` (a name or `[r, g, b]`, eq only), `color_temp` (K);
+  climate `hvac_mode` (`heat`/`off`), `temperature`; cover `position`.
+- An entry that two programs' rules can't both hold on an entity while they overlap is
+  refused with an error (also from Home Assistant's calendar dialog), as is an unreadable one.
+- While active: requests are clamped, the state is corrected at the start and after a
+  physical change. A rule shapes the current state only (`color` recolours a lit light).
+- At the end, `eq` attributes return to their default (calendar `defaults`, overridable
+  per entity: light `on: false`, `color: white`; climate `hvac_mode: "off"`; cover
+  `position: sun`); `min`/`max` just lift. Covers take their `position` default at sunrise
+  and sunset too. Defaults never lock.
+
+`rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`
+(enforcement) are the full reference.
 
 ## Wrappers drive hidden originals
 
