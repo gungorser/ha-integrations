@@ -71,4 +71,26 @@ clear_integral:
       selector:
         number: {mode: box, min: -100, max: 100, step: any}
 
+pause_program:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    uid:
+      required: true
+      selector:
+        text:
+
+resume_program:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    uid:
+      required: true
+      selector:
+        text:
+
 reload:

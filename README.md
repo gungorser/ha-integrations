@@ -91,6 +91,11 @@ climate:
   `position: sun`); `min`/`max` just lift. Covers take their `position` default at sunrise
   and sunset too. Defaults never lock.
 
+- `gungors.pause_program` / `gungors.resume_program` (target `calendar.program`, field
+  `uid`): a paused running occurrence counts as ended (its `eq` attributes return to their
+  defaults) until it is resumed, which applies it again as at a start, or until it ends. The
+  calendar's `paused` attribute lists the paused entries' uids.
+
 `rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`
 (enforcement) are the full reference.
 

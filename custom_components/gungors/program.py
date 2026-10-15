@@ -14,6 +14,9 @@ are active for it now (features/program.py enforces them).
   up then (an area changed after the entries were saved) keeps the program that
   started first; the later one is skipped for that entity and a notification
   says so.
+- A running occurrence can be paused (`gungors.pause_program`): until it is
+  resumed or ends it counts as not active, so its `eq` attributes return to
+  their defaults as at an end, and resuming applies it again as at a start.
 - At sunrise and sunset the covers take their `position` default.
 """
 from __future__ import annotations
@@ -137,6 +140,8 @@ class ProgramManager:
         self._unsubs: list[CALLBACK_TYPE] = []
         self._listeners: list[Callable[[], None]] = []
         self._loaded = False
+        # Paused occurrences: "<uid>|<start isoformat>".
+        self.paused: set[str] = set()
 
     # --- setup ---------------------------------------------------------------
 
@@ -150,6 +155,8 @@ class ProgramManager:
             data = await self._store.async_load()
             if data and data.get("ics"):
                 self.calendar = IcsCalendarStream.calendar_from_ics(data["ics"])
+            if data:
+                self.paused = set(data.get("paused", []))
             self._loaded = True
         if not self._unsubs:
             self._unsubs.append(
@@ -214,11 +221,56 @@ class ProgramManager:
         if uid is not None:
             self.check(candidate, uid)
         self.calendar = candidate
+        await self._async_save()
+        self._changed()
+        await self.async_refresh()
+
+    async def _async_save(self) -> None:
         await self._store.async_save(
-            {"ics": IcsCalendarStream.calendar_to_ics(self.calendar)}
+            {"ics": IcsCalendarStream.calendar_to_ics(self.calendar), "paused": sorted(self.paused)}
         )
+
+    def _changed(self) -> None:
         for listener in list(self._listeners):
             listener()
+
+    # --- pause ---------------------------------------------------------------
+
+    @staticmethod
+    def _key(instance: Instance) -> str:
+        return f"{instance.uid}|{instance.start.isoformat()}"
+
+    def _running(self, uid: str) -> list[Instance]:
+        now = dt_util.now()
+        return [i for i in self.instances(now, now + datetime.timedelta(microseconds=1))
+                if i.uid == uid]
+
+    def paused_now(self) -> list[str]:
+        """The uids of the running occurrences that are paused."""
+        now = dt_util.now()
+        return sorted({
+            i.uid for i in self.instances(now, now + datetime.timedelta(microseconds=1))
+            if self._key(i) in self.paused
+        })
+
+    async def async_pause(self, uid: str) -> None:
+        """Pause the running occurrence of entry `uid` until resumed or its end."""
+        running = self._running(uid)
+        if not running:
+            raise HomeAssistantError(f"Program {uid} is not running now")
+        self.paused |= {self._key(i) for i in running}
+        await self._async_save()
+        self._changed()
+        await self.async_refresh()
+
+    async def async_resume(self, uid: str) -> None:
+        """Apply the paused running occurrence of entry `uid` again."""
+        keys = {k for k in self.paused if k.split("|", 1)[0] == uid}
+        if not keys:
+            return
+        self.paused -= keys
+        await self._async_save()
+        self._changed()
         await self.async_refresh()
 
     def check(self, calendar: Calendar, uid: str) -> None:
@@ -307,9 +359,15 @@ class ProgramManager:
             return
         self._cancel_timer()
         now = dt_util.now()
+        running = self.instances(now, now + datetime.timedelta(microseconds=1))
+        # A pause ends with its occurrence.
+        still_paused = self.paused & {self._key(i) for i in running}
+        if still_paused != self.paused:
+            self.paused = still_paused
+            await self._async_save()
+            self._changed()
         active = sorted(
-            (i for i in self.instances(now, now + datetime.timedelta(microseconds=1))
-             if i.program is not None),
+            (i for i in running if i.program is not None and self._key(i) not in self.paused),
             key=lambda i: (i.start, i.uid),
         )
         per_entity: dict[str, list[tuple[Instance, dict]]] = {e: [] for e in self.entities}
