@@ -70,30 +70,37 @@ rules grouped by domain:
 target: [Salon, light.melike_light]
 light:
   on: true
-  brightness: {max: 40}
+  brightness: {min: 50, set: true}
 climate:
-  temperature: {min: 21}
+  temperature: {max: 21}
 ```
 
 - `target`: area ids or names and entity ids (entities with the `program` feature). Areas
   are resolved again at every start.
-- `light`, `climate`, `cover`: one constraint per attribute, a value (`eq`) or `{min, max}`.
-  Attributes: light `on`, `brightness` (%), `color` (a name or `[r, g, b]`, eq only),
-  `color_temp` (K); climate `hvac_mode` (`heat`/`off`), `temperature`; cover `position`. A
-  rule only touches the targeted entities of its domain. (The older form with every
-  attribute under one `rules:` key is still read.)
+- `light`, `climate`, `cover`: one rule per attribute, a value (`eq`) or `{min, max}`, plus
+  `set: true` for a set rule (`{eq: 21, set: true}`). Attributes: light `on`, `brightness`
+  (%), `color` (a name or `[r, g, b]`), `color_temp` (K); climate `hvac_mode` (`heat`/`off`),
+  `temperature`; cover `position`. `min`/`max` only for brightness, temperature and
+  position. A rule only touches the targeted entities of its domain. (The older form with
+  every attribute under one `rules:` key is still read.)
+- `let` (the default) only limits: an off light or heating satisfies it. `set` also brings
+  the device into the rule: a set brightness, colour or colour temperature keeps the light
+  on, a set temperature keeps the heating on.
 - An entry that two programs' rules can't both hold on an entity while they overlap is
   refused with an error (also from Home Assistant's calendar dialog), as is an unreadable one.
-- While active: requests are clamped, the state is corrected at the start and after a
-  physical change. A rule shapes the current state only (`color` recolours a lit light).
-- At the end, `eq` attributes return to their default (calendar `defaults`, overridable
-  per entity: light `on: false`, `color: white`; climate `hvac_mode: "off"`; cover
-  `position: sun`); `min`/`max` just lift. Covers take their `position` default at sunrise
-  and sunset too. Defaults never lock.
+- While active: a user's request (dashboard, app, a script they run) that breaks a rule is
+  refused and a browser_mod popup on their browsers says so, offering the nearest allowed
+  value. Automations, wall switches and dials, and the state at the start are brought to
+  the nearest allowed value without asking.
+- When a set rule ends the device returns to its defaults (calendar `defaults`,
+  overridable per entity: light `on: false`, `color: white`; climate `hvac_mode: "off"`;
+  cover `position: sun`); let rules just lift. Covers take their `position` default at
+  sunrise and sunset too. Defaults never lock. (Entries saved before the set/let flag
+  were turned into set rules once.)
 
 - `gungors.pause_program` / `gungors.resume_program` (target `calendar.program`, field
-  `uid`): a paused running occurrence counts as ended (its `eq` attributes return to their
-  defaults) until it is resumed, which applies it again as at a start, or until it ends. The
+  `uid`): a paused running occurrence counts as ended (its set rules return the device to
+  its defaults) until it is resumed, which applies it again as at a start, or until it ends. The
   calendar's `paused` attribute lists the paused entries' uids.
 
 `rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`

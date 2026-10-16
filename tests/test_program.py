@@ -94,6 +94,7 @@ def test_dump_program_round_trip() -> None:
         "target: salon\nrules: {brightness: {min: 60, max: 40}}",
         "target: salon\nrules: {color: nocolour}",
         "target: salon\nrules: {color: red, color_temp: 3000}",
+        "target: salon\nlight: {color_temp: {min: 2700, max: 4000}}",
         "target: salon\nrules: {hvac_mode: cool}",
         "target: salon\nlight: {temperature: 21}",
         "target: salon\nclimate: {}",
@@ -104,6 +105,44 @@ def test_dump_program_round_trip() -> None:
 def test_parse_program_invalid(description: str) -> None:
     with pytest.raises(vol.Invalid):
         parse_program(description)
+
+
+def test_set_flag_and_eq_only() -> None:
+    program = parse_program(
+        "target: x\nlight:\n  on: true\n  brightness: {min: 50, set: true}\n"
+        "  color_temp: {eq: 3000, set: true}\n"
+    )
+    assert program.rules == {
+        "on": Constraint(eq=True),
+        "brightness": Constraint(min=50, set=True),
+        "color_temp": Constraint(eq=3000, set=True),
+    }
+    text = dump_program(program)
+    assert "brightness: {min: 50, set: true}" in text
+    assert "color_temp: {eq: 3000, set: true}" in text
+    assert parse_program(text) == program
+    for bad in (
+        "target: x\nlight: {color_temp: {min: 3000}}",
+        "target: x\nclimate: {hvac_mode: {min: 1}}",
+        "target: x\nlight: {brightness: {set: true}}",
+        "target: x\nlight: {brightness: {min: 5, set: 1}}",
+        # A set brightness keeps the light on.
+        "target: x\nlight: {on: false, brightness: {min: 5, set: true}}",
+    ):
+        with pytest.raises(vol.Invalid):
+            parse_program(bad)
+
+
+def test_conflicts_with_implied_rules() -> None:
+    lit = parse_program("target: x\nlight: {brightness: {min: 50, set: true}}").rules
+    dark = parse_program("target: x\nlight: {on: false}").rules
+    assert rules_conflict(lit, dark, "light") == "on"
+    # A let brightness rule is satisfied by an off light.
+    let = parse_program("target: x\nlight: {brightness: {min: 50}}").rules
+    assert rules_conflict(let, dark, "light") is None
+    heat = parse_program("target: x\nclimate: {temperature: {eq: 21, set: true}}").rules
+    off = parse_program("target: x\nclimate: {hvac_mode: 'off'}").rules
+    assert rules_conflict(heat, off, "climate") == "hvac_mode"
 
 
 def test_conflicts() -> None:
@@ -362,7 +401,7 @@ async def test_light_on_and_colour_defaults(
     await setup_all(hass)
     lamp(hass, False)
     await hass.async_block_till_done()
-    await add_entry(hass, "parti", {"target": LIGHT, "rules": {"on": True, "color": "red"}},
+    await add_entry(hass, "parti", {"target": LIGHT, "rules": {"on": True, "color": {"eq": "red", "set": True}}},
                     timedelta(minutes=1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(minutes=1, seconds=2))
     state = hass.states.get(LIGHT)
@@ -375,7 +414,7 @@ async def test_light_on_and_colour_defaults(
     assert hass.states.get(LIGHT).state == "on"
     assert not calls.of("light", "turn_off", LAMP)
 
-    # The end: `on` and `color` were eq, they return to their defaults (off).
+    # The end: `color` was set (and keeps the light on): back to the defaults (off).
     await tick(hass, freezer, timedelta(hours=1))
     assert hass.states.get(LIGHT).state == "off"
 
@@ -394,11 +433,93 @@ async def test_colour_only_recolours_a_lit_light(
     await hass.async_block_till_done()
     assert calls.of("light", "turn_on", LAMP)[-1]["rgb_color"] == (255, 0, 0)
 
-    # The end: the colour goes back to white, the light stays on.
+    # The end: a let rule just lifts, the light stays red.
+    calls.clear()
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
     state = hass.states.get(LIGHT)
     assert state.state == "on"
-    assert state.attributes["rgb_color"] == (255, 255, 255)
+    assert state.attributes["rgb_color"] == (255, 0, 0)
+    assert not calls.of("light", "turn_on", LAMP)
+
+
+async def test_set_brightness_keeps_the_light_on(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    await setup_all(hass)
+    lamp(hass, False)
+    await hass.async_block_till_done()
+    await add_entry(hass, "okuma",
+                    {"target": LIGHT, "light": {"brightness": {"min": 50, "set": True}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    # Switched on at the nearest allowed value.
+    assert hass.states.get(LIGHT).state == "on"
+    assert brightness(hass) == 128
+    # Turning it off (an automation): kept on.
+    await hass.services.async_call("light", "turn_off", {"entity_id": LIGHT}, blocking=True)
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "on"
+    # The end: brightness has no default, the light's domain default applies (off).
+    await tick(hass, freezer, timedelta(hours=1, seconds=2))
+    assert hass.states.get(LIGHT).state == "off"
+
+
+async def test_let_brightness_allows_off(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    await setup_all(hass)
+    lamp(hass, False)
+    await hass.async_block_till_done()
+    await add_entry(hass, "okuma", {"target": LIGHT, "light": {"brightness": {"min": 50}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    assert hass.states.get(LIGHT).state == "off"
+    assert not calls.of("light", "turn_on", LAMP)
+    # Switched on at the wall at 10%: brought to the nearest allowed value.
+    lamp(hass, True, 25)
+    await hass.async_block_till_done()
+    await tick(hass, freezer, timedelta(seconds=11))
+    assert brightness(hass) == 128
+
+
+async def test_user_request_is_refused_with_a_popup(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
+) -> None:
+    from homeassistant.core import Context  # noqa: PLC0415
+
+    await setup_all(hass)
+    popups = []
+    hass.services.async_register("browser_mod", "popup", lambda call: popups.append(call.data))
+    hass.states.async_set("person.sercan", "home", {"user_id": hass_admin_user.id})
+    await add_entry(hass, "okuma", {"target": LIGHT, "light": {"brightness": {"min": 50}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    before = brightness(hass)
+    calls.clear()
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 49}, blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert not calls.of("light", "turn_on", LAMP)
+    assert brightness(hass) == before
+    assert len(popups) == 1
+    assert popups[0]["user_id"] == ["person.sercan"]
+    assert popups[0]["right_button_action"]["data"] == {
+        "entity_id": LIGHT, "brightness_pct": 50
+    }
+    # Allowed values pass; so does turning it off (off satisfies a let rule).
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 70}, blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert brightness(hass) == 178
+    await hass.services.async_call(
+        "light", "turn_off", {"entity_id": LIGHT}, blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "off"
+    assert len(popups) == 1
 
 
 async def test_default_after_restart(hass: HomeAssistant, calls) -> None:
@@ -409,7 +530,7 @@ async def test_default_after_restart(hass: HomeAssistant, calls) -> None:
     from homeassistant.core import State  # noqa: PLC0415
 
     mock_restore_cache_with_extra_data(
-        hass, [(State(LIGHT, "on"), {"program": {"eq": {"on": True}}})]
+        hass, [(State(LIGHT, "on"), {"program": {"set": ["on"]}})]
     )
     await setup_all(hass)
     assert calls.of("light", "turn_off", LAMP)
@@ -422,7 +543,8 @@ async def test_default_after_restart(hass: HomeAssistant, calls) -> None:
 async def test_climate_lock(hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory) -> None:
     await setup_all(hass)
     await add_entry(
-        hass, "isitma", {"target": THERMOSTAT, "rules": {"hvac_mode": "heat", "temperature": 21}},
+        hass, "isitma", {"target": THERMOSTAT,
+               "rules": {"hvac_mode": "heat", "temperature": {"eq": 21, "set": True}}},
         timedelta(minutes=1), timedelta(hours=1),
     )
     await tick(hass, freezer, timedelta(minutes=1, seconds=2))
@@ -443,7 +565,7 @@ async def test_climate_lock(hass: HomeAssistant, calls, freezer: FrozenDateTimeF
     await tick(hass, freezer, timedelta(seconds=11))
     assert hass.states.get(THERMOSTAT).attributes["temperature"] == 21
 
-    # The end: hvac_mode returns to off, the temperature has no default.
+    # The end: the set temperature has no default, the domain default applies (off).
     await tick(hass, freezer, timedelta(hours=1))
     assert hass.states.get(THERMOSTAT).state == "off"
 
@@ -455,7 +577,7 @@ async def test_cover_rule_and_sun(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
     await setup_all(hass)
-    await add_entry(hass, "karanlik", {"target": COVER, "rules": {"position": 0}},
+    await add_entry(hass, "karanlik", {"target": COVER, "rules": {"position": {"eq": 0, "set": True}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     assert hass.states.get(COVER).attributes["current_position"] == 0
     await hass.services.async_call("cover", "open_cover", {"entity_id": COVER}, blocking=True)
@@ -485,7 +607,7 @@ async def test_cover_rule_and_sun(
 
 async def test_custom_defaults(hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory) -> None:
     await setup_all(hass, {"defaults": {"light": {"on": True, "brightness": 10}}})
-    await add_entry(hass, "kapali", {"target": LIGHT, "rules": {"on": False}},
+    await add_entry(hass, "kapali", {"target": LIGHT, "rules": {"on": {"eq": False, "set": True}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     assert hass.states.get(LIGHT).state == "off"
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
@@ -501,7 +623,7 @@ async def test_pause_and_resume(
     await setup_all(hass)
     lamp(hass, False)
     await hass.async_block_till_done()
-    await add_entry(hass, "parti", {"target": LIGHT, "light": {"on": True}},
+    await add_entry(hass, "parti", {"target": LIGHT, "light": {"on": {"eq": True, "set": True}}},
                     timedelta(minutes=1), timedelta(hours=1))
     uid = async_get_manager(hass).calendar.events[0].uid
     with pytest.raises(HomeAssistantError):  # not running yet
@@ -511,7 +633,7 @@ async def test_pause_and_resume(
     await tick(hass, freezer, timedelta(minutes=1, seconds=2))
     assert hass.states.get(LIGHT).state == "on"
 
-    # Paused: as at an end, `on` returns to its default and the light is free.
+    # Paused: as at an end, the set `on` returns to its default and the light is free.
     await hass.services.async_call(
         "gungors", "pause_program", {"entity_id": CALENDAR, "uid": uid}, blocking=True
     )
@@ -534,3 +656,29 @@ async def test_pause_and_resume(
     )
     await tick(hass, freezer, timedelta(hours=1))
     assert async_get_manager(hass).paused == set()
+
+
+async def test_old_entries_become_set_rules(hass: HomeAssistant, calls, hass_storage) -> None:
+    from ical.calendar import Calendar  # noqa: PLC0415
+    from ical.calendar_stream import IcsCalendarStream  # noqa: PLC0415
+    from ical.event import Event  # noqa: PLC0415
+
+    from custom_components.gungors.program import async_get_manager  # noqa: PLC0415
+
+    calendar = Calendar()
+    now = dt_util.now()
+    calendar.events.append(Event(
+        summary="eski", start=now + timedelta(hours=1), end=now + timedelta(hours=2),
+        description="target: x\nlight: {on: true, brightness: {max: 40}}",
+    ))
+    hass_storage["gungors.program"] = {
+        "version": 1, "key": "gungors.program",
+        "data": {"ics": IcsCalendarStream.calendar_to_ics(calendar), "paused": []},
+    }
+    await setup_all(hass)
+    event = async_get_manager(hass).calendar.events[0]
+    assert parse_program(event.description).rules == {
+        "on": Constraint(eq=True, set=True),
+        "brightness": Constraint(max=40, set=True),
+    }
+    assert hass_storage["gungors.program"]["data"]["format"] == 2

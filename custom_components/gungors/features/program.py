@@ -5,26 +5,31 @@ override the domain defaults of the program calendar for this entity.
 
 While programs are active the entity follows their rules:
 
-- A request that breaks a rule is clamped (brightness 80 with `max 40` -> 40;
-  turning off a light whose program says `on: true` keeps it on).
-- When a rule starts, or the device changes by itself (a wall dimmer, the
-  thermostat dial), the state is corrected to the nearest allowed value.
-- A rule only shapes what applies in the current state: `color: red` recolours a
-  lit light and doesn't switch it on; a temperature rule acts while heating.
-- When a program ends, its `eq` attributes go back to their default (light `on`
-  -> off, `color` -> white, `hvac_mode` -> off, cover `position: sun` -> open by
-  day, closed at night); `min`/`max` rules just lift. Attributes without a
-  default keep their value.
+- A request a user makes (a dashboard, the app, a script they run) that breaks a
+  rule is refused: nothing changes and the user's browsers show a browser_mod
+  popup saying it is not allowed, with the nearest allowed value to apply when
+  there is one (brightness 49 with `min 50` -> 50).
+- Other requests (automations, other features) and the device changing by itself
+  (a wall switch or dimmer, the thermostat dial) are brought to the nearest
+  allowed value without asking; so is the state when a rule starts.
+- A `let` rule only shapes what applies in the current state: an off light or
+  heating satisfies it, `color: red` recolours a lit light. A `set` rule also
+  brings the device into it: a set brightness, colour or colour temperature rule
+  keeps the light on, a set temperature rule keeps the heating on.
+- When a `set` rule ends, the device returns to its defaults, except what other
+  set rules still hold (light off and white, heating off, cover `position: sun`:
+  open by day, closed at night). `let` rules just lift.
 - Covers whose position no program holds follow the `position` default at
   sunrise and sunset. Defaults are applied at those moments only; they never
   lock anything.
 
 Attribute `program`: the active programs of this entity (summary, start, end,
-rules). The attributes that an `eq` rule enforces survive a restart, so a program
-that ended while Home Assistant was down still restores the defaults.
+rules). The attributes `set` rules hold survive a restart, so a program that
+ended while Home Assistant was down still restores the defaults.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import time
 from typing import Any
@@ -37,8 +42,8 @@ from homeassistant.core import Event, State, callback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util import color as color_util
 
-from ..core import Feature, Request, register
-from ..rules import DOMAINS, Constraint, parse_defaults
+from ..core import SOURCE_REMOTE, Feature, Request, register
+from ..rules import DOMAINS, Constraint, implied, parse_defaults
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +55,13 @@ ATTR_PROGRAM = "program"
 COOLDOWN = 10.0
 # The same correction is sent at most this often in a row.
 MAX_REPEATS = 3
+# s a service call's context counts as the request's origin
+CONTEXT_RECENT = 5.0
+LABELS = {
+    "on": "açık/kapalı", "brightness": "parlaklık", "color": "renk",
+    "color_temp": "renk sıcaklığı", "hvac_mode": "ısıtma", "temperature": "sıcaklık",
+    "position": "konum",
+}
 
 _COLOR_MODES = {ColorMode.HS, ColorMode.XY, ColorMode.RGB, ColorMode.RGBW, ColorMode.RGBWW}
 _COLOR_KEYS = (
@@ -62,17 +74,35 @@ def _merge(rule_sets: list[dict[str, Constraint]]) -> dict[str, Constraint]:
     """The combined constraint per attribute of non-conflicting rule sets."""
     merged: dict[str, Constraint] = {}
     for rules in rule_sets:
-        for attr, constraint in rules.items():
+        for attr, constraint in implied(rules).items():
             current = merged.get(attr)
+            flag = constraint.set or (current is not None and current.set)
             if current is None or (current.eq is None and constraint.eq is not None):
-                merged[attr] = constraint
+                merged[attr] = replace(constraint, set=flag)
             elif current.eq is None:
                 lows = [v for v in (current.min, constraint.min) if v is not None]
                 highs = [v for v in (current.max, constraint.max) if v is not None]
                 merged[attr] = Constraint(
-                    min=max(lows) if lows else None, max=min(highs) if highs else None
+                    min=max(lows) if lows else None,
+                    max=min(highs) if highs else None,
+                    set=flag,
                 )
+            elif flag != current.set:
+                merged[attr] = replace(current, set=flag)
     return merged
+
+
+def _hs_close(wanted: tuple[float, float], current: tuple[float, float]) -> bool:
+    hue, sat = wanted
+    cur_hue, cur_sat = current
+    if sat < 10:
+        return cur_sat < 12
+    diff = abs(hue - cur_hue) % 360
+    return min(diff, 360 - diff) <= 8 and abs(sat - cur_sat) <= 12
+
+
+def _rgb_close(a: tuple[int, int, int], b: tuple[int, int, int]) -> bool:
+    return _hs_close(color_util.color_RGB_to_hs(*b), color_util.color_RGB_to_hs(*a))
 
 
 def _finite(constraint: Constraint, fallback: float | None) -> float | None:
@@ -109,7 +139,7 @@ class Program(Feature):
 
     # [{uid, summary, start, end, rules: {attr: Constraint}}] for this entity
     _prog_active: list[dict[str, Any]] = []
-    _prog_eq: dict[str, Any] = {}  # attributes an eq rule enforces (for the defaults)
+    _prog_set: set[str] = set()  # attributes set rules hold (for the defaults)
     _prog_sent_at = -COOLDOWN
     _prog_recheck = None
     _prog_last: dict[str, Any] | None = None  # the last correction sent
@@ -131,18 +161,19 @@ class Program(Feature):
         self._prog_active = active
         self._prog_last, self._prog_repeats = None, 0
         rules = self._prog_rules()
-        new_eq = {a: c.eq for a, c in rules.items() if c.eq is not None}
-        ended = [a for a in self._prog_eq if a not in new_eq]
-        self._prog_eq = new_eq
+        held = {a for a, c in rules.items() if c.set}
+        ended = [a for a in self._prog_set if a not in held]
+        self._prog_set = held
         self.async_write_ha_state()
         if ended:
-            await self.gw_program_apply_defaults(ended, defaults)
+            # The device returns to its defaults (a set brightness ending: light off).
+            await self.gw_program_apply_defaults(list(DOMAINS), defaults)
         await self._prog_enforce(force=True)
 
     async def gw_program_apply_defaults(self, attrs: list[str], defaults: dict[str, Any]) -> None:
         """Apply the defaults of attributes no program holds any more."""
         values = self.gw_program_defaults(defaults)
-        wanted = {a: values[a] for a in attrs if a in values and a not in self._prog_eq}
+        wanted = {a: v for a, v in values.items() if a in attrs and a not in self._prog_set}
         data = self._prog_default_request(wanted)
         if data:
             _LOGGER.debug("%s: program defaults %s", self.entity_id, data)
@@ -156,6 +187,13 @@ class Program(Feature):
             if request.from_device and self._prog_active:
                 self.hass.async_create_task(self._prog_enforce())
             return accepted
+        user = self._prog_user(request)
+        if user is not None:
+            refused = self._prog_refusal(request.data)
+            if refused is not None:
+                _LOGGER.info("%s: %s refused by a program", self.entity_id, request.data)
+                self.hass.async_create_task(self._prog_notify(user, *refused))
+                return False
         data = self._prog_clamp(dict(request.data))
         if data is None:
             _LOGGER.info("%s: %s rejected by a program", self.entity_id, request.data)
@@ -226,6 +264,120 @@ class Program(Feature):
         if self._prog_recheck is not None:
             self._prog_recheck()
             self._prog_recheck = None
+
+    # --- refusing user requests -----------------------------------------------
+
+    def _prog_user(self, request: Request) -> str | None:
+        """The user behind a request from a service call, None for anything else."""
+        if request.source != SOURCE_REMOTE or request.tags or request.from_device:
+            return None
+        context, since = self._context, self._context_set
+        if context is None or since is None or time.time() - since > CONTEXT_RECENT:
+            return None
+        return context.user_id
+
+    def _prog_refusal(self, data: dict[str, Any]) -> tuple[str, dict[str, Any] | None] | None:
+        """(what breaks a rule, the service data of a suggestion or None), or None."""
+        rules = self._prog_rules()
+        domain = self._prog_domain
+
+        def number(attr: str, value: float, unit: str, step: float) -> tuple[str, Any] | None:
+            if attr not in rules:
+                return None
+            allowed = rules[attr].clamp(value)
+            if abs(allowed - value) <= step:
+                return None
+            return f"{LABELS[attr]} {value:g}{unit}", allowed
+
+        if domain == "light":
+            on = data.get("on")
+            if "on" in rules and on is not None and on != rules["on"].eq:
+                return LABELS["on"], None
+            if not on:
+                return None
+            if "brightness" in data and data["brightness"] is not None:
+                pct = data["brightness"] * 100 / 255
+                hit = number("brightness", round(pct), "%", 0.5)
+                if hit:
+                    return hit[0], {"brightness_pct": int(round(hit[1]))}
+            given = self._prog_given_rgb(data)
+            if "color" in rules and given is not None and not _rgb_close(given, rules["color"].eq):
+                return LABELS["color"], {"rgb_color": list(rules["color"].eq)}
+            if "color_temp" in rules:
+                kelvin = data.get("color_temp_kelvin")
+                wanted = rules["color_temp"].eq
+                if given is not None or (kelvin is not None and abs(kelvin - wanted) > 50):
+                    return LABELS["color_temp"], {"color_temp_kelvin": int(wanted)}
+            return None
+        if domain == "climate":
+            mode = data.get("hvac_mode")
+            if "hvac_mode" in rules and mode is not None and mode != rules["hvac_mode"].eq:
+                return LABELS["hvac_mode"], None
+            if data.get("temperature") is not None and mode != HVACMode.OFF:
+                hit = number("temperature", float(data["temperature"]), "°", 0.05)
+                if hit:
+                    return hit[0], {"temperature": hit[1]}
+            return None
+        if "position" not in rules:
+            return None
+        if data.get("stop"):
+            return "durdurma", None
+        if data.get("position") is not None:
+            hit = number("position", float(data["position"]), "%", 0.5)
+            if hit:
+                return hit[0], {"position": int(round(hit[1]))}
+        return None
+
+    @staticmethod
+    def _prog_given_rgb(data: dict[str, Any]) -> tuple[int, int, int] | None:
+        if data.get("rgb_color") is not None:
+            return tuple(int(v) for v in data["rgb_color"][:3])  # type: ignore[return-value]
+        if data.get("hs_color") is not None:
+            return color_util.color_hs_to_RGB(*data["hs_color"])
+        if data.get("xy_color") is not None:
+            return color_util.color_xy_to_RGB(*data["xy_color"])
+        if data.get("color_name") is not None:
+            try:
+                return tuple(color_util.color_name_to_rgb(data["color_name"]))  # type: ignore[return-value]
+            except ValueError:
+                return None
+        return None
+
+    async def _prog_notify(self, user_id: str, what: str, suggestion: dict[str, Any] | None) -> None:
+        """The browser_mod popup on the browsers of the user who was refused."""
+        person = next(
+            (s.entity_id for s in self.hass.states.async_all("person")
+             if s.attributes.get("user_id") == user_id),
+            None,
+        )
+        if person is None or not self.hass.services.has_service("browser_mod", "popup"):
+            _LOGGER.info("%s: no browser to tell user %s about the refusal", self.entity_id, user_id)
+            return
+        name = self.name or self.entity_id
+        programs = ", ".join(p["summary"] for p in self._prog_active if p["summary"]) or "program"
+        text = f"{name}: {what} izin verilmiyor ({programs})."
+        data: dict[str, Any] = {
+            "user_id": [person],
+            "title": "İzin verilmiyor",
+            "content": text,
+            "tag": f"gungors_program_{self.entity_id}",
+            "timeout": 15000,
+        }
+        if suggestion is not None:
+            service = {"light": "light.turn_on", "climate": "climate.set_temperature",
+                       "cover": "cover.set_cover_position"}[self._prog_domain]
+            value = next(iter(suggestion.values()))
+            shown = ", ".join(map(str, value)) if isinstance(value, list) else f"{value:g}"
+            data["content"] = f"{text} Öneri: {shown}"
+            data["right_button"] = f"{shown} uygula"
+            data["right_button_action"] = {
+                "service": service, "data": {"entity_id": self.entity_id, **suggestion}
+            }
+            data["left_button"] = "Vazgeç"
+        try:
+            await self.hass.services.async_call("browser_mod", "popup", data, blocking=False)
+        except Exception as err:  # noqa: BLE001  (a popup must never break a request)
+            _LOGGER.warning("%s: refusal popup failed: %s", self.entity_id, err)
 
     # --- rules per domain ----------------------------------------------------
 
@@ -320,12 +472,7 @@ class Program(Feature):
     def _prog_color_matches(self, rgb: tuple[int, int, int]) -> bool:
         if self.color_mode not in _COLOR_MODES or self.hs_color is None:
             return False
-        hue, sat = color_util.color_RGB_to_hs(*rgb)
-        cur_hue, cur_sat = self.hs_color
-        if sat < 10:
-            return cur_sat < 12
-        diff = abs(hue - cur_hue) % 360
-        return min(diff, 360 - diff) <= 8 and abs(sat - cur_sat) <= 12
+        return _hs_close(color_util.color_RGB_to_hs(*rgb), self.hs_color)
 
     def _prog_clamp_light(
         self, data: dict[str, Any], rules: dict[str, Constraint]
@@ -438,14 +585,13 @@ class Program(Feature):
     def gw_restore(self, last: State | None, extra: dict[str, Any]) -> None:
         super().gw_restore(last, extra)
         own = extra.get(KEY)
-        eq = own.get("eq") if isinstance(own, dict) else None
-        self._prog_eq = dict(eq) if isinstance(eq, dict) else {}
+        held = (own.get("set") or own.get("eq")) if isinstance(own, dict) else None
+        self._prog_set = {a for a in held if a in DOMAINS} if isinstance(held, (dict, list)) else set()
         self._prog_active = []
 
     def gw_save(self) -> dict[str, Any]:
         data = super().gw_save()
-        data[KEY] = {"eq": {a: list(v) if isinstance(v, tuple) else v
-                            for a, v in self._prog_eq.items()}}
+        data[KEY] = {"set": sorted(self._prog_set)}
         return data
 
     @property

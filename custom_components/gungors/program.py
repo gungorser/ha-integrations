@@ -15,14 +15,14 @@ are active for it now (features/program.py enforces them).
   started first; the later one is skipped for that entity and a notification
   says so.
 - A running occurrence can be paused (`gungors.pause_program`): until it is
-  resumed or ends it counts as not active, so its `eq` attributes return to
+  resumed or ends it counts as not active, so its `set` attributes return to
   their defaults as at an end, and resuming applies it again as at a start.
 - At sunrise and sunset the covers take their `position` default.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import datetime
 import logging
 from typing import TYPE_CHECKING, Any
@@ -48,7 +48,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .rules import DOMAINS, Program, parse_program, rules_conflict
+from .rules import DOMAINS, Program, dump_program, parse_program, rules_conflict
 
 if TYPE_CHECKING:
     from .features.program import Program as ProgramFeature
@@ -58,6 +58,8 @@ _LOGGER = logging.getLogger(__name__)
 DATA_MANAGER = "program"
 STORAGE_KEY = f"{DOMAIN}.program"
 STORAGE_VERSION = 1
+# Entry format: 2 = rules carry the set/let flag.
+FORMAT = 2
 CHECK_HORIZON = datetime.timedelta(days=366)
 # Refresh at least this often (an entry far in the future, a missed timer).
 MAX_SLEEP = datetime.timedelta(hours=1)
@@ -158,6 +160,9 @@ class ProgramManager:
             if data:
                 self.paused = set(data.get("paused", []))
             self._loaded = True
+            if data and data.get("format", 1) < FORMAT:
+                self._migrate()
+                await self._async_save()
         if not self._unsubs:
             self._unsubs.append(
                 async_track_state_change_event(self.hass, ["sun.sun"], self._sun_changed)
@@ -227,8 +232,23 @@ class ProgramManager:
 
     async def _async_save(self) -> None:
         await self._store.async_save(
-            {"ics": IcsCalendarStream.calendar_to_ics(self.calendar), "paused": sorted(self.paused)}
+            {
+                "ics": IcsCalendarStream.calendar_to_ics(self.calendar),
+                "paused": sorted(self.paused),
+                "format": FORMAT,
+            }
         )
+
+    def _migrate(self) -> None:
+        """Format 2: rules are `let` unless marked `set`; earlier entries all become `set`."""
+        for event in self.calendar.events:
+            try:
+                program = parse_program(event.description)
+            except vol.Invalid:
+                continue
+            rules = {a: replace(c, set=True) for a, c in program.rules.items()}
+            event.description = dump_program(replace(program, rules=rules))
+        _LOGGER.info("program entries migrated: their rules are now `set` rules")
 
     def _changed(self) -> None:
         for listener in list(self._listeners):

@@ -14,7 +14,7 @@ Each entry is a program (its description: see rules.py). The entries live in
 the program manager (program.py), which refuses a change that leaves an entry
 unreadable or makes two entries conflict; the error shows where the change was
 made (the calendar dialog, the program card, a service call). `defaults` are
-the values an attribute returns to when the program holding it with `eq` ends.
+the values an attribute returns to when the program holding it with a `set` rule ends.
 `gungors.pause_program` / `gungors.resume_program` (field `uid`) pause and resume
 an entry's running occurrence; the `paused` attribute lists the paused entries.
 """
