@@ -5,22 +5,28 @@ An entry's description holds the program as YAML, the rules grouped by domain::
     target: [Salon, light.melike_light]   # area ids/names and entity ids
     light:
       on: true                 # a plain value is `eq`
-      brightness: {max: 40}    # percent
+      brightness: {min: 50, set: true}   # percent
       color: red               # a colour name or [r, g, b]
     climate:
       temperature: {min: 19, max: 22}
 
 (The older form with all attributes under one `rules:` key is still read.)
 
-A rule is a constraint on one attribute: `eq`, `min` and/or `max`. A rule only
-touches the targeted entities of its domain. Two programs conflict on an entity
-when they overlap in time and the same attribute's constraints can't hold
-together (`color` and `color_temp` count as one attribute: a light can't follow
-both).
+A rule is a constraint on one attribute: `eq`, `min` and/or `max`; `min`/`max`
+only for the numeric attributes brightness, temperature and position. A rule is
+`let` (the default) or `set` (`set: true`): a `let` rule only limits changes (an
+off light or heating satisfies it), a `set` rule also brings the device into it
+(a set brightness, colour or colour temperature rule keeps the light on, a set
+temperature rule keeps the heating on), and at the end of the program only a
+`set` rule's attributes return to their defaults. A rule only touches the
+targeted entities of its domain. Two programs conflict on an entity when they
+overlap in time and the same attribute's constraints can't hold together
+(`color` and `color_temp` count as one attribute: a light can't follow both;
+a set rule's implied `on: true` / `hvac_mode: heat` counts too).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import re
 from typing import Any
 
@@ -45,6 +51,8 @@ NUMERIC: dict[str, tuple[float, float]] = {
     "temperature": (5, 35),
     "position": (0, 100),
 }
+# Attributes that only take an exact value.
+EQ_ONLY = {"on", "hvac_mode", "color", "color_temp"}
 CHOICES: dict[str, tuple[Any, ...]] = {
     "on": (True, False),
     "hvac_mode": ("heat", "off"),
@@ -56,11 +64,12 @@ TOLERANCE = 0.05
 
 @dataclass(frozen=True)
 class Constraint:
-    """eq, or a range [min, max] (either end open)."""
+    """eq, or a range [min, max] (either end open); `set`: the system applies it."""
 
     eq: Any = None
     min: float | None = None
     max: float | None = None
+    set: bool = False
 
     def bounds(self) -> tuple[float, float]:
         if self.eq is not None:
@@ -87,8 +96,14 @@ class Constraint:
 
     def as_dict(self) -> dict[str, Any]:
         if self.eq is not None:
-            return {"eq": list(self.eq) if isinstance(self.eq, tuple) else self.eq}
-        return {k: v for k, v in (("min", self.min), ("max", self.max)) if v is not None}
+            result: dict[str, Any] = {
+                "eq": list(self.eq) if isinstance(self.eq, tuple) else self.eq
+            }
+        else:
+            result = {k: v for k, v in (("min", self.min), ("max", self.max)) if v is not None}
+        if self.set:
+            result["set"] = True
+        return result
 
 
 @dataclass(frozen=True)
@@ -114,6 +129,14 @@ def _color(value: Any) -> tuple[int, int, int]:
 
 
 def _constraint(attr: str, value: Any) -> Constraint:
+    if isinstance(value, dict) and "set" in value:
+        value = dict(value)
+        flag = value.pop("set")
+        if not isinstance(flag, bool):
+            raise vol.Invalid(f"{attr}: set is true or false")
+        if not value:
+            raise vol.Invalid(f"{attr}: a value (eq, min or max) besides set")
+        return replace(_constraint(attr, value), set=flag)
     if attr == "color":
         if isinstance(value, dict):
             if set(value) != {"eq"}:
@@ -144,6 +167,8 @@ def _constraint(attr: str, value: Any) -> Constraint:
 
     if not isinstance(value, dict):
         return Constraint(eq=number(value))
+    if attr in EQ_ONLY and set(value) != {"eq"}:
+        raise vol.Invalid(f"{attr}: only an exact value (eq); min/max are for numbers")
     unknown = set(value) - {"eq", "min", "max"}
     if unknown or not value:
         raise vol.Invalid(f"{attr}: use eq, min and/or max")
@@ -157,6 +182,26 @@ def _constraint(attr: str, value: Any) -> Constraint:
     )
     if result.min is not None and result.max is not None and result.min > result.max:
         raise vol.Invalid(f"{attr}: min is above max")
+    return result
+
+
+# A set rule on these keeps the device on: attr -> (attribute, value) it implies.
+IMPLIES: dict[str, tuple[str, Any]] = {
+    "brightness": ("on", True),
+    "color": ("on", True),
+    "color_temp": ("on", True),
+    "temperature": ("hvac_mode", "heat"),
+}
+
+
+def implied(rules: dict[str, Constraint]) -> dict[str, Constraint]:
+    """Rules plus what their set rules imply (`on: true`, `hvac_mode: heat`)."""
+    result = dict(rules)
+    for attr, constraint in rules.items():
+        if constraint.set and attr in IMPLIES:
+            other, value = IMPLIES[attr]
+            if other not in result:
+                result[other] = Constraint(eq=value, set=True)
     return result
 
 
@@ -216,6 +261,11 @@ def parse_program(description: str | None) -> Program:
         parsed[attr] = _constraint(attr, value)
     if "color" in parsed and "color_temp" in parsed:
         raise vol.Invalid("color and color_temp can't be in the same program")
+    for attr, constraint in parsed.items():
+        if constraint.set and attr in IMPLIES:
+            other, value = IMPLIES[attr]
+            if other in parsed and parsed[other].eq != value:
+                raise vol.Invalid(f"set {attr} keeps {other} at {_scalar(value)}")
     return Program(target=tuple(t.strip() for t in target), rules=parsed)
 
 
@@ -248,7 +298,7 @@ def dump_program(program: Program) -> str:
         lines.append(f"{domain}:")
         for attr, constraint in rules.items():
             as_dict = constraint.as_dict()
-            if "eq" in as_dict:
+            if "eq" in as_dict and len(as_dict) == 1:
                 value = _scalar(as_dict["eq"])
             else:
                 value = "{" + ", ".join(f"{k}: {_scalar(v)}" for k, v in as_dict.items()) + "}"
@@ -269,8 +319,8 @@ def rules_conflict(
     a: dict[str, Constraint], b: dict[str, Constraint], domain: str
 ) -> str | None:
     """The first attribute on which two rule sets conflict for a domain, or None."""
-    a = {k: v for k, v in a.items() if DOMAINS[k] == domain}
-    b = {k: v for k, v in b.items() if DOMAINS[k] == domain}
+    a = {k: v for k, v in implied(a).items() if DOMAINS[k] == domain}
+    b = {k: v for k, v in implied(b).items() if DOMAINS[k] == domain}
     for attr, constraint in a.items():
         if attr in b and constraints_conflict(attr, constraint, b[attr]):
             return attr
