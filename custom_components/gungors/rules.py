@@ -10,6 +10,15 @@ An entry's description holds the program as YAML, the rules grouped by domain::
     climate:
       temperature: {min: 19, max: 22}
 
+`start` and `end` (optional) move the entry's start or end to a time relative
+to the sun, worked out for every occurrence on its own day: `sunrise` or
+`sunset` with an optional offset (`sunset-30m`, `sunrise+2h`, `sunrise+1h30m`)::
+
+    target: Salon
+    start: sunrise+2h          # the end stays the entry's own time
+    cover:
+      current_position: 100
+
 The names follow Home Assistant (state, attributes, service fields):
 light `state` ("on"/"off"), `brightness_pct`, `rgb_color`, `color_temp_kelvin`;
 climate `state` (the HVAC mode: heat/off), `temperature`; cover
@@ -33,6 +42,7 @@ a set rule's implied `on: true` / `hvac_mode: heat` counts too).
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 import re
 from typing import Any
 
@@ -147,10 +157,46 @@ class Constraint:
         return result
 
 
+SUN_EVENTS = ("sunrise", "sunset")
+_SUN_TIME = re.compile(
+    r"^(sunrise|sunset)\s*(?:([+-])\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?)?$", re.IGNORECASE
+)
+
+
+@dataclass(frozen=True)
+class SunTime:
+    """A moment relative to the sun: `sunset-30m`, `sunrise+2h`, `sunrise+1h30m`."""
+
+    event: str
+    offset: timedelta = timedelta()
+
+    def __str__(self) -> str:
+        if not self.offset:
+            return self.event
+        minutes = int(abs(self.offset).total_seconds() // 60)
+        hours, minutes = divmod(minutes, 60)
+        text = (f"{hours}h" if hours else "") + (f"{minutes}m" if minutes else "")
+        return f"{self.event}{'-' if self.offset < timedelta() else '+'}{text}"
+
+
+def parse_sun_time(key: str, value: Any) -> SunTime:
+    match = _SUN_TIME.match(str(value).strip()) if isinstance(value, str) else None
+    if match is None or (match.group(2) and not (match.group(3) or match.group(4))):
+        raise vol.Invalid(
+            f"{key}: sunrise or sunset, with an optional offset (sunset-30m, sunrise+2h)"
+        )
+    event, sign, hours, minutes = match.groups()
+    offset = timedelta(hours=int(hours or 0), minutes=int(minutes or 0))
+    return SunTime(event.lower(), -offset if sign == "-" else offset)
+
+
 @dataclass(frozen=True)
 class Program:
     target: tuple[str, ...]
     rules: dict[str, Constraint] = field(default_factory=dict)
+    # Sun-relative start and end; None: the entry's own time.
+    start: SunTime | None = None
+    end: SunTime | None = None
 
     def domains(self) -> set[str]:
         return {DOMAINS[attr] for attr in self.rules}
@@ -267,12 +313,13 @@ def parse_program(description: str | None) -> Program:
     if not isinstance(data, dict):
         raise vol.Invalid("the description must be a mapping with target and rules")
     domains = sorted(set(DOMAINS.values()))
-    unknown = set(data) - {"target", "rules", *domains}
+    unknown = set(data) - {"target", "start", "end", "rules", *domains}
     if unknown:
         raise vol.Invalid(
             f"unknown keys: {', '.join(sorted(map(str, unknown)))}"
-            f" (known: target, {', '.join(domains)})"
+            f" (known: target, start, end, {', '.join(domains)})"
         )
+    sun = {k: parse_sun_time(k, data[k]) for k in ("start", "end") if data.get(k) is not None}
     target = data.get("target")
     if isinstance(target, str):
         target = [target]
@@ -320,7 +367,7 @@ def parse_program(description: str | None) -> Program:
                 raise vol.Invalid(
                     f"set {NAMES[attr]} keeps {NAMES[other]} at {_scalar(external(other, value))}"
                 )
-    return Program(target=tuple(t.strip() for t in target), rules=parsed)
+    return Program(target=tuple(t.strip() for t in target), rules=parsed, **sun)
 
 
 _PLAIN = re.compile(r"^[^\s\-?:,\[\]{}#&*!|>'\"%@`][^:#,\[\]{}]*$")
@@ -345,6 +392,9 @@ def _scalar(value: Any) -> str:
 def dump_program(program: Program) -> str:
     """The description text of a program (YAML, rules grouped by domain)."""
     lines = [f"target: {_scalar(list(program.target))}"]
+    for key in ("start", "end"):
+        if (moment := getattr(program, key)) is not None:
+            lines.append(f"{key}: {moment}")
     for domain in dict.fromkeys(DOMAINS.values()):
         rules = {a: c for a, c in program.rules.items() if DOMAINS[a] == domain}
         if not rules:

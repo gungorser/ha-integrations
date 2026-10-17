@@ -14,6 +14,9 @@ are active for it now (features/program.py enforces them).
   up then (an area changed after the entries were saved) keeps the program that
   started first; the later one is skipped for that entity and a notification
   says so.
+- An entry's `start`/`end` can be relative to the sun (`sunset-30m`): every
+  occurrence gets its real times from its own day's sun (occurrence_times), and
+  everything here (conflicts, starts and ends, the calendar) uses those.
 - A running occurrence can be paused (`gungors.pause_program`): until it is
   resumed or ends it counts as not active, so its `set` attributes return to
   their defaults as at an end, and resuming applies it again as at a start.
@@ -27,7 +30,7 @@ are active for it now (features/program.py enforces them).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import datetime
 import logging
 from typing import TYPE_CHECKING, Any
@@ -52,6 +55,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.template import Template
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.sun import get_astral_location
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
@@ -59,6 +63,7 @@ from .rules import (
     DOMAINS,
     SUN_TEMPLATE,
     Program,
+    SunTime,
     defaults_json,
     dump_program,
     is_template,
@@ -80,6 +85,9 @@ FORMAT = 3
 CHECK_HORIZON = datetime.timedelta(days=366)
 # Refresh at least this often (an entry far in the future, a missed timer).
 MAX_SLEEP = datetime.timedelta(hours=1)
+# How far an occurrence's sun-relative time may lie from the entry's own time
+# (the time an entry is stored with is only a guess for sun-relative entries).
+SUN_MARGIN = datetime.timedelta(days=1)
 
 DEFAULT_DEFAULTS: dict[str, dict[str, Any]] = {
     "light": {"on": False, "color": (255, 255, 255)},
@@ -99,6 +107,7 @@ class Instance:
     end: datetime.datetime
     program: Program | None
     error: str | None = None
+    event: Event | None = field(default=None, compare=False, repr=False)
 
     def overlaps(self, other: Instance) -> bool:
         return self.start < other.end and other.start < self.end
@@ -112,16 +121,63 @@ def _as_datetime(value: datetime.date | datetime.datetime) -> datetime.datetime:
     return datetime.datetime.combine(value, datetime.time(), dt_util.get_default_time_zone())
 
 
-def instance_of(event: Event) -> Instance:
+def sun_moment(hass: HomeAssistant, moment: SunTime, day: datetime.date) -> datetime.datetime | None:
+    """`moment` on `day` (house time), None if the sun doesn't rise or set that day."""
+    location, elevation = get_astral_location(hass)
+    try:
+        at = getattr(location, moment.event)(day, local=True, observer_elevation=elevation)
+    except ValueError:  # polar day or night
+        return None
+    return dt_util.as_local(at) + moment.offset
+
+
+def occurrence_times(
+    hass: HomeAssistant, program: Program | None, start: datetime.datetime, end: datetime.datetime
+) -> tuple[datetime.datetime, datetime.datetime] | None:
+    """An occurrence's real start and end: its own times, or relative to the sun.
+
+    A sun-relative start is taken on the occurrence's start day; a sun-relative
+    end on its end day, or the first day after the start where it falls after
+    it (`sunset` -> `sunrise` runs through the night). None when that day's
+    start does not come before the end: that occurrence is left out.
+    """
+    if program is None or (program.start is None and program.end is None):
+        return start, end
+    day = dt_util.as_local(start).date()
+    if program.start is not None:
+        sun_start = sun_moment(hass, program.start, day)
+        if sun_start is None:
+            return None
+        start = sun_start
+    if program.end is not None:
+        end_day = max(dt_util.as_local(end).date(), day)
+        for days in range(3):
+            sun_end = sun_moment(hass, program.end, end_day + datetime.timedelta(days=days))
+            if sun_end is not None and sun_end > start:
+                return start, sun_end
+        return None
+    return (start, end) if end > start else None
+
+
+def parse_instance(event: Event) -> tuple[Program | None, str | None]:
+    try:
+        return parse_program(event.description), None
+    except vol.Invalid as err:
+        return None, str(err)
+
+
+def instance_of(event: Event, hass: HomeAssistant | None = None) -> Instance | None:
+    """One occurrence with its real times (None: it doesn't happen, see occurrence_times)."""
     start = _as_datetime(event.start)
     end = _as_datetime(event.end)
     if end <= start:
         end = start + datetime.timedelta(minutes=30)
-    try:
-        program: Program | None = parse_program(event.description)
-        error = None
-    except vol.Invalid as err:
-        program, error = None, str(err)
+    program, error = parse_instance(event)
+    if hass is not None:
+        times = occurrence_times(hass, program, start, end)
+        if times is None:
+            return None
+        start, end = times
     return Instance(
         uid=event.uid,
         recurrence_id=event.recurrence_id,
@@ -130,6 +186,7 @@ def instance_of(event: Event) -> Instance:
         end=end,
         program=program,
         error=error,
+        event=event,
     )
 
 
@@ -235,8 +292,28 @@ class ProgramManager:
         end: datetime.datetime,
         calendar: Calendar | None = None,
     ) -> list[Instance]:
+        """The occurrences overlapping [start, end), with their real (sun-relative) times."""
         timeline = (calendar or self.calendar).timeline_tz(dt_util.get_default_time_zone())
-        return [instance_of(event) for event in timeline.overlapping(start, end)]
+        result = []
+        for event in timeline.overlapping(start - SUN_MARGIN, end + SUN_MARGIN):
+            instance = instance_of(event, self.hass)
+            if instance is not None and instance.start < end and start < instance.end:
+                result.append(instance)
+        return result
+
+    def next_instance(self, now: datetime.datetime) -> Instance | None:
+        """The running occurrence, or else the next one (the calendar entity's state)."""
+        best: Instance | None = None
+        timeline = self.calendar.timeline_tz(dt_util.get_default_time_zone())
+        for event in timeline.active_after(now - SUN_MARGIN):
+            if best is not None and _as_datetime(event.start) > best.start + 2 * SUN_MARGIN:
+                break
+            instance = instance_of(event, self.hass)
+            if instance is None or instance.end <= now:
+                continue
+            if best is None or (instance.start, instance.end) < (best.start, best.end):
+                best = instance
+        return best
 
     async def async_change(self, change: Callable[[Calendar], Event | str | None]) -> None:
         """Apply a change to a copy of the calendar, check it, then keep it.
@@ -405,10 +482,10 @@ class ProgramManager:
             return  # deleted
         # The entry's own content (also when it lies in the past).
         for event in changed_any:
-            instance = instance_of(event)
-            if instance.program is None:
-                raise HomeAssistantError(f"'{instance.summary}': {instance.error}")
-            self._check_targets(instance)
+            program, error = parse_instance(event)
+            if program is None:
+                raise HomeAssistantError(f"'{event.summary or ''}': {error}")
+            self._check_targets(event.summary or "", program)
         instances = self.instances(now, now + CHECK_HORIZON, calendar)
         mine = [i for i in instances if i.uid == uid]
         others = [i for i in instances if i.uid != uid and i.program is not None]
@@ -430,17 +507,16 @@ class ProgramManager:
                             f"{entity_id} ({attr}) at {when:%Y-%m-%d %H:%M}"
                         )
 
-    def _check_targets(self, instance: Instance) -> None:
-        assert instance.program is not None
+    def _check_targets(self, summary: str, program: Program) -> None:
         areas = ar.async_get(self.hass)
-        for target in instance.program.target:
+        for target in program.target:
             if "." in target:
                 if target not in self.entities:
                     raise HomeAssistantError(
-                        f"'{instance.summary}': {target} is not a gungors entity with `program`"
+                        f"'{summary}': {target} is not a gungors entity with `program`"
                     )
             elif self._area_id(areas, target) is None:
-                raise HomeAssistantError(f"'{instance.summary}': unknown area '{target}'")
+                raise HomeAssistantError(f"'{summary}': unknown area '{target}'")
 
     # --- targets -------------------------------------------------------------
 

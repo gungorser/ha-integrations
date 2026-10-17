@@ -11,7 +11,9 @@ calendar:
         current_position: "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"
 ```
 
-Each entry is a program (its description: see rules.py). The entries live in
+Each entry is a program (its description: see rules.py); a program's `start`
+or `end` can be relative to the sun, and the events shown here carry the real
+times of each occurrence. The entries live in
 the program manager (program.py), which refuses a change that leaves an entry
 unreadable or makes two entries conflict; the error shows where the change was
 made (the calendar dialog, the program card, a service call). `defaults` are
@@ -55,7 +57,7 @@ from homeassistant.util import dt as dt_util
 
 from . import PLATFORMS
 from .const import DOMAIN
-from .program import async_get_manager
+from .program import Instance, async_get_manager
 from .rules import defaults_json, parse_defaults
 
 CONF_DEFAULTS = "defaults"
@@ -120,13 +122,17 @@ def _local(value: datetime) -> datetime:
     return dt_util.as_local(value)
 
 
-def _calendar_event(event: Event) -> CalendarEvent:
+def _calendar_event(instance: Instance) -> CalendarEvent:
+    """An occurrence for Home Assistant, with its real (sun-relative) times."""
+    event = instance.event
+    assert event is not None
     start: datetime | date
     end: datetime | date
-    if isinstance(event.start, datetime) and isinstance(event.end, datetime):
-        start, end = _local(event.start), _local(event.end)
-        if end <= start:
-            end = start + timedelta(minutes=30)
+    if isinstance(event.start, datetime) or (
+        instance.program is not None
+        and (instance.program.start is not None or instance.program.end is not None)
+    ):
+        start, end = _local(instance.start), _local(instance.end)
     else:
         start, end = event.start, event.end
         if end <= start:
@@ -193,16 +199,13 @@ class ProgramCalendar(CalendarEntity):
         await self._manager.async_resume(uid)
 
     async def async_update(self) -> None:
-        now = dt_util.now()
-        timeline = self._manager.calendar.timeline_tz(now.tzinfo)
-        event = next(timeline.active_after(now), None)
-        self._event = _calendar_event(event) if event is not None else None
+        instance = self._manager.next_instance(dt_util.now())
+        self._event = _calendar_event(instance) if instance is not None else None
 
     async def async_get_events(
         self, hass: HomeAssistant, start_date: datetime, end_date: datetime
     ) -> list[CalendarEvent]:
-        timeline = self._manager.calendar.timeline_tz(start_date.tzinfo)
-        return [_calendar_event(e) for e in timeline.overlapping(start_date, end_date)]
+        return [_calendar_event(i) for i in self._manager.instances(start_date, end_date)]
 
     async def async_create_event(self, **kwargs: Any) -> None:
         event = _parse_event(kwargs)
