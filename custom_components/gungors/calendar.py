@@ -14,7 +14,10 @@ Each entry is a program (its description: see rules.py). The entries live in
 the program manager (program.py), which refuses a change that leaves an entry
 unreadable or makes two entries conflict; the error shows where the change was
 made (the calendar dialog, the program card, a service call). `defaults` are
-the values an attribute returns to when the program holding it with a `set` rule ends.
+the values the device returns to when a `set` rule ends (and covers at sunrise and
+sunset); `gungors.set_program_defaults` (field `defaults`, the program card's
+defaults tab) replaces them and keeps them in the store; the `defaults` attribute
+shows the ones in use.
 `gungors.pause_program` / `gungors.resume_program` (field `uid`) pause and resume
 an entry's running occurrence; the `paused` attribute lists the paused entries.
 """
@@ -51,7 +54,7 @@ from homeassistant.util import dt as dt_util
 
 from . import PLATFORMS
 from .const import DOMAIN
-from .program import async_get_manager
+from .program import async_get_manager, defaults_json
 from .rules import parse_defaults
 
 CONF_DEFAULTS = "defaults"
@@ -89,6 +92,9 @@ async def async_setup_platform(
     platform = entity_platform.async_get_current_platform()
     for service, method in (("pause_program", "async_pause"), ("resume_program", "async_resume")):
         platform.async_register_entity_service(service, {vol.Required("uid"): cv.string}, method)
+    platform.async_register_entity_service(
+        "set_program_defaults", {vol.Required("defaults"): dict}, "async_set_defaults"
+    )
 
 
 def _parse_event(event: dict[str, Any]) -> Event:
@@ -171,7 +177,13 @@ class ProgramCalendar(CalendarEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"paused": self._manager.paused_now()}
+        return {
+            "paused": self._manager.paused_now(),
+            "defaults": defaults_json(self._manager.defaults),
+        }
+
+    async def async_set_defaults(self, defaults: dict[str, Any]) -> None:
+        await self._manager.async_set_defaults(defaults)
 
     async def async_pause(self, uid: str) -> None:
         await self._manager.async_pause(uid)

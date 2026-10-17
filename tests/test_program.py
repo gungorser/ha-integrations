@@ -682,3 +682,39 @@ async def test_old_entries_become_set_rules(hass: HomeAssistant, calls, hass_sto
         "brightness": Constraint(max=40, set=True),
     }
     assert hass_storage["gungors.program"]["data"]["format"] == 2
+
+
+async def test_set_program_defaults(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_storage
+) -> None:
+    await setup_all(hass)
+    assert hass.states.get(CALENDAR).attributes["defaults"] == {
+        "light": {"on": False, "color": [255, 255, 255]},
+        "climate": {"hvac_mode": "off"},
+        "cover": {"position": "sun"},
+    }
+    await hass.services.async_call(
+        "gungors", "set_program_defaults",
+        {"entity_id": CALENDAR, "defaults": {"light": {"on": True, "brightness": 30}}},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    defaults = hass.states.get(CALENDAR).attributes["defaults"]
+    assert defaults["light"] == {"on": True, "brightness": 30}
+    assert defaults["cover"] == {"position": "sun"}
+    assert hass_storage["gungors.program"]["data"]["defaults"]["light"] == {
+        "on": True, "brightness": 30
+    }
+    with pytest.raises(HomeAssistantError, match="unknown attribute"):
+        await hass.services.async_call(
+            "gungors", "set_program_defaults",
+            {"entity_id": CALENDAR, "defaults": {"light": {"temperature": 20}}}, blocking=True,
+        )
+    # The new defaults apply when a set rule ends.
+    lamp(hass, False)
+    await hass.async_block_till_done()
+    await add_entry(hass, "x", {"target": LIGHT, "light": {"color": {"eq": "red", "set": True}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(hours=1, seconds=2))
+    assert hass.states.get(LIGHT).state == "on"
+    assert brightness(hass) == 76

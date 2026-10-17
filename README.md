@@ -94,7 +94,9 @@ climate:
   the nearest allowed value without asking.
 - When a set rule ends the device returns to its defaults (calendar `defaults`,
   overridable per entity: light `on: false`, `color: white`; climate `hvac_mode: "off"`;
-  cover `position: sun`); let rules just lift. Covers take their `position` default at
+  cover `position: sun`; the program card's defaults tab changes them through
+  `gungors.set_program_defaults`, stored from then on in place of the YAML ones); let rules
+  just lift. Covers take their `position` default at
   sunrise and sunset too. Defaults never lock. (Entries saved before the set/let flag
   were turned into set rules once.)
 

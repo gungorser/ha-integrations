@@ -93,4 +93,16 @@ resume_program:
       selector:
         text:
 
+set_program_defaults:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    defaults:
+      required: true
+      example: '{"light": {"on": false, "color": "white"}, "cover": {"position": "sun"}}'
+      selector:
+        object:
+
 reload:
