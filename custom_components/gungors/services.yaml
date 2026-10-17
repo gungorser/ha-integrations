@@ -101,7 +101,7 @@ set_program_defaults:
   fields:
     defaults:
       required: true
-      example: '{"light": {"on": false, "color": "white"}, "cover": {"position": "sun"}}'
+      example: '{"light": {"state": "off", "rgb_color": [255, 255, 255]}, "cover": {"current_position": "{{ 100 if is_state(''sun.sun'', ''above_horizon'') else 0 }}"}}'
       selector:
         object:
 

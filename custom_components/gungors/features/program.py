@@ -1,7 +1,8 @@
 """`program`: follow the active entries of `calendar.program` (see rules.py).
 
-`- program` (first in the feature list), or `- program: {<attr>: <default>}` to
-override the domain defaults of the program calendar for this entity.
+`- program` (first in the feature list), or `- program: {<name>: <default>}` to
+override the domain defaults of the program calendar for this entity (names as
+in the rules: `state`, `brightness_pct`, ..., a value or a template).
 
 While programs are active the entity follows their rules:
 
@@ -17,11 +18,11 @@ While programs are active the entity follows their rules:
   brings the device into it: a set brightness, colour or colour temperature rule
   keeps the light on, a set temperature rule keeps the heating on.
 - When a `set` rule ends, the device returns to its defaults, except what other
-  set rules still hold (light off and white, heating off, cover `position: sun`:
+  set rules still hold (light off and white, heating off, covers by the sun:
   open by day, closed at night). `let` rules just lift.
-- Covers whose position no program holds follow the `position` default at
-  sunrise and sunset. Defaults are applied at those moments only; they never
-  lock anything.
+- A template default (the covers' sun one) is applied again whenever its result
+  changes, unless a set rule holds the attribute. Defaults are applied at those
+  moments only; they never lock anything.
 
 Attribute `program`: the active programs of this entity (summary, start, end,
 rules). The attributes `set` rules hold survive a restart, so a program that
@@ -39,11 +40,23 @@ import voluptuous as vol
 from homeassistant.components.climate import HVACMode
 from homeassistant.components.light import ColorMode
 from homeassistant.core import Event, State, callback
+from homeassistant.exceptions import TemplateError
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.template import Template
 from homeassistant.util import color as color_util
 
 from ..core import SOURCE_REMOTE, Feature, Request, register
-from ..rules import DOMAINS, Constraint, implied, parse_defaults
+from ..rules import (
+    DOMAINS,
+    NAMES,
+    Constraint,
+    attr_of,
+    default_value,
+    external,
+    implied,
+    is_template,
+    parse_defaults,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -117,19 +130,32 @@ def _finite(constraint: Constraint, fallback: float | None) -> float | None:
     return None
 
 
+def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
+    result = constraint.as_dict()
+    if "eq" in result:
+        result["eq"] = external(attr, constraint.eq)
+    return result
+
+
 def _own_defaults(value: Any) -> dict[str, Any]:
-    """`- program: {<attr>: <default>}`: this entity's own defaults."""
+    """`- program: {<name>: <default>}`: this entity's own defaults (read per domain later)."""
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise vol.Invalid("program: a mapping of attribute: default value")
-    result: dict[str, Any] = {}
-    for attr, default in value.items():
-        attr = "on" if attr is True else attr
-        if attr not in DOMAINS:
-            raise vol.Invalid(f"program: unknown attribute '{attr}'")
-        result.update(parse_defaults(DOMAINS[attr], {attr: default}))
-    return result
+    for key, default in value.items():
+        domains = [d for d in dict.fromkeys(DOMAINS.values()) if attr_of(d, key) is not None]
+        if not domains:
+            raise vol.Invalid(f"program: unknown attribute '{key}'")
+        errors = []
+        for domain in domains:
+            try:
+                parse_defaults(domain, {key: default})
+            except vol.Invalid as err:
+                errors.append(err)
+        if len(errors) == len(domains):
+            raise errors[0]
+    return dict(value)
 
 
 @register("cover", "climate", "light")
@@ -154,7 +180,8 @@ class Program(Feature):
     def gw_program_defaults(self, domain_defaults: dict[str, Any]) -> dict[str, Any]:
         own = self.gw_conf(KEY) or {}
         domain = self._prog_domain
-        return {**domain_defaults, **{a: v for a, v in own.items() if DOMAINS[a] == domain}}
+        mine = {k: v for k, v in own.items() if attr_of(domain, k) is not None}
+        return {**domain_defaults, **parse_defaults(domain, mine)}
 
     async def gw_program_set(self, active: list[dict[str, Any]], defaults: dict[str, Any]) -> None:
         """The manager's new set of active programs for this entity."""
@@ -173,11 +200,27 @@ class Program(Feature):
     async def gw_program_apply_defaults(self, attrs: list[str], defaults: dict[str, Any]) -> None:
         """Apply the defaults of attributes no program holds any more."""
         values = self.gw_program_defaults(defaults)
-        wanted = {a: v for a, v in values.items() if a in attrs and a not in self._prog_set}
+        wanted = {}
+        for attr, value in values.items():
+            if attr in attrs and attr not in self._prog_set:
+                value = self._prog_render(attr, value)
+                if value is not None:
+                    wanted[attr] = value
         data = self._prog_default_request(wanted)
         if data:
             _LOGGER.debug("%s: program defaults %s", self.entity_id, data)
             await self.gw_request(Request(data, tags={TAG}))
+
+    def _prog_render(self, attr: str, value: Any) -> Any:
+        """A default's value now (a template rendered and checked), None if it can't be had."""
+        if not is_template(value):
+            return value
+        try:
+            rendered = Template(value, self.hass).async_render(parse_result=True)
+            return default_value(attr, rendered)
+        except (TemplateError, vol.Invalid) as err:
+            _LOGGER.warning("%s: default %s %r: %s", self.entity_id, NAMES[attr], value, err)
+            return None
 
     # --- chain ---------------------------------------------------------------
 
@@ -442,14 +485,9 @@ class Program(Feature):
                 data["temperature"] = float(wanted["temperature"])
             return data or None
         if "position" in wanted:
-            position = wanted["position"]
-            if position == "sun":
-                sun = self.hass.states.get("sun.sun")
-                if sun is None:
-                    return None
-                position = 100 if sun.state == "above_horizon" else 0
+            position = int(round(float(wanted["position"])))
             if self.current_cover_position != position:
-                return {"position": int(position)}
+                return {"position": position}
         return None
 
     def _prog_light_values(self, wanted: dict[str, Any]) -> dict[str, Any]:
@@ -603,7 +641,7 @@ class Program(Feature):
                 "summary": p["summary"],
                 "start": p["start"],
                 "end": p["end"],
-                "rules": {a: c.as_dict() for a, c in p["rules"].items()},
+                "rules": {NAMES[a]: _shown(a, c) for a, c in p["rules"].items()},
             }
             for p in self._prog_active
         ]
