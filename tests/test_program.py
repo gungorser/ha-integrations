@@ -18,6 +18,7 @@ from homeassistant.util import color as color_util, dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.gungors.rules import (
+    SUN_TEMPLATE,
     Constraint,
     dump_program,
     parse_defaults,
@@ -72,13 +73,13 @@ def test_dump_program_round_trip() -> None:
     text = dump_program(program)
     assert text == (
         'target: [Yatak, light.x, "on"]\n'
-        "light:\n  on: true\n  brightness: {max: 40}\n  color: [255, 0, 0]\n"
-        "climate:\n  hvac_mode: heat\n  temperature: 21.5\n"
-        "cover:\n  position: {min: 0, max: 30}\n"
+        'light:\n  state: "on"\n  brightness_pct: {max: 40}\n  rgb_color: [255, 0, 0]\n'
+        "climate:\n  state: heat\n  temperature: 21.5\n"
+        "cover:\n  current_position: {min: 0, max: 30}\n"
     )
     assert parse_program(text) == program
     off = parse_program("target: x\nclimate: {hvac_mode: 'off'}")
-    assert 'hvac_mode: "off"' in dump_program(off)
+    assert 'state: "off"' in dump_program(off)
     assert parse_program(dump_program(off)) == off
 
 
@@ -118,8 +119,8 @@ def test_set_flag_and_eq_only() -> None:
         "color_temp": Constraint(eq=3000, set=True),
     }
     text = dump_program(program)
-    assert "brightness: {min: 50, set: true}" in text
-    assert "color_temp: {eq: 3000, set: true}" in text
+    assert "brightness_pct: {min: 50, set: true}" in text
+    assert "color_temp_kelvin: {eq: 3000, set: true}" in text
     assert parse_program(text) == program
     for bad in (
         "target: x\nlight: {color_temp: {min: 3000}}",
@@ -136,25 +137,25 @@ def test_set_flag_and_eq_only() -> None:
 def test_conflicts_with_implied_rules() -> None:
     lit = parse_program("target: x\nlight: {brightness: {min: 50, set: true}}").rules
     dark = parse_program("target: x\nlight: {on: false}").rules
-    assert rules_conflict(lit, dark, "light") == "on"
+    assert rules_conflict(lit, dark, "light") == "state"
     # A let brightness rule is satisfied by an off light.
     let = parse_program("target: x\nlight: {brightness: {min: 50}}").rules
     assert rules_conflict(let, dark, "light") is None
     heat = parse_program("target: x\nclimate: {temperature: {eq: 21, set: true}}").rules
     off = parse_program("target: x\nclimate: {hvac_mode: 'off'}").rules
-    assert rules_conflict(heat, off, "climate") == "hvac_mode"
+    assert rules_conflict(heat, off, "climate") == "state"
 
 
 def test_conflicts() -> None:
     a = parse_program("target: x\nrules: {brightness: {max: 40}, color: red}").rules
     assert rules_conflict(a, parse_program("target: x\nrules: {brightness: {min: 60}}").rules,
-                          "light") == "brightness"
+                          "light") == "brightness_pct"
     assert rules_conflict(a, parse_program("target: x\nrules: {brightness: {min: 30}}").rules,
                           "light") is None
     assert rules_conflict(a, parse_program("target: x\nrules: {color: blue}").rules,
-                          "light") == "color"
+                          "light") == "rgb_color"
     assert rules_conflict(a, parse_program("target: x\nrules: {color_temp: 3000}").rules,
-                          "light") == "color/color_temp"
+                          "light") == "rgb_color/color_temp_kelvin"
     # Rules of another domain never conflict here.
     assert rules_conflict(a, parse_program("target: x\nrules: {temperature: 21}").rules,
                           "light") is None
@@ -164,7 +165,18 @@ def test_defaults() -> None:
     assert parse_defaults("light", {"on": False, "color": "white"}) == {
         "on": False, "color": (255, 255, 255)
     }
-    assert parse_defaults("cover", {"position": "sun"}) == {"position": "sun"}
+    assert parse_defaults("light", {"state": "off", "rgb_color": [255, 255, 255]}) == {
+        "on": False, "color": (255, 255, 255)
+    }
+    assert parse_defaults("climate", {"state": "off"}) == {"hvac_mode": "off"}
+    # The older `sun` is the sun template.
+    assert parse_defaults("cover", {"position": "sun"}) == {"position": SUN_TEMPLATE}
+    template = "{{ 30 if is_state('input_boolean.x', 'on') else 70 }}"
+    assert parse_defaults("cover", {"current_position": template}) == {"position": template}
+    with pytest.raises(vol.Invalid, match="template"):
+        parse_defaults("cover", {"current_position": "{{ 100 if }}"})
+    with pytest.raises(vol.Invalid):
+        parse_defaults("light", {"state": "maybe"})
     with pytest.raises(vol.Invalid):
         parse_defaults("light", {"temperature": 20})
     with pytest.raises(vol.Invalid):
@@ -364,7 +376,7 @@ async def test_light_limits(
     assert brightness(hass) == 102
     program = hass.states.get(LIGHT).attributes["program"]
     assert [p["summary"] for p in program] == ["melike_uyku"]
-    assert program[0]["rules"] == {"brightness": {"max": 40}}
+    assert program[0]["rules"] == {"brightness_pct": {"max": 40}}
 
     # A request above the limit is clamped.
     await hass.services.async_call("light", "turn_on", {"entity_id": LIGHT, "brightness": 255},
@@ -681,7 +693,11 @@ async def test_old_entries_become_set_rules(hass: HomeAssistant, calls, hass_sto
         "on": Constraint(eq=True, set=True),
         "brightness": Constraint(max=40, set=True),
     }
-    assert hass_storage["gungors.program"]["data"]["format"] == 2
+    assert hass_storage["gungors.program"]["data"]["format"] == 3
+    # Written again with Home Assistant's names.
+    assert event.description == (
+        'target: [x]\nlight:\n  state: {eq: "on", set: true}\n  brightness_pct: {max: 40, set: true}\n'
+    )
 
 
 async def test_set_program_defaults(
@@ -689,21 +705,21 @@ async def test_set_program_defaults(
 ) -> None:
     await setup_all(hass)
     assert hass.states.get(CALENDAR).attributes["defaults"] == {
-        "light": {"on": False, "color": [255, 255, 255]},
-        "climate": {"hvac_mode": "off"},
-        "cover": {"position": "sun"},
+        "light": {"state": "off", "rgb_color": [255, 255, 255]},
+        "climate": {"state": "off"},
+        "cover": {"current_position": SUN_TEMPLATE},
     }
     await hass.services.async_call(
         "gungors", "set_program_defaults",
-        {"entity_id": CALENDAR, "defaults": {"light": {"on": True, "brightness": 30}}},
+        {"entity_id": CALENDAR, "defaults": {"light": {"state": "on", "brightness_pct": 30}}},
         blocking=True,
     )
     await hass.async_block_till_done()
     defaults = hass.states.get(CALENDAR).attributes["defaults"]
-    assert defaults["light"] == {"on": True, "brightness": 30}
-    assert defaults["cover"] == {"position": "sun"}
+    assert defaults["light"] == {"state": "on", "brightness_pct": 30}
+    assert defaults["cover"] == {"current_position": SUN_TEMPLATE}
     assert hass_storage["gungors.program"]["data"]["defaults"]["light"] == {
-        "on": True, "brightness": 30
+        "state": "on", "brightness_pct": 30
     }
     with pytest.raises(HomeAssistantError, match="unknown attribute"):
         await hass.services.async_call(
@@ -718,3 +734,56 @@ async def test_set_program_defaults(
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
     assert hass.states.get(LIGHT).state == "on"
     assert brightness(hass) == 76
+
+
+def test_home_assistant_names() -> None:
+    new = parse_program(
+        "target: x\nlight:\n  state: on\n  brightness_pct: {min: 20}\n  rgb_color: red\n"
+        "climate:\n  state: heat\n  temperature: 21\ncover:\n  current_position: 0\n"
+    )
+    old = parse_program(
+        "target: x\nlight: {on: true, brightness: {min: 20}, color: red}\n"
+        "climate: {hvac_mode: heat, temperature: 21}\ncover: {position: 0}\n"
+    )
+    assert new == old
+    assert parse_program('target: x\nlight: {state: "off"}').rules == {"on": Constraint(eq=False)}
+    assert parse_program("target: x\nclimate: {state: off}").rules == {
+        "hvac_mode": Constraint(eq="off")
+    }
+    with pytest.raises(vol.Invalid, match="brightness_pct"):
+        parse_program("target: x\nlight: {brightness_pct: 300}")
+    with pytest.raises(vol.Invalid, match="given twice"):
+        parse_program("target: x\nlight: {state: on, on: true}")
+    with pytest.raises(vol.Invalid, match="known: state, brightness_pct"):
+        parse_program("target: x\nlight: {brightness: 5, hue: 3}")
+
+
+async def test_template_default_follows_its_result(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    hass.states.async_set("input_boolean.misafir", "off")
+    await setup_all(hass)
+    await hass.services.async_call(
+        "gungors", "set_program_defaults",
+        {"entity_id": CALENDAR, "defaults": {"cover": {
+            "current_position": "{{ 30 if is_state('input_boolean.misafir', 'on') else 70 }}"
+        }}},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    hass.states.async_set("input_boolean.misafir", "on")
+    await hass.async_block_till_done()
+    assert hass.states.get(COVER).attributes["current_position"] == 30
+    hass.states.async_set("input_boolean.misafir", "off")
+    await hass.async_block_till_done()
+    assert hass.states.get(COVER).attributes["current_position"] == 70
+    # A set rule holding the position wins over the template.
+    await add_entry(hass, "kapali", {"target": COVER, "cover": {"current_position": {"eq": 0, "set": True}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    assert hass.states.get(COVER).attributes["current_position"] == 0
+    hass.states.async_set("input_boolean.misafir", "on")
+    await hass.async_block_till_done()
+    assert hass.states.get(COVER).attributes["current_position"] == 0
+    # Its end applies the template's current result.
+    await tick(hass, freezer, timedelta(hours=1, seconds=2))
+    assert hass.states.get(COVER).attributes["current_position"] == 30

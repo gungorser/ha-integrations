@@ -17,7 +17,9 @@ are active for it now (features/program.py enforces them).
 - A running occurrence can be paused (`gungors.pause_program`): until it is
   resumed or ends it counts as not active, so its `set` attributes return to
   their defaults as at an end, and resuming applies it again as at a start.
-- At sunrise and sunset the covers take their `position` default.
+- A default can be a template (the covers' built-in one follows the sun:
+  open while it is up); whenever its result changes, the entities whose default
+  it is take the new value (unless a set rule holds that attribute).
 - The defaults come from the YAML (or built-in ones) until they are set with
   `gungors.set_program_defaults` (the program card's defaults tab); those are
   stored and replace the YAML ones from then on.
@@ -44,17 +46,22 @@ from homeassistant.helpers import (
     entity_registry as er,
 )
 from homeassistant.helpers.event import (
+    TrackTemplate,
     async_track_point_in_utc_time,
-    async_track_state_change_event,
+    async_track_template_result,
 )
+from homeassistant.helpers.template import Template
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .rules import (
     DOMAINS,
+    SUN_TEMPLATE,
     Program,
+    defaults_json,
     dump_program,
+    is_template,
     parse_defaults,
     parse_program,
     rules_conflict,
@@ -68,8 +75,8 @@ _LOGGER = logging.getLogger(__name__)
 DATA_MANAGER = "program"
 STORAGE_KEY = f"{DOMAIN}.program"
 STORAGE_VERSION = 1
-# Entry format: 2 = rules carry the set/let flag.
-FORMAT = 2
+# Entry format: 2 = rules carry the set/let flag; 3 = Home Assistant's attribute names.
+FORMAT = 3
 CHECK_HORIZON = datetime.timedelta(days=366)
 # Refresh at least this often (an entry far in the future, a missed timer).
 MAX_SLEEP = datetime.timedelta(hours=1)
@@ -77,7 +84,7 @@ MAX_SLEEP = datetime.timedelta(hours=1)
 DEFAULT_DEFAULTS: dict[str, dict[str, Any]] = {
     "light": {"on": False, "color": (255, 255, 255)},
     "climate": {"hvac_mode": "off"},
-    "cover": {"position": "sun"},
+    "cover": {"position": SUN_TEMPLATE},
 }
 
 
@@ -126,14 +133,6 @@ def instance_of(event: Event) -> Instance:
     )
 
 
-def defaults_json(defaults: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Defaults as plain JSON (colours as lists)."""
-    return {
-        domain: {a: list(v) if isinstance(v, tuple) else v for a, v in values.items()}
-        for domain, values in defaults.items()
-    }
-
-
 def copy_calendar(calendar: Calendar) -> Calendar:
     return IcsCalendarStream.calendar_from_ics(IcsCalendarStream.calendar_to_ics(calendar))
 
@@ -165,6 +164,8 @@ class ProgramManager:
         self._yaml_defaults: dict[str, dict[str, Any]] = {}
         # Defaults set from the card (store); None: the YAML ones apply.
         self._stored_defaults: dict[str, dict[str, Any]] | None = None
+        # Template defaults being tracked: text -> remove callback.
+        self._templates: dict[str, CALLBACK_TYPE] = {}
 
     # --- setup ---------------------------------------------------------------
 
@@ -187,13 +188,9 @@ class ProgramManager:
                         _LOGGER.warning("stored program defaults ignored: %s", err)
             self._loaded = True
             if data and data.get("format", 1) < FORMAT:
-                self._migrate()
+                self._migrate(data.get("format", 1))
                 await self._async_save()
         self._apply_defaults()
-        if not self._unsubs:
-            self._unsubs.append(
-                async_track_state_change_event(self.hass, ["sun.sun"], self._sun_changed)
-            )
         self.configured = True
         await self.async_refresh(force=True)
 
@@ -202,6 +199,9 @@ class ProgramManager:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        for remove in self._templates.values():
+            remove()
+        self._templates.clear()
         self._cancel_timer()
         self.configured = False
 
@@ -210,6 +210,7 @@ class ProgramManager:
         self.entities[entity.entity_id] = entity
         self._assigned.pop(entity.entity_id, None)
         if self.configured:
+            self._track_templates()
             self.hass.async_create_task(self.async_refresh())
 
         @callback
@@ -273,11 +274,50 @@ class ProgramManager:
         """Defaults set from the card replace the YAML ones (built-in ones below both)."""
         if self._stored_defaults is not None:
             self.defaults = {d: dict(v) for d, v in self._stored_defaults.items()}
-            return
-        self.defaults = {
-            domain: {**DEFAULT_DEFAULTS.get(domain, {}), **self._yaml_defaults.get(domain, {})}
-            for domain in DEFAULT_DEFAULTS
-        }
+        else:
+            self.defaults = {
+                domain: {**DEFAULT_DEFAULTS.get(domain, {}), **self._yaml_defaults.get(domain, {})}
+                for domain in DEFAULT_DEFAULTS
+            }
+        self._track_templates()
+
+    @callback
+    def _track_templates(self) -> None:
+        """Follow every template default (the domains' and the entities' own)."""
+        texts: set[str] = set()
+        for domain, values in self.defaults.items():
+            texts |= {v for v in values.values() if is_template(v)}
+        for entity_id, entity in self.entities.items():
+            own = entity.gw_program_defaults(self.defaults.get(entity_id.split(".")[0], {}))
+            texts |= {v for v in own.values() if is_template(v)}
+        for text in set(self._templates) - texts:
+            self._templates.pop(text)()
+        for text in texts - set(self._templates):
+            info = async_track_template_result(
+                self.hass,
+                [TrackTemplate(Template(text, self.hass), None)],
+                self._template_action(text),
+            )
+            self._templates[text] = info.async_remove
+
+    def _template_action(self, text: str) -> Callable[..., None]:
+        @callback
+        def action(_event: HAEvent | None, _updates: Any) -> None:
+            self._template_changed(text)
+
+        return action
+
+    @callback
+    def _template_changed(self, text: str) -> None:
+        """A template default has a new result: the entities it is the default of take it."""
+        for entity_id, entity in list(self.entities.items()):
+            domain_defaults = self.defaults.get(entity_id.split(".")[0], {})
+            values = entity.gw_program_defaults(domain_defaults)
+            attrs = [a for a, v in values.items() if v == text]
+            if attrs:
+                self.hass.async_create_task(
+                    entity.gw_program_apply_defaults(attrs, domain_defaults)
+                )
 
     async def async_set_defaults(self, defaults: dict[str, Any]) -> None:
         """New defaults per domain (`gungors.set_program_defaults`); a domain left out keeps its own."""
@@ -296,16 +336,23 @@ class ProgramManager:
         await self._async_save()
         self._changed()
 
-    def _migrate(self) -> None:
-        """Format 2: rules are `let` unless marked `set`; earlier entries all become `set`."""
+    def _migrate(self, old: int) -> None:
+        """Rewrite the entries in the current format.
+
+        Format 2: rules are `let` unless marked `set`; earlier entries all become `set`.
+        Format 3: Home Assistant's attribute names (the description is written again).
+        """
         for event in self.calendar.events:
             try:
                 program = parse_program(event.description)
             except vol.Invalid:
                 continue
-            rules = {a: replace(c, set=True) for a, c in program.rules.items()}
-            event.description = dump_program(replace(program, rules=rules))
-        _LOGGER.info("program entries migrated: their rules are now `set` rules")
+            if old < 2:
+                program = replace(
+                    program, rules={a: replace(c, set=True) for a, c in program.rules.items()}
+                )
+            event.description = dump_program(program)
+        _LOGGER.info("program entries migrated from format %s to %s", old, FORMAT)
 
     def _changed(self) -> None:
         for listener in list(self._listeners):
@@ -521,19 +568,3 @@ class ProgramManager:
             title="Program conflict",
             notification_id=f"{DOMAIN}_program_{instance.uid}_{entity_id}",
         )
-
-    @callback
-    def _sun_changed(self, event: HAEvent) -> None:
-        old, new = event.data.get("old_state"), event.data.get("new_state")
-        if old is None or new is None or old.state == new.state:
-            return
-        if new.state not in ("above_horizon", "below_horizon"):
-            return
-        defaults = self.defaults.get("cover", {})
-        if "position" not in defaults:
-            return
-        for entity_id, entity in list(self.entities.items()):
-            if entity_id.startswith("cover."):
-                self.hass.async_create_task(
-                    entity.gw_program_apply_defaults(["position"], defaults)
-                )

@@ -4,16 +4,22 @@ An entry's description holds the program as YAML, the rules grouped by domain::
 
     target: [Salon, light.melike_light]   # area ids/names and entity ids
     light:
-      on: true                 # a plain value is `eq`
-      brightness: {min: 50, set: true}   # percent
-      color: red               # a colour name or [r, g, b]
+      state: "on"              # a plain value is `eq`
+      brightness_pct: {min: 50, set: true}
+      rgb_color: [255, 0, 0]   # or a colour name
     climate:
       temperature: {min: 19, max: 22}
 
-(The older form with all attributes under one `rules:` key is still read.)
+The names follow Home Assistant (state, attributes, service fields):
+light `state` ("on"/"off"), `brightness_pct`, `rgb_color`, `color_temp_kelvin`;
+climate `state` (the HVAC mode: heat/off), `temperature`; cover
+`current_position`. Inside the integration the attributes keep short keys
+(`on`, `brightness`, `color`, `color_temp`, `hvac_mode`, `temperature`,
+`position`); the older names (those keys) and the older form with all attributes
+under one `rules:` key are still read.
 
 A rule is a constraint on one attribute: `eq`, `min` and/or `max`; `min`/`max`
-only for the numeric attributes brightness, temperature and position. A rule is
+only for the numeric attributes brightness_pct, temperature and current_position. A rule is
 `let` (the default) or `set` (`set: true`): a `let` rule only limits changes (an
 off light or heating satisfies it), a `set` rule also brings the device into it
 (a set brightness, colour or colour temperature rule keeps the light on, a set
@@ -57,6 +63,41 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "on": (True, False),
     "hvac_mode": ("heat", "off"),
 }
+# The name of each attribute in descriptions, defaults and attributes (Home Assistant's).
+NAMES: dict[str, str] = {
+    "on": "state",
+    "brightness": "brightness_pct",
+    "color": "rgb_color",
+    "color_temp": "color_temp_kelvin",
+    "hvac_mode": "state",
+    "temperature": "temperature",
+    "position": "current_position",
+}
+# A default may be a template, rendered when it is applied; e.g. covers by the sun:
+SUN_TEMPLATE = "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"
+
+
+def attr_of(domain: str, key: Any) -> str | None:
+    """The attribute a name stands for in a domain (Home Assistant's name or the older key)."""
+    if key is True:
+        key = "on"  # YAML 1.1 reads a bare `on:` key as True
+    for attr, name in NAMES.items():
+        if DOMAINS[attr] == domain and key == name:
+            return attr
+    return key if DOMAINS.get(key) == domain else None
+
+
+def is_template(value: Any) -> bool:
+    return isinstance(value, str) and ("{{" in value or "{%" in value)
+
+
+def external(attr: str, value: Any) -> Any:
+    """A value as written in descriptions and defaults (light state "on"/"off", lists)."""
+    if attr == "on" and isinstance(value, bool):
+        return "on" if value else "off"
+    return list(value) if isinstance(value, tuple) else value
+
+
 # Attributes that are one dimension for conflicts.
 SAME_DIMENSION = {"color": "color", "color_temp": "color"}
 TOLERANCE = 0.05
@@ -129,6 +170,13 @@ def _color(value: Any) -> tuple[int, int, int]:
 
 
 def _constraint(attr: str, value: Any) -> Constraint:
+    try:
+        return _constraint_of(attr, value)
+    except vol.Invalid as err:
+        raise vol.Invalid(str(err.msg).replace(f"{attr}:", f"{NAMES[attr]}:", 1)) from err
+
+
+def _constraint_of(attr: str, value: Any) -> Constraint:
     if isinstance(value, dict) and "set" in value:
         value = dict(value)
         flag = value.pop("set")
@@ -136,7 +184,7 @@ def _constraint(attr: str, value: Any) -> Constraint:
             raise vol.Invalid(f"{attr}: set is true or false")
         if not value:
             raise vol.Invalid(f"{attr}: a value (eq, min or max) besides set")
-        return replace(_constraint(attr, value), set=flag)
+        return replace(_constraint_of(attr, value), set=flag)
     if attr == "color":
         if isinstance(value, dict):
             if set(value) != {"eq"}:
@@ -151,8 +199,11 @@ def _constraint(attr: str, value: Any) -> Constraint:
         if attr == "hvac_mode":
             # YAML 1.1 reads a bare `off` as False.
             value = "off" if value is False else str(value).lower()
+        elif attr == "on" and isinstance(value, str) and value.lower() in ("on", "off"):
+            value = value.lower() == "on"
         if value not in CHOICES[attr]:
-            raise vol.Invalid(f"{attr}: one of {', '.join(map(str, CHOICES[attr]))}")
+            shown = ("on", "off") if attr == "on" else CHOICES[attr]
+            raise vol.Invalid(f"{attr}: one of {', '.join(map(str, shown))}")
         return Constraint(eq=value)
     low, high = NUMERIC[attr]
 
@@ -205,10 +256,6 @@ def implied(rules: dict[str, Constraint]) -> dict[str, Constraint]:
     return result
 
 
-def _attr(key: Any) -> Any:
-    return "on" if key is True else key  # YAML 1.1 reads a bare `on:` key as True
-
-
 def parse_program(description: str | None) -> Program:
     """Parse an entry description; raise vol.Invalid with a readable message."""
     if not description or not description.strip():
@@ -237,7 +284,10 @@ def parse_program(description: str | None) -> Program:
     if "rules" in data:
         if not isinstance(data["rules"], dict):
             raise vol.Invalid("rules: a mapping of attribute: value")
-        pairs += [(_attr(k), v) for k, v in data["rules"].items()]
+        for key, value in data["rules"].items():
+            key = "on" if key is True else key
+            attr = next((a for d in domains if (a := attr_of(d, key)) is not None), key)
+            pairs.append((attr, value))
     for domain in domains:
         if domain not in data:
             continue
@@ -245,27 +295,31 @@ def parse_program(description: str | None) -> Program:
         if not isinstance(values, dict) or not values:
             raise vol.Invalid(f"{domain}: a mapping of attribute: value")
         for key, value in values.items():
-            attr = _attr(key)
-            if DOMAINS.get(attr) != domain:
-                known = ", ".join(a for a, d in DOMAINS.items() if d == domain)
-                raise vol.Invalid(f"{domain}: unknown attribute '{attr}' (known: {known})")
+            attr = attr_of(domain, key)
+            if attr is None:
+                known = ", ".join(NAMES[a] for a, d in DOMAINS.items() if d == domain)
+                raise vol.Invalid(f"{domain}: unknown attribute '{key}' (known: {known})")
+            if attr in (p[0] for p in pairs):
+                raise vol.Invalid(f"{domain}: '{NAMES[attr]}' is given twice")
             pairs.append((attr, value))
     if not pairs:
         raise vol.Invalid(f"at least one rule under {', '.join(domains)}")
     parsed: dict[str, Constraint] = {}
     for attr, value in pairs:
         if attr not in DOMAINS:
-            raise vol.Invalid(f"unknown rule '{attr}' (known: {', '.join(DOMAINS)})")
+            raise vol.Invalid(f"unknown rule '{attr}' (known: {', '.join(dict.fromkeys(NAMES.values()))})")
         if attr in parsed:
-            raise vol.Invalid(f"'{attr}' is given twice")
+            raise vol.Invalid(f"'{NAMES[attr]}' is given twice")
         parsed[attr] = _constraint(attr, value)
     if "color" in parsed and "color_temp" in parsed:
-        raise vol.Invalid("color and color_temp can't be in the same program")
+        raise vol.Invalid("rgb_color and color_temp_kelvin can't be in the same program")
     for attr, constraint in parsed.items():
         if constraint.set and attr in IMPLIES:
             other, value = IMPLIES[attr]
             if other in parsed and parsed[other].eq != value:
-                raise vol.Invalid(f"set {attr} keeps {other} at {_scalar(value)}")
+                raise vol.Invalid(
+                    f"set {NAMES[attr]} keeps {NAMES[other]} at {_scalar(external(other, value))}"
+                )
     return Program(target=tuple(t.strip() for t in target), rules=parsed)
 
 
@@ -298,11 +352,13 @@ def dump_program(program: Program) -> str:
         lines.append(f"{domain}:")
         for attr, constraint in rules.items():
             as_dict = constraint.as_dict()
+            if "eq" in as_dict:
+                as_dict["eq"] = external(attr, constraint.eq)
             if "eq" in as_dict and len(as_dict) == 1:
                 value = _scalar(as_dict["eq"])
             else:
                 value = "{" + ", ".join(f"{k}: {_scalar(v)}" for k, v in as_dict.items()) + "}"
-            lines.append(f"  {attr}: {value}")
+            lines.append(f"  {NAMES[attr]}: {value}")
     return "\n".join(lines) + "\n"
 
 
@@ -318,39 +374,74 @@ def constraints_conflict(attr: str, a: Constraint, b: Constraint) -> bool:
 def rules_conflict(
     a: dict[str, Constraint], b: dict[str, Constraint], domain: str
 ) -> str | None:
-    """The first attribute on which two rule sets conflict for a domain, or None."""
+    """The first attribute on which two rule sets conflict for a domain (its name), or None."""
     a = {k: v for k, v in implied(a).items() if DOMAINS[k] == domain}
     b = {k: v for k, v in implied(b).items() if DOMAINS[k] == domain}
     for attr, constraint in a.items():
         if attr in b and constraints_conflict(attr, constraint, b[attr]):
-            return attr
+            return NAMES[attr]
         other = next(
             (o for o in b if o != attr and SAME_DIMENSION.get(o, o) == SAME_DIMENSION.get(attr)),
             None,
         )
         if other is not None:
-            return f"{attr}/{other}"
+            return f"{NAMES[attr]}/{NAMES[other]}"
     return None
 
 
-def parse_defaults(domain: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the default values of a domain: {attr: value}.
+def _check_template(name: str, text: str) -> None:
+    import jinja2  # noqa: PLC0415  (Home Assistant's own dependency)
 
-    A cover's `position` may be `sun` (open while the sun is up, closed at night).
+    try:
+        jinja2.Environment().parse(text)
+    except jinja2.TemplateSyntaxError as err:
+        raise vol.Invalid(f"{name}: template error: {err}") from err
+
+
+def parse_defaults(domain: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Validate the default values of a domain: {name: value} -> {attr: value}.
+
+    A value may be a template (rendered with default_value when applied);
+    the older cover `position: sun` reads as SUN_TEMPLATE.
     """
     if not isinstance(data, dict):
         raise vol.Invalid(f"{domain} defaults: a mapping of attribute: value")
     result: dict[str, Any] = {}
-    for attr, value in data.items():
-        if attr is True:
-            attr = "on"
-        if DOMAINS.get(attr) != domain:
-            raise vol.Invalid(f"{domain} defaults: unknown attribute '{attr}'")
+    for key, value in data.items():
+        attr = attr_of(domain, key)
+        if attr is None:
+            raise vol.Invalid(f"{domain} defaults: unknown attribute '{key}'")
         if attr == "position" and value == "sun":
-            result[attr] = "sun"
+            value = SUN_TEMPLATE
+        if is_template(value):
+            _check_template(f"{domain} defaults: {NAMES[attr]}", value)
+            result[attr] = value
             continue
-        constraint = _constraint(attr, value)
-        if constraint.eq is None:
-            raise vol.Invalid(f"{domain} defaults: {attr} needs a single value")
-        result[attr] = constraint.eq
+        try:
+            result[attr] = default_value(attr, value)
+        except vol.Invalid as err:
+            raise vol.Invalid(f"{domain} defaults: {err.msg}") from err
     return result
+
+
+def default_value(attr: str, value: Any) -> Any:
+    """One default value (a rendered template too), checked: the attribute's exact value."""
+    if attr == "on" and isinstance(value, str) and value.lower() in ("true", "false"):
+        value = value.lower() == "true"
+    if attr in NUMERIC and isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            pass
+    constraint = _constraint(attr, value)
+    if constraint.eq is None:
+        raise vol.Invalid(f"{NAMES[attr]} needs a single value")
+    return constraint.eq
+
+
+def defaults_json(defaults: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Defaults as written (Home Assistant's names, plain JSON)."""
+    return {
+        domain: {NAMES[a]: external(a, v) for a, v in values.items()}
+        for domain, values in defaults.items()
+    }

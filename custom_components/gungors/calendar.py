@@ -5,17 +5,18 @@ calendar:
   - platform: gungors
     name: program
     defaults:            # optional, these are the built-in ones
-      light: {on: false, color: white}
-      climate: {hvac_mode: "off"}
-      cover: {position: sun}
+      light: {state: "off", rgb_color: [255, 255, 255]}
+      climate: {state: "off"}
+      cover:             # open while the sun is up (a template, rendered when applied)
+        current_position: "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"
 ```
 
 Each entry is a program (its description: see rules.py). The entries live in
 the program manager (program.py), which refuses a change that leaves an entry
 unreadable or makes two entries conflict; the error shows where the change was
 made (the calendar dialog, the program card, a service call). `defaults` are
-the values the device returns to when a `set` rule ends (and covers at sunrise and
-sunset); `gungors.set_program_defaults` (field `defaults`, the program card's
+the values the device returns to when a `set` rule ends; a template default is
+also applied whenever its result changes; `gungors.set_program_defaults` (field `defaults`, the program card's
 defaults tab) replaces them and keeps them in the store; the `defaults` attribute
 shows the ones in use.
 `gungors.pause_program` / `gungors.resume_program` (field `uid`) pause and resume
@@ -54,8 +55,8 @@ from homeassistant.util import dt as dt_util
 
 from . import PLATFORMS
 from .const import DOMAIN
-from .program import async_get_manager, defaults_json
-from .rules import parse_defaults
+from .program import async_get_manager
+from .rules import defaults_json, parse_defaults
 
 CONF_DEFAULTS = "defaults"
 

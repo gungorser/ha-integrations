@@ -69,8 +69,8 @@ rules grouped by domain:
 ```yaml
 target: [Salon, light.melike_light]
 light:
-  on: true
-  brightness: {min: 50, set: true}
+  state: "on"
+  brightness_pct: {min: 50, set: true}
 climate:
   temperature: {max: 21}
 ```
@@ -78,11 +78,14 @@ climate:
 - `target`: area ids or names and entity ids (entities with the `program` feature). Areas
   are resolved again at every start.
 - `light`, `climate`, `cover`: one rule per attribute, a value (`eq`) or `{min, max}`, plus
-  `set: true` for a set rule (`{eq: 21, set: true}`). Attributes: light `on`, `brightness`
-  (%), `color` (a name or `[r, g, b]`), `color_temp` (K); climate `hvac_mode` (`heat`/`off`),
-  `temperature`; cover `position`. `min`/`max` only for brightness, temperature and
-  position. A rule only touches the targeted entities of its domain. (The older form with
-  every attribute under one `rules:` key is still read.)
+  `set: true` for a set rule (`{eq: 21, set: true}`). Attributes, named as in Home Assistant:
+  light `state` (`"on"`/`"off"`), `brightness_pct`, `rgb_color` (`[r, g, b]` or a name),
+  `color_temp_kelvin`; climate `state` (the HVAC mode, `heat`/`off`), `temperature`; cover
+  `current_position`. `min`/`max` only for brightness_pct, temperature and current_position.
+  A rule only touches the targeted entities of its domain. (The older names `on`,
+  `brightness`, `color`, `color_temp`, `hvac_mode`, `position` and the older form with every
+  attribute under one `rules:` key are still read; saved entries were rewritten once with
+  the new names.)
 - `let` (the default) only limits: an off light or heating satisfies it. `set` also brings
   the device into the rule: a set brightness, colour or colour temperature keeps the light
   on, a set temperature keeps the heating on.
@@ -93,12 +96,15 @@ climate:
   value. Automations, wall switches and dials, and the state at the start are brought to
   the nearest allowed value without asking.
 - When a set rule ends the device returns to its defaults (calendar `defaults`,
-  overridable per entity: light `on: false`, `color: white`; climate `hvac_mode: "off"`;
-  cover `position: sun`; the program card's defaults tab changes them through
-  `gungors.set_program_defaults`, stored from then on in place of the YAML ones); let rules
-  just lift. Covers take their `position` default at
-  sunrise and sunset too. Defaults never lock. (Entries saved before the set/let flag
-  were turned into set rules once.)
+  overridable per entity with `- program: {<name>: <value>}`: light `state: "off"`,
+  `rgb_color: [255, 255, 255]`; climate `state: "off"`; cover `current_position:
+  "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"`; the program card's defaults
+  tab changes them through `gungors.set_program_defaults`, stored from then on in place of
+  the YAML ones); let rules just lift. A default may be a template: it is rendered when
+  applied and applied again whenever its result changes (the cover one at sunrise and
+  sunset), unless a set rule holds the attribute. Defaults never lock. (The older cover
+  `position: sun` reads as the sun template; entries saved before the set/let flag were
+  turned into set rules once.)
 
 - `gungors.pause_program` / `gungors.resume_program` (target `calendar.program`, field
   `uid`): a paused running occurrence counts as ended (its set rules return the device to
