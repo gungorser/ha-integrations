@@ -77,6 +77,13 @@ climate:
 
 - `target`: area ids or names and entity ids (entities with the `program` feature). Areas
   are resolved again at every start.
+- `start`, `end` (optional): the start or end relative to the sun instead of the entry's own
+  time: `sunrise` or `sunset` with an optional offset (`sunset-30m`, `sunrise+2h`,
+  `sunrise+1h30m`). Every occurrence of a repeating entry takes its own day's sun. A sun end
+  that falls before the start is the next day's (`22:00` -> `end: sunrise` runs through the
+  night); an occurrence whose sun start comes at or after its fixed end is left out. The
+  entry's stored time then only marks the day; the calendar, conflicts and the card all use
+  the real times.
 - `light`, `climate`, `cover`: one rule per attribute, a value (`eq`) or `{min, max}`, plus
   `set: true` for a set rule (`{eq: 21, set: true}`). Attributes, named as in Home Assistant:
   light `state` (`"on"`/`"off"`), `brightness_pct`, `rgb_color` (`[r, g, b]` or a name),
