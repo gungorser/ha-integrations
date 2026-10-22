@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 import json
+from unittest.mock import patch
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
@@ -700,33 +701,19 @@ async def test_old_entries_become_set_rules(hass: HomeAssistant, calls, hass_sto
     )
 
 
-async def test_set_program_defaults(
+async def test_yaml_program_defaults(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_storage
 ) -> None:
-    await setup_all(hass)
-    assert hass.states.get(CALENDAR).attributes["defaults"] == {
-        "light": {"state": "off", "rgb_color": [255, 255, 255]},
+    await setup_all(hass, {"defaults": {"light": {"state": "on", "brightness_pct": 30}}})
+    defaults = hass.states.get(CALENDAR).attributes["defaults"]
+    # Merged per domain over the built-in ones.
+    assert defaults == {
+        "light": {"state": "on", "rgb_color": [255, 255, 255], "brightness_pct": 30},
         "climate": {"state": "off"},
         "cover": {"current_position": SUN_TEMPLATE},
     }
-    await hass.services.async_call(
-        "gungors", "set_program_defaults",
-        {"entity_id": CALENDAR, "defaults": {"light": {"state": "on", "brightness_pct": 30}}},
-        blocking=True,
-    )
-    await hass.async_block_till_done()
-    defaults = hass.states.get(CALENDAR).attributes["defaults"]
-    assert defaults["light"] == {"state": "on", "brightness_pct": 30}
-    assert defaults["cover"] == {"current_position": SUN_TEMPLATE}
-    assert hass_storage["gungors.program"]["data"]["defaults"]["light"] == {
-        "state": "on", "brightness_pct": 30
-    }
-    with pytest.raises(HomeAssistantError, match="unknown attribute"):
-        await hass.services.async_call(
-            "gungors", "set_program_defaults",
-            {"entity_id": CALENDAR, "defaults": {"light": {"temperature": 20}}}, blocking=True,
-        )
-    # The new defaults apply when a set rule ends.
+    assert not hass.services.has_service("gungors", "set_program_defaults")
+    # The defaults apply when a set rule ends.
     lamp(hass, False)
     await hass.async_block_till_done()
     await add_entry(hass, "x", {"target": LIGHT, "light": {"color": {"eq": "red", "set": True}}},
@@ -734,6 +721,40 @@ async def test_set_program_defaults(
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
     assert hass.states.get(LIGHT).state == "on"
     assert brightness(hass) == 76
+    assert "defaults" not in hass_storage["gungors.program"]["data"]
+
+
+async def test_bad_yaml_program_defaults(hass: HomeAssistant, calls) -> None:
+    await setup_all(hass, {"defaults": {"light": {"temperature": 20}}})
+    assert hass.states.get(CALENDAR) is None
+
+
+async def test_card_defaults_in_store_dropped(
+    hass: HomeAssistant, calls, hass_storage, caplog
+) -> None:
+    hass_storage["gungors.program"] = {
+        "version": 1, "minor_version": 1, "key": "gungors.program",
+        "data": {"ics": "", "paused": [], "format": 3,
+                 "defaults": {"light": {"state": "on"}, "climate": {"state": "off"}}},
+    }
+    await setup_all(hass)
+    assert hass.states.get(CALENDAR).attributes["defaults"]["light"] == {
+        "state": "off", "rgb_color": [255, 255, 255]
+    }
+    assert "set from the card are dropped" in caplog.text
+    await hass.async_block_till_done()
+    assert "defaults" not in hass_storage["gungors.program"]["data"]
+
+
+async def test_reload_picks_up_yaml_defaults(hass: HomeAssistant, calls) -> None:
+    await setup_all(hass)
+    with patch(
+        "homeassistant.config.load_yaml_config_file",
+        return_value={"calendar": [{"platform": "gungors", "defaults": {"climate": {"state": "heat"}}}]},
+    ):
+        await hass.services.async_call("gungors", "reload", blocking=True)
+        await hass.async_block_till_done()
+    assert hass.states.get(CALENDAR).attributes["defaults"]["climate"] == {"state": "heat"}
 
 
 def test_home_assistant_names() -> None:
@@ -762,15 +783,9 @@ async def test_template_default_follows_its_result(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
     hass.states.async_set("input_boolean.misafir", "off")
-    await setup_all(hass)
-    await hass.services.async_call(
-        "gungors", "set_program_defaults",
-        {"entity_id": CALENDAR, "defaults": {"cover": {
-            "current_position": "{{ 30 if is_state('input_boolean.misafir', 'on') else 70 }}"
-        }}},
-        blocking=True,
-    )
-    await hass.async_block_till_done()
+    await setup_all(hass, {"defaults": {"cover": {
+        "current_position": "{{ 30 if is_state('input_boolean.misafir', 'on') else 70 }}"
+    }}})
     hass.states.async_set("input_boolean.misafir", "on")
     await hass.async_block_till_done()
     assert hass.states.get(COVER).attributes["current_position"] == 30

@@ -103,9 +103,10 @@ climate:
 - When a set rule ends the device returns to its defaults (calendar `defaults`,
   overridable per entity with `- program: {<name>: <value>}`: light `state: "off"`,
   `rgb_color: [255, 255, 255]`; climate `state: "off"`; cover `current_position:
-  "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"`; the program card's defaults
-  tab changes them through `gungors.set_program_defaults`, stored from then on in place of
-  the YAML ones); let rules just lift. A default may be a template: it is rendered when
+  "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"`, merged per domain with the
+  calendar's YAML `defaults:`, which are the only place to change them: edit the YAML, then
+  `gungors.reload`; the program card's defaults tab only shows them); let rules just lift.
+  A default may be a template: it is rendered when
   applied and applied again whenever its result changes (the cover one at sunrise and
   sunset), unless a set rule holds the attribute. Defaults never lock. (The older cover
   `position: sun` reads as the sun template; entries saved before the set/let flag were
