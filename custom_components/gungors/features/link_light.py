@@ -8,7 +8,7 @@ any member is on, commands go to all of them; members may be gungors lights).
 - Accepted requests are sent to the original (switches get on/off only); the
   wrapper changes only when the original reports.
 - A change of the on state that we did not command is a physical request (it
-  goes through the features, e.g. a strict `hold` pushes it back). A report
+  goes through the features, e.g. a program rule brings it back). A report
   within a few seconds after our own command is its result and is taken as is.
 """
 from __future__ import annotations

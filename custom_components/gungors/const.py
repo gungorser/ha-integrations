@@ -4,7 +4,7 @@ DOMAIN = "gungors"
 
 CONF_FEATURES = "features"
 
-# Fired by the pushbutton blueprint for covers with the `buttons` feature.
+# Fired by the pushbutton blueprint for covers with the `window` feature (wall buttons).
 # event_data: {entity_id: str | list[str], action: "open" | "close"}
 EVENT_PHYSICAL_COVER = "gungors_physical_cover"
 
@@ -46,7 +46,3 @@ PHYSICAL_MODE_WAIT = 10
 # Minimum temperature difference (°C) considered a real change.
 TEMP_TOLERANCE = 0.05
 
-# --- hold ------------------------------------------------------------------------
-ATTR_HOLD = "hold"
-HOLD_STRICT = "strict"  # every deviation is rejected or pushed back
-HOLD_MANUAL = "manual"  # the state is set at the start, changes are allowed

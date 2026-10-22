@@ -16,7 +16,7 @@ from .conftest import setup_platform
     [
         ([], "features must be a non-empty list"),
         ("link", "features must be a non-empty list"),
-        ([{"hold": None, "link": "cover.x"}], "invalid feature entry"),
+        ([{"invert": None, "link": "cover.x"}], "invalid feature entry"),
         (["fly"], "unknown cover feature 'fly'"),
         ([{"window": "not an entity id"}], "feature 'window'"),
     ],
@@ -46,12 +46,12 @@ async def test_invalid_entries_are_not_created(
         # Unknown feature: rejected by the platform schema.
         {"name": "a_cover", "features": ["fly", {"link": "cover.a_blind"}]},
         # A feature listed twice.
-        {"name": "b_cover", "features": ["hold", "hold", {"link": "cover.b_blind"}]},
+        {"name": "b_cover", "features": ["invert", "invert", {"link": "cover.b_blind"}]},
         # Two movement trackers.
         {"name": "c_cover", "features": ["direction", "travel_time", {"link": "cover.c_blind"}]},
     )
     assert hass.states.get("cover.a_cover") is None
     assert hass.states.get("cover.b_cover") is None
     assert hass.states.get("cover.c_cover") is None
-    assert "feature listed twice: hold" in caplog.text
+    assert "feature listed twice: invert" in caplog.text
     assert "'motion' is claimed by both 'direction' and 'travel_time'" in caplog.text

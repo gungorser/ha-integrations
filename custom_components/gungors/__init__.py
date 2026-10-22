@@ -6,8 +6,8 @@ YAML list add behaviour on top. Platforms are configured in YAML
 (`cover: - platform: gungors`, `climate: ...`, `light: ...`).
 
 The `gungors.reload` service reloads the YAML of all platforms without a restart
-(Python changes still need a restart). Feature services (`gungors.hold`,
-`gungors.set_pid_gain`, ...) are registered here once for all domains and call
+(Python changes still need a restart). Feature services (`gungors.set_pid_gain`,
+`gungors.pause_program`, ...) are registered here once for all domains and call
 the feature's method on each targeted entity.
 """
 from __future__ import annotations

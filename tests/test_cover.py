@@ -1,4 +1,4 @@
-"""Cover features: link, direction, window, buttons, invert, hold."""
+"""Cover features: link, direction, window (and its wall buttons), invert."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -257,13 +257,13 @@ async def test_restart_in_sync_takes_real_position(hass: HomeAssistant, calls) -
     assert not calls.of("cover", "set_cover_position", RAW)
 
 
-# --- buttons -----------------------------------------------------------------
+# --- window: wall buttons -----------------------------------------------------
 
 
 async def test_buttons_ignore_window(hass: HomeAssistant, calls) -> None:
     hass.states.async_set(WINDOW, "on")
     raw(hass, 100)
-    await setup_guarded(hass, "buttons")
+    await setup_guarded(hass)
     assert hass.states.get(WRAPPER).attributes["physical_buttons"] is True
     hass.bus.async_fire("gungors_physical_cover", {"entity_id": [WRAPPER], "action": "close"})
     await hass.async_block_till_done()
@@ -310,7 +310,7 @@ async def test_group(hass: HomeAssistant, calls) -> None:
 
 async def test_group_follows_its_members(hass: HomeAssistant, calls) -> None:
     """The group's position is its members' (link only): our move is taken as it
-    goes, a move against it is physical (here pushed back by a strict hold)."""
+    goes, a move against it is physical (here pushed back by a pin)."""
     hass.states.async_set("input_number.a", "100")
     hass.states.async_set("input_number.b", "100")
     await setup_platform(
@@ -318,10 +318,11 @@ async def test_group_follows_its_members(hass: HomeAssistant, calls) -> None:
         "cover",
         {"name": "a_cover", "features": [{"link": "input_number.a"}]},
         {"name": "b_cover", "features": [{"link": "input_number.b"}]},
-        {"name": "ab_cover", "features": ["hold", {"link": ["cover.a_cover", "cover.b_cover"]}]},
+        {"name": "ab_cover",
+         "features": [{"pin": {"position": 0}}, {"link": ["cover.a_cover", "cover.b_cover"]}]},
     )
     await hass.services.async_call(
-        "gungors", "hold", {"entity_id": "cover.ab_cover", "state": {"position": 0}},
+        "cover", "set_cover_position", {"entity_id": "cover.ab_cover", "position": 0},
         blocking=True,
     )
     await hass.async_block_till_done()
@@ -334,7 +335,7 @@ async def test_group_follows_its_members(hass: HomeAssistant, calls) -> None:
     assert pos(hass, "cover.ab_cover") == 0
     calls.clear()
 
-    # b opened by hand: physical, the hold sends the group back to 0.
+    # b opened by hand: physical, the pin sends the group back to 0.
     hass.states.async_set("input_number.b", "60")
     await hass.async_block_till_done()
     await hass.async_block_till_done()
@@ -342,79 +343,7 @@ async def test_group_follows_its_members(hass: HomeAssistant, calls) -> None:
     assert calls.of("cover", "set_cover_position", "cover.b_cover")[-1]["position"] == 0
 
 
-# --- hold --------------------------------------------------------------------
-
-
-async def test_hold_strict(hass: HomeAssistant, calls) -> None:
-    hass.states.async_set("input_number.x", "50")
-    await setup_platform(
-        hass, "cover", {"name": "x_cover", "features": ["hold", {"link": "input_number.x"}]}
-    )
-    await hass.services.async_call(
-        "gungors", "hold",
-        {"entity_id": "cover.x_cover", "state": {"position": 0}, "duration": {"minutes": 10}},
-        blocking=True,
-    )
-    await hass.async_block_till_done()
-    assert calls.of("input_number", "set_value")[-1]["value"] == 0
-    hass.states.async_set("input_number.x", "0")
-    await hass.async_block_till_done()
-    assert hass.states.get("cover.x_cover").attributes["hold"]["mode"] == "strict"
-
-    # Remote request: rejected.
-    calls.clear()
-    await hass.services.async_call(
-        "cover", "open_cover", {"entity_id": "cover.x_cover"}, blocking=True
-    )
-    await hass.async_block_till_done()
-    assert not calls.of("input_number", "set_value")
-    assert pos(hass, "cover.x_cover") == 0
-
-    # Physical change: pushed back.
-    hass.states.async_set("input_number.x", "60")
-    await hass.async_block_till_done()
-    assert calls.of("input_number", "set_value")[-1]["value"] == 0
-
-    # Expired: changes allowed again.
-    hass.states.async_set("input_number.x", "0")
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=11))
-    await hass.async_block_till_done()
-    assert hass.states.get("cover.x_cover").attributes["hold"] is None
-    await hass.services.async_call(
-        "cover", "open_cover", {"entity_id": "cover.x_cover"}, blocking=True
-    )
-    await hass.async_block_till_done()
-    assert calls.of("input_number", "set_value")[-1]["value"] == 100
-
-
-async def test_hold_manual_and_release(hass: HomeAssistant, calls) -> None:
-    hass.states.async_set("input_number.x", "50")
-    await setup_platform(
-        hass, "cover", {"name": "x_cover", "features": ["hold", {"link": "input_number.x"}]}
-    )
-    await hass.services.async_call(
-        "gungors", "hold",
-        {"entity_id": "cover.x_cover", "state": {"position": 0}, "mode": "manual"},
-        blocking=True,
-    )
-    await hass.services.async_call(
-        "cover", "open_cover", {"entity_id": "cover.x_cover"}, blocking=True
-    )
-    await hass.async_block_till_done()
-    assert calls.of("input_number", "set_value")[-1]["value"] == 100
-    await hass.services.async_call(
-        "gungors", "release", {"entity_id": "cover.x_cover"}, blocking=True
-    )
-    assert hass.states.get("cover.x_cover").attributes["hold"] is None
-
-
-async def test_hold_service_on_entity_without_feature(hass: HomeAssistant, calls) -> None:
-    hass.states.async_set("input_number.x", "50")
-    await setup_platform(hass, "cover", {"name": "x_cover", "features": [{"link": "input_number.x"}]})
-    with pytest.raises(Exception, match="not a gungors entity"):
-        await hass.services.async_call(
-            "gungors", "release", {"entity_id": "cover.x_cover"}, blocking=True
-        )
+# --- helpers -----------------------------------------------------------------
 
 
 def entity(hass: HomeAssistant, entity_id: str = WRAPPER):
@@ -539,20 +468,17 @@ async def test_direction_unavailable_mid_move(hass: HomeAssistant, calls, freeze
     assert (state.state, state.attributes["current_position"]) == ("open", 85)
 
 
-async def test_direction_strict_hold_pushes_back_small_drift(
+async def test_direction_pushes_back_small_drift(
     hass: HomeAssistant, calls, freezer
 ) -> None:
     raw(hass, 50)
     await setup_platform(
         hass, "cover",
-        {"name": "sercan_cover", "features": ["hold", "direction", {"link": RAW}]},
-    )
-    await hass.services.async_call(
-        "gungors", "hold", {"entity_id": WRAPPER, "state": {"position": 50}}, blocking=True
+        {"name": "sercan_cover", "features": [{"pin": {"position": 50}}, "direction", {"link": RAW}]},
     )
     await hass.async_block_till_done()
     assert not calls.of("cover", "set_cover_position", RAW)
-    freezer.tick(timedelta(minutes=5))  # past the settling window of the hold's request
+    freezer.tick(timedelta(minutes=5))
     await report(hass, 51)  # the blind sagged by 1 %
     assert calls.of("cover", "set_cover_position", RAW)[-1]["position"] == 50
 
@@ -635,14 +561,13 @@ async def test_window_restore_and_save(hass: HomeAssistant, calls) -> None:
     assert entity(hass).extra_restore_state_data.as_dict() == {"window": {"pending": 30}}
 
 
-# --- buttons: more -------------------------------------------------------------
+# --- window: wall buttons, more ------------------------------------------------
 
 
 async def test_buttons_event_filtering(hass: HomeAssistant, calls) -> None:
+    hass.states.async_set(WINDOW, "off")
     raw(hass, 100)
-    await setup_platform(
-        hass, "cover", {"name": "sercan_cover", "features": ["buttons", {"link": RAW}]}
-    )
+    await setup_guarded(hass)
     for data in (
         {"entity_id": "cover.other_cover", "action": "close"},  # another cover
         {"entity_id": WRAPPER, "action": "toggle"},  # unknown action
@@ -654,108 +579,3 @@ async def test_buttons_event_filtering(hass: HomeAssistant, calls) -> None:
     await hass.async_block_till_done()
     assert calls.of("cover", "set_cover_position", RAW)[-1]["position"] == 0
 
-
-# --- hold: more ----------------------------------------------------------------
-
-
-async def test_hold_strict_rejects_stop_and_rearms(hass: HomeAssistant, calls, freezer) -> None:
-    raw(hass, 100)
-    await setup_platform(
-        hass, "cover", {"name": "sercan_cover", "features": ["hold", "direction", {"link": RAW}]}
-    )
-    hold = {"entity_id": WRAPPER, "state": {"position": 0}}
-    await hass.services.async_call(
-        "gungors", "hold", {**hold, "duration": {"minutes": 10}}, blocking=True
-    )
-    await travel(hass, 100, 70)
-    await cover(hass, "stop_cover")
-    assert not calls.of("cover", "stop_cover", RAW)
-
-    # A new hold replaces the old one and its timer.
-    await hass.services.async_call(
-        "gungors", "hold", {**hold, "duration": {"minutes": 30}}, blocking=True
-    )
-    freezer.tick(timedelta(minutes=15))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
-    assert hass.states.get(WRAPPER).attributes["hold"]["state"] == {"position": 0}
-    await hass.services.async_call("gungors", "release", {"entity_id": WRAPPER}, blocking=True)
-    assert hass.states.get(WRAPPER).attributes["hold"] is None
-    freezer.tick(timedelta(minutes=30))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
-    assert hass.states.get(WRAPPER).attributes["hold"] is None
-
-
-async def test_hold_until(hass: HomeAssistant, calls, freezer) -> None:
-    hass.states.async_set("input_number.x", "50")
-    await setup_platform(
-        hass, "cover", {"name": "x_cover", "features": ["hold", {"link": "input_number.x"}]}
-    )
-    until = dt_util.now().replace(tzinfo=None) + timedelta(hours=1)  # naive local time
-    await hass.services.async_call(
-        "gungors", "hold",
-        {"entity_id": "cover.x_cover", "state": {"position": 0}, "until": until.isoformat()},
-        blocking=True,
-    )
-    held = hass.states.get("cover.x_cover").attributes["hold"]
-    assert dt_util.parse_datetime(held["until"]) == dt_util.as_utc(
-        until.replace(tzinfo=dt_util.get_default_time_zone())
-    )
-    freezer.tick(timedelta(minutes=61))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
-    assert hass.states.get("cover.x_cover").attributes["hold"] is None
-
-
-async def test_hold_survives_restart(hass: HomeAssistant, calls, freezer) -> None:
-    until = (dt_util.utcnow() + timedelta(minutes=10)).isoformat()
-    expired = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
-    held = {"state": {"position": 0}, "mode": "strict", "until": until}
-    mock_restore_cache_with_extra_data(
-        hass,
-        [
-            (State("cover.a_cover", "closed", {"current_position": 0}),
-             {"base": {"target": 0}, "hold": held}),
-            (State("cover.b_cover", "closed", {"current_position": 0}),
-             {"base": {"target": 0}, "hold": {**held, "until": expired}}),
-        ],
-    )
-    hass.states.async_set("input_number.a", "0")
-    hass.states.async_set("input_number.b", "0")
-    await setup_platform(
-        hass, "cover",
-        {"name": "a_cover", "features": ["hold", {"link": "input_number.a"}]},
-        {"name": "b_cover", "features": ["hold", {"link": "input_number.b"}]},
-    )
-    assert hass.states.get("cover.a_cover").attributes["hold"] == held
-    assert hass.states.get("cover.b_cover").attributes["hold"] is None
-    assert entity(hass, "cover.a_cover").extra_restore_state_data.as_dict()["hold"] == held
-
-    # Still enforced after the restart ...
-    await hass.services.async_call(
-        "cover", "open_cover", {"entity_id": "cover.a_cover"}, blocking=True
-    )
-    await hass.async_block_till_done()
-    assert not calls.of("input_number", "set_value", "input_number.a")
-    # ... until the restored end.
-    freezer.tick(timedelta(minutes=11))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
-    assert hass.states.get("cover.a_cover").attributes["hold"] is None
-
-
-async def test_hold_remove_cancels_timer(hass: HomeAssistant, calls, freezer) -> None:
-    hass.states.async_set("input_number.x", "50")
-    await setup_platform(
-        hass, "cover", {"name": "x_cover", "features": ["hold", {"link": "input_number.x"}]}
-    )
-    await hass.services.async_call(
-        "gungors", "hold",
-        {"entity_id": "cover.x_cover", "state": {"position": 0}, "duration": {"minutes": 10}},
-        blocking=True,
-    )
-    ent = entity(hass, "cover.x_cover")
-    await ent.async_remove()
-    await hass.async_block_till_done()
-    assert ent._hold_unsub is None

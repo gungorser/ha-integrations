@@ -26,6 +26,7 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 
     if REPO_COMPONENTS not in custom_components.__path__:
         custom_components.__path__.append(REPO_COMPONENTS)
+    _register_pin()
     yield
 
 
@@ -85,3 +86,26 @@ async def setup_platform(hass: HomeAssistant, domain: str, *entries: dict[str, A
         hass, domain, {domain: [{"platform": "gungors", **e} for e in entries]}
     )
     await hass.async_block_till_done()
+
+
+def _register_pin() -> None:
+    """`pin: {<field>: <value>}` (tests only): rejects every request that leaves the
+    pinned values, so a physical change is pushed back (gw_physical -> gw_push)."""
+    from custom_components.gungors.core import FEATURES, Feature, register  # noqa: PLC0415
+
+    if "pin" in FEATURES.get("cover", {}):
+        return
+
+    @register("cover", "climate", "light")
+    class Pin(Feature):
+        feature_name = "pin"
+        schema = dict
+
+        async def gw_request(self, request) -> bool:
+            pinned = self.gw_conf("pin") or {}
+            if request.data.get("stop") or any(
+                key in request.data and request.data[key] != value
+                for key, value in pinned.items()
+            ):
+                return False
+            return await super().gw_request(request)

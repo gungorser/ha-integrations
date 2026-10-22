@@ -12,6 +12,11 @@ as open, fail safe).
   pending.
 - A pending request survives a restart and an unavailable device: the first
   position after that replays it if the window is closed by then.
+
+Wall buttons: the pushbutton blueprint fires `gungors_physical_cover` (entity_id,
+action open/close) for covers whose `physical_buttons` attribute is true (every
+cover with this feature). A press is a physical request, so it is never held by
+an open window. Covers without a window get the normal cover services instead.
 """
 from __future__ import annotations
 
@@ -23,7 +28,12 @@ from homeassistant.core import Event, State, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_state_change_event
 
-from ..const import ATTR_PENDING_POSITION, POSITION_TOLERANCE
+from ..const import (
+    ATTR_PENDING_POSITION,
+    ATTR_PHYSICAL_BUTTONS,
+    EVENT_PHYSICAL_COVER,
+    POSITION_TOLERANCE,
+)
 from ..core import SOURCE_INTERNAL, SOURCE_PHYSICAL, Feature, Request, as_float, register
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,6 +61,23 @@ class Window(Feature):
         await super().async_added_to_hass()
         self.async_on_remove(
             async_track_state_change_event(self.hass, [self.gw_conf(KEY)], self._win_changed)
+        )
+        self.async_on_remove(
+            self.hass.bus.async_listen(EVENT_PHYSICAL_COVER, self._win_button)
+        )
+
+    @callback
+    def _win_button(self, event: Event) -> None:
+        """A wall button press (from the pushbutton blueprint): a physical request."""
+        ids = event.data.get("entity_id", [])
+        if isinstance(ids, str):
+            ids = [ids]
+        action = event.data.get("action")
+        if self.entity_id not in ids or action not in ("open", "close") or not self.available:
+            return
+        position = 100 if action == "open" else 0
+        self.hass.async_create_task(
+            self.gw_request(Request({"position": position}, source=SOURCE_PHYSICAL))
         )
 
     # --- requests ------------------------------------------------------------
@@ -149,4 +176,5 @@ class Window(Feature):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs = dict(super().extra_state_attributes or {})
         attrs[ATTR_PENDING_POSITION] = self._win_pending
+        attrs[ATTR_PHYSICAL_BUTTONS] = True
         return attrs

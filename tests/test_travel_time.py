@@ -320,7 +320,7 @@ async def test_unavailable_while_waiting_for_stop_report(
     assert (s.state, s.attributes["current_position"]) == ("open", 75)
 
 
-async def test_strict_hold_pushes_back_with_estimate(
+async def test_pushback_with_estimate(
     hass: HomeAssistant, mqtt_mock, calls, freezer: FrozenDateTimeFactory
 ) -> None:
     hass.states.async_set(RAW, "open", {"current_position": 0})
@@ -328,10 +328,7 @@ async def test_strict_hold_pushes_back_with_estimate(
         hass,
         "cover",
         {"name": "salon_cover", "device_class": "curtain",
-         "features": ["hold", "invert", "travel_time", {"link": RAW}]},
-    )
-    await hass.services.async_call(
-        "gungors", "hold", {"entity_id": WRAPPER, "state": {"position": 100}}, blocking=True
+         "features": [{"pin": {"position": 100}}, "invert", "travel_time", {"link": RAW}]},
     )
     await hass.async_block_till_done()
     assert not calls.of("cover", "close_cover", RAW)  # already there

@@ -16,15 +16,14 @@ cover:
     name: sercan_cover
     device_class: blind
     features:
-      - hold
-      - buttons
+      - program
       - window: binary_sensor.sercan_window_contact
       - direction
       - link: cover.sercan_blind
 ```
 
 The features are combined by inheritance in list order (`core.py` has the rules): put features
-that intercept requests (`hold`, `window`) first; `link` is always last. Exactly one feature may
+that intercept requests (`program`, `window`) first; `link` is always last. Exactly one feature may
 write to an entity (the link writes the original, `valve` the TRV numbers, `pwm` the switch); an
 entry that breaks a rule is not created and the log says why.
 
@@ -32,12 +31,10 @@ entry that breaks a rule is not created and the log says why.
 |---|---|---|---|
 | `program` | all | - or `{<attr>: <default>}` | Follows the active entries of `calendar.program` (below); put it first. The value overrides the calendar's defaults for this entity |
 | `link` | all | entity id, or a list (group) | The original the wrapper drives; the wrapper is unavailable while it is. With only `link` the wrapper is the original: it keeps no state of its own and changes only when the original reports; other features change the behaviour. Cover: a cover or an `input_number`/`number` 0-100 (a list: their average). Climate: a climate (mode and target are the thermostat's). Light: a light or a switch |
-| `hold` | all | - | `gungors.hold` / `gungors.release`: set a state for a while, `strict` (enforced) or `manual` |
 | `direction` | cover | - or `{start_timeout, stop_silence}` | Movement tracking for blinds that only report positions (IKEA via Z2M) |
 | `travel_time` | cover | - or `{z2m_base_topic}` | Position estimation for curtain motors that report only at the end (Tuya via Z2M) |
 | `invert` | cover | - | The device's open is the room's close |
-| `window` | cover | binary_sensor | Holds remote commands while the window is open |
-| `buttons` | cover | - | Wall buttons through the pushbutton blueprint (`gungors_physical_cover`) |
+| `window` | cover | binary_sensor | Holds remote commands while the window is open; wall buttons (pushbutton blueprint, `gungors_physical_cover`) are physical and always go through |
 | `temperature` | climate | sensor | Room temperature |
 | `pid` | climate | `{kp, ki, kd, keep_alive, force_off, ...}` | Heating demand 0-100 (ScratMan's PID, vendored) |
 | `valve` | climate | `{opening, closing, min}` | Demand onto the TRV valve opening/closing degree numbers |
@@ -47,14 +44,15 @@ Each feature module's docstring (`features/*.py`) is its full reference: behavio
 attributes. Base classes: `cover.py`, `climate.py`, `light.py`.
 
 Attributes other repositories read: cover `actual_position`, `pending_position`,
-`physical_buttons` (true with `buttons`; the pushbutton blueprint selects covers by it),
+`physical_buttons` (true with `window`; the pushbutton blueprint sends those covers the
+`gungors_physical_cover` event, the others the normal cover services),
 `calibrated`, `position_source`, `open_time`, `close_time`; climate `hvac_action`,
 `physical_thermostat`, `control_output`, `heater_value`, `kp`, `ki`,
-`kd`, `pid_i`, `pid_mode`; every entity with `hold`: `hold`; every entity with `program`:
+`kd`, `pid_i`, `pid_mode`; every entity with `program`:
 `program` (its active programs: `uid`, `summary`, `start`, `end`, `rules`). A group wrapper has `entity_id`
 (its members) so `expand()` works.
 
-Services: `gungors.hold`, `gungors.release`, `gungors.set_pid_gain`, `gungors.set_pid_mode`,
+Services: `gungors.set_pid_gain`, `gungors.set_pid_mode`,
 `gungors.clear_integral`, `gungors.reload` (reloads the YAML of all platforms; Python changes
 still need a restart).
 
