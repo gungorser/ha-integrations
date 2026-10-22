@@ -744,21 +744,21 @@ async def test_valve_write_failure_is_logged(
 
 
 
-# --- heating above the target ----------------------------------------------------
+# --- integral and retries ----------------------------------------------------------
 
 
-async def test_pid_no_heat_above_target_with_wound_up_integral(
-    hass: HomeAssistant, calls
-) -> None:
-    trv(hass, temperature=21)
+async def test_pid_on_clears_integral(hass: HomeAssistant, calls) -> None:
+    trv(hass, "off", temperature=21)
     await setup_trv(hass, echo=True)
     await hass.services.async_call(
         "gungors", "clear_integral", {"entity_id": WRAPPER, "value": 100.0}, blocking=True
     )
     await set_state(hass, SENSOR, "21")
-    # Target just below the room: 100 - 16 = 84 before, now no heat.
+    await climate(hass, "set_hvac_mode", hvac_mode="heat")
     await climate(hass, "set_temperature", temperature=20.5)
+    # Without the reset: 100 - 16 * 0.5 = 92, heating above the target.
     state = hass.states.get(WRAPPER)
+    assert state.attributes["pid_i"] == 0
     assert state.attributes["control_output"] == 0
     assert state.attributes["hvac_action"] == "idle"
 
