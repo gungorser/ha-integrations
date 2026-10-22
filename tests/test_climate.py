@@ -1,4 +1,4 @@
-"""Climate features: link, temperature, pid, valve, pwm, hold."""
+"""Climate features: link, temperature, pid, valve, pwm."""
 from __future__ import annotations
 
 import asyncio
@@ -220,27 +220,6 @@ async def test_pid_services(hass: HomeAssistant, calls) -> None:
         "gungors", "set_pid_mode", {"entity_id": WRAPPER, "mode": "off"}, blocking=True
     )
     assert hass.states.get(WRAPPER).attributes["pid_mode"] == "off"
-
-
-async def test_hold_climate(hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory) -> None:
-    trv(hass, temperature=21)
-    await setup_trv(hass, "hold", echo=True)
-    await hass.services.async_call(
-        "gungors", "hold",
-        {"entity_id": WRAPPER, "state": {"hvac_mode": "heat", "temperature": 17}},
-        blocking=True,
-    )
-    await hass.async_block_till_done()
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 17
-    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 17
-
-    # Someone turns the TRV knob later: pushed back.
-    freezer.tick(timedelta(seconds=20))
-    calls.clear()
-    trv(hass, temperature=24)
-    await hass.async_block_till_done()
-    assert hass.states.get(WRAPPER).attributes["temperature"] == 17
-    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 17
 
 
 async def test_pwm(hass: HomeAssistant, calls) -> None:
@@ -714,17 +693,14 @@ async def test_trv_service_failure_is_logged(
 ) -> None:
     trv(hass, temperature=21)
     mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
-    await setup_trv(hass, "hold")
+    await setup_trv(hass)
 
     async def fail(call) -> None:
         raise HomeAssistantError("Zigbee2MQTT timeout")
 
-    # Replaces the climate entity service too, so the request comes from a hold.
+    # Replaces the climate entity service too, so the wrapper is called directly.
     hass.services.async_register("climate", "set_temperature", fail)
-    await hass.services.async_call(
-        "gungors", "hold",
-        {"entity_id": WRAPPER, "state": {"temperature": 22}, "mode": "manual"}, blocking=True,
-    )
+    await entity(hass).async_set_temperature(temperature=22)
     await hass.async_block_till_done()
     assert "climate.set_temperature on climate.sercan_climate failed" in caplog.text
     assert hass.states.get(WRAPPER).attributes["temperature"] == 21  # the TRV's
@@ -766,18 +742,3 @@ async def test_valve_write_failure_is_logged(
     assert "setting ['number.sercan_valve_opening'] to 53 failed" in caplog.text
     assert hass.states.get(WRAPPER).attributes["heater_value"] == 48
 
-
-async def test_hold_strict_mode_rejects_other_mode(hass: HomeAssistant, calls) -> None:
-    trv(hass, temperature=21)
-    mock_restore_cache(hass, [State(WRAPPER, "heat", {"temperature": 21})])
-    await setup_trv(hass, "hold")
-    await hass.services.async_call(
-        "gungors", "hold", {"entity_id": WRAPPER, "state": {"hvac_mode": "heat"}}, blocking=True
-    )
-    calls.clear()
-    await climate(hass, "set_hvac_mode", hvac_mode="off")
-    assert hass.states.get(WRAPPER).state == "heat"
-    assert not calls.of("climate", "set_hvac_mode", TRV)
-    # Only the mode is held: the temperature may change.
-    await climate(hass, "set_temperature", temperature=22)
-    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 22

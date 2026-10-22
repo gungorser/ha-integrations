@@ -1,32 +1,3 @@
-hold:
-  target:
-    entity:
-      integration: gungors
-  fields:
-    state:
-      required: true
-      example: '{"position": 0}'
-      selector:
-        object:
-    duration:
-      selector:
-        duration:
-    until:
-      selector:
-        datetime:
-    mode:
-      default: strict
-      selector:
-        select:
-          options:
-            - strict
-            - manual
-
-release:
-  target:
-    entity:
-      integration: gungors
-
 set_pid_gain:
   target:
     entity:

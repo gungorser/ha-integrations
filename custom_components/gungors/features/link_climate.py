@@ -9,7 +9,7 @@
   OFF, the setpoint waits until it reports the new mode (EMS-ESP stores a
   setpoint received while OFF as its off temperature).
 - A change on the thermostat that we did not command is a physical request (it
-  goes through the features, e.g. a strict `hold` pushes it back). Reports within
+  goes through the features, e.g. a program rule brings it back). Reports within
   a few seconds after our own command are its result and are taken as is.
 - The wrapper is unavailable while the thermostat is; the thermostat's min_temp
   is used when the wrapper has none configured.

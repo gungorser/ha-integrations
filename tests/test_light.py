@@ -1,4 +1,4 @@
-"""Light features: link (light, switch, group) and hold."""
+"""Light features: link (light, switch, group)."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -136,25 +136,6 @@ async def test_group(hass: HomeAssistant, calls) -> None:
     assert calls.of("light", "turn_off", "light.bahce_light_2")
     # The member wrapper got the command and passed it to its own original.
     assert calls.of("light", "turn_off", "light.bahce_lamp_1")
-
-
-async def test_hold_light(hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory) -> None:
-    lamp(hass, "off")
-    await setup_platform(
-        hass, "light", {"name": "salon_light", "features": ["hold", {"link": LAMP}]}
-    )
-    await hass.services.async_call(
-        "gungors", "hold",
-        {"entity_id": WRAPPER, "state": {"on": False}, "duration": {"hours": 1}},
-        blocking=True,
-    )
-    await light(hass, "turn_on")
-    assert not calls.of("light", "turn_on", LAMP)
-    # On at the wall: turned off again.
-    freezer.tick(timedelta(seconds=10))
-    lamp(hass, "on", brightness=10)
-    await hass.async_block_till_done()
-    assert calls.of("light", "turn_off", LAMP)
 
 
 def entity(hass: HomeAssistant, entity_id: str = WRAPPER):

@@ -12,8 +12,8 @@ sent (`gw_apply`); the wrapper's position changes only when the original reports
 Every new position goes up the chain (`gw_device_report`, where a movement feature
 may take it); by default a report on the way to our last command (from where the
 move started to its target) is its result and is taken as is, anything else is a
-physical change (a strict `hold` pushes it back: `gw_push` re-sends the wrapper's
-position).
+physical change (a feature that rejects it pushes it back: `gw_push` re-sends the
+wrapper's position).
 """
 from __future__ import annotations
 

@@ -104,14 +104,14 @@ async def test_cover_linked_to_number(hass: HomeAssistant, calls) -> None:
 async def test_ikea_blind_with_window(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """sercan_cover, bebek_cover, yatak_cover_window: hold, buttons, window, direction, link."""
+    """sercan_cover, bebek_cover, yatak_cover_window: window (with wall buttons), direction, link."""
     raw, window, wrapper = "cover.sercan_blind", "binary_sensor.sercan_window", "cover.sercan_cover"
     hass.states.async_set(window, "off")
     blind(hass, raw, 100)
     await setup_platform(
         hass, "cover",
         {"name": "sercan_cover", "device_class": "blind",
-         "features": ["hold", "buttons", {"window": window}, "direction", {"link": raw}]},
+         "features": [{"window": window}, "direction", {"link": raw}]},
     )
     assert attr(hass, wrapper, "current_position") == 100
 
@@ -148,13 +148,13 @@ async def test_ikea_blind_with_window(
 
 
 async def test_ikea_blind_without_window(hass: HomeAssistant, calls) -> None:
-    """koridor1_cover: hold, buttons, direction, link."""
+    """koridor1_cover: direction, link."""
     raw, wrapper = "cover.koridor1_blind", "cover.koridor1_cover"
     blind(hass, raw, 0)
     await setup_platform(
         hass, "cover",
         {"name": "koridor1_cover", "device_class": "blind",
-         "features": ["hold", "buttons", "direction", {"link": raw}]},
+         "features": ["direction", {"link": raw}]},
     )
     assert hass.states.get(wrapper).state == "closed"
 
@@ -166,22 +166,22 @@ async def test_ikea_blind_without_window(hass: HomeAssistant, calls) -> None:
     await blind_travels(hass, raw, 0, 100)
     assert hass.states.get(wrapper).state == "open"
 
-    # wall button
-    hass.bus.async_fire("gungors_physical_cover", {"entity_id": [wrapper], "action": "close"})
-    await hass.async_block_till_done()
+    # wall button: no window, so the blueprint sends the normal cover service
+    assert attr(hass, wrapper, "physical_buttons") is None
+    await call(hass, "cover", "close_cover", wrapper)
     assert calls.of("cover", "set_cover_position", raw)[-1]["position"] == 0
 
 
 async def test_ikea_blind_direction_only(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """yatak_cover_1 / yatak_cover_3: hold, direction, link."""
+    """yatak_cover_1 / yatak_cover_3: direction, link."""
     raw, wrapper = "cover.yatak_blind_1", "cover.yatak_cover_1"
     blind(hass, raw, 100)
     await setup_platform(
         hass, "cover",
         {"name": "yatak_cover_1", "device_class": "blind",
-         "features": ["hold", "direction", {"link": raw}]},
+         "features": ["direction", {"link": raw}]},
     )
     assert attr(hass, wrapper, "physical_buttons") is None
 
@@ -204,7 +204,7 @@ async def test_ikea_blind_direction_only(
 async def test_cover_group_of_wrappers(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """yatak_cover: hold, link [three wrappers]."""
+    """yatak_cover: link [three wrappers]."""
     members = {}
     for n in (1, 3):
         raw = f"cover.yatak_blind_{n}"
@@ -213,11 +213,11 @@ async def test_cover_group_of_wrappers(
     await setup_platform(
         hass, "cover",
         *[
-            {"name": wrapper.split(".")[1], "features": ["hold", "direction", {"link": raw}]}
+            {"name": wrapper.split(".")[1], "features": ["direction", {"link": raw}]}
             for wrapper, raw in members.items()
         ],
         {"name": "yatak_cover", "device_class": "blind",
-         "features": ["hold", {"link": list(members)}]},
+         "features": [{"link": list(members)}]},
     )
     group = "cover.yatak_cover"
     assert attr(hass, group, "current_position") == 100
@@ -241,7 +241,7 @@ async def test_cover_group_of_wrappers(
 async def test_tuya_curtain(
     hass: HomeAssistant, mqtt_mock, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """salon_cover / misafir_cover: hold, invert, travel_time, link."""
+    """salon_cover / misafir_cover: invert, travel_time, link."""
     raw, wrapper = "cover.salon_curtain", "cover.salon_cover"
     hass.states.async_set(raw, "open", {"current_position": 0})
     with patch(
@@ -251,7 +251,7 @@ async def test_tuya_curtain(
         await setup_platform(
             hass, "cover",
             {"name": "salon_cover", "device_class": "curtain",
-             "features": ["hold", "invert", "travel_time", {"link": raw}]},
+             "features": ["invert", "travel_time", {"link": raw}]},
         )
         assert attr(hass, wrapper, "current_position") == 100  # motor 0 = room open
 
@@ -280,7 +280,7 @@ async def test_tuya_curtain(
 async def test_trv_thermostat(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """sercan_thermostat ... yatak_thermostat: hold, pid, valve, temperature, link."""
+    """sercan_thermostat ... yatak_thermostat: pid, valve, temperature, link."""
     trv, sensor = "climate.sercan_climate", "sensor.sercan_sensor_temperature"
     opening = "number.sercan_climate_valve_opening_degree"
     closing = "number.sercan_climate_valve_closing_degree"
@@ -294,7 +294,6 @@ async def test_trv_thermostat(
         hass, "climate",
         {"name": "sercan_thermostat", "max_temp": 35,
          "features": [
-             "hold",
              {"pid": {"kp": 16, "ki": 0.01, "kd": 4, "keep_alive": {"minutes": 15},
                       "force_off": False, "debug": True}},
              {"valve": {"opening": opening, "closing": closing, "min": 10}},
@@ -334,7 +333,7 @@ async def test_trv_thermostat(
 async def test_pwm_thermostat(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """salon_thermostat: hold, pid, pwm, temperature, link (EMS-ESP hc1)."""
+    """salon_thermostat: pid, pwm, temperature, link (EMS-ESP hc1)."""
     hc1, sensor, socket = "climate.thermostat_hc1", "sensor.thermostat_hc1_currtemp", "switch.koridor0_socket"
     wrapper = "climate.salon_thermostat"
     hc1_attrs = {"hvac_modes": ["heat", "off"], "min_temp": 5}
@@ -345,7 +344,6 @@ async def test_pwm_thermostat(
         hass, "climate",
         {"name": "salon_thermostat", "max_temp": 35,
          "features": [
-             "hold",
              {"pid": {"kp": 150, "ki": 0, "kd": 0, "keep_alive": {"minutes": 15},
                       "force_off": False, "debug": True}},
              {"pwm": {"entity": socket, "period": "00:15:00", "min_cycle_duration": 60}},
@@ -391,10 +389,10 @@ LIGHT_ATTRS = {
 async def test_light_linked_to_light(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """banyo_light ... yemek_light: hold, link (Zigbee2MQTT light)."""
+    """banyo_light ... yemek_light: link (Zigbee2MQTT light)."""
     lamp, wrapper = "light.salon_lamp", "light.salon_light"
     hass.states.async_set(lamp, "off", LIGHT_ATTRS)
-    await setup_platform(hass, "light", {"name": "salon_light", "features": ["hold", {"link": lamp}]})
+    await setup_platform(hass, "light", {"name": "salon_light", "features": [{"link": lamp}]})
     assert hass.states.get(wrapper).state == "off"
 
     # wrapper -> original
@@ -423,10 +421,10 @@ async def test_light_linked_to_light(
 async def test_light_linked_to_switch(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
-    """mutfak_light: hold, link: switch.yemek_2 (relay)."""
+    """mutfak_light: link: switch.yemek_2 (relay)."""
     relay, wrapper = "switch.yemek_2", "light.mutfak_light"
     hass.states.async_set(relay, "off")
-    await setup_platform(hass, "light", {"name": "mutfak_light", "features": ["hold", {"link": relay}]})
+    await setup_platform(hass, "light", {"name": "mutfak_light", "features": [{"link": relay}]})
 
     # wrapper -> original
     await call(hass, "light", "turn_on", wrapper)
@@ -447,15 +445,15 @@ async def test_light_linked_to_switch(
 
 
 async def test_light_group(hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory) -> None:
-    """bahce_light_1 + bahce_light: hold, link [wrapper, UI group, light]."""
+    """bahce_light_1 + bahce_light: link [wrapper, UI group, light]."""
     hass.states.async_set("light.bahce_lamp_1", "off", LIGHT_ATTRS)
     hass.states.async_set("light.bahce_light_2", "off", LIGHT_ATTRS)
     hass.states.async_set("light.bahce_light_3", "off", LIGHT_ATTRS)
     members = ["light.bahce_light_1", "light.bahce_light_2", "light.bahce_light_3"]
     await setup_platform(
         hass, "light",
-        {"name": "bahce_light_1", "features": ["hold", {"link": "light.bahce_lamp_1"}]},
-        {"name": "bahce_light", "features": ["hold", {"link": members}]},
+        {"name": "bahce_light_1", "features": [{"link": "light.bahce_lamp_1"}]},
+        {"name": "bahce_light", "features": [{"link": members}]},
     )
     group = "light.bahce_light"
     assert hass.states.get(group).state == "off"

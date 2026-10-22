@@ -7,14 +7,14 @@ A gungors entity is a domain base class (``GungorsCover``, ``GungorsClimate``,
       - platform: gungors
         name: sercan_cover
         features:
-          - hold
+          - program
           - window: binary_sensor.sercan_window_contact
           - direction
           - link: cover.sercan_blind
 
 Each feature is a mixin class. The entity class is built at setup time with the
 features as bases in YAML order, so the first feature is the outermost one in the
-MRO: ``type(name, (Hold, Window, Direction, Link, GungorsCover), {})``.
+MRO: ``type(name, (Program, Window, Direction, Link, GungorsCover), {})``.
 
 Rules every feature follows (cooperative inheritance):
 
