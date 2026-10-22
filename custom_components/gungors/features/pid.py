@@ -13,11 +13,10 @@ The control loop of ScratMan's SmartThermostat with its PID class
 
 - A new temperature sample, a new target and a new mode recalculate the output;
   keep_alive re-applies the last one. The output goes down ``gw_demand()``.
-- Switching to OFF sets the demand to 0 once and clears the integral; with
-  `force_off` (default) an output that is still active while OFF is set to 0 again
-  on each cycle.
-- No heat while the room is above the target: the output is 0 then, whatever the
-  integral holds.
+- Switching to OFF sets the demand to 0 once; with `force_off` (default) an output
+  that is still active while OFF is set to 0 again on each cycle.
+- The integral is cleared when the thermostat is switched off and when it is
+  switched on again: the heat an earlier period needed says nothing about the next.
 - Each sample interval is integrated once: a recalculation without a new sample (new
   target, new mode) does not add the last interval again.
 - The loop pauses while the entity is unavailable.
@@ -141,13 +140,17 @@ class Pid(Feature):
                 self._pid_control = OUT_MIN
                 self._gw_temp_prev_time = None
                 self._pid_ctrl.clear_samples()
-                # The heat an earlier period needed says nothing about the next one.
-                self._pid_ctrl.integral = 0.0
-                self._pid_i = 0.0
+                self._pid_clear_integral()
                 if self.available:
                     await self.gw_demand(self._pid_control)
             return
+        if previous_mode == HVACMode.OFF:
+            self._pid_clear_integral()  # switched on
         await self.gw_pid_run(calc=True)
+
+    def _pid_clear_integral(self) -> None:
+        self._pid_ctrl.integral = 0.0
+        self._pid_i = 0.0
 
     @callback
     def gw_device_available(self, available: bool) -> None:
@@ -216,8 +219,6 @@ class Pid(Feature):
             self._gw_current_temp, self._gw_target_temp,
             self._gw_temp_time, prev_time, None,
         )
-        if ctrl.mode == "AUTO" and self._gw_current_temp > self._gw_target_temp:
-            output = OUT_MIN  # above the target: no heat
         precision = self.gw_conf(KEY)["output_precision"]
         self._pid_p = round(ctrl.proportional, precision)
         self._pid_i = round(ctrl.integral, precision)
