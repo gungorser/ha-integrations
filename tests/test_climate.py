@@ -742,3 +742,80 @@ async def test_valve_write_failure_is_logged(
     assert "setting ['number.sercan_valve_opening'] to 53 failed" in caplog.text
     assert hass.states.get(WRAPPER).attributes["heater_value"] == 48
 
+
+
+# --- heating above the target ----------------------------------------------------
+
+
+async def test_pid_no_heat_above_target_with_wound_up_integral(
+    hass: HomeAssistant, calls
+) -> None:
+    trv(hass, temperature=21)
+    await setup_trv(hass, echo=True)
+    await hass.services.async_call(
+        "gungors", "clear_integral", {"entity_id": WRAPPER, "value": 100.0}, blocking=True
+    )
+    await set_state(hass, SENSOR, "21")
+    # Target just below the room: 100 - 16 = 84 before, now no heat.
+    await climate(hass, "set_temperature", temperature=20.5)
+    state = hass.states.get(WRAPPER)
+    assert state.attributes["control_output"] == 0
+    assert state.attributes["hvac_action"] == "idle"
+
+
+async def test_pid_integral_unwinds_above_target(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    trv(hass, temperature=20)
+    await setup_trv(hass, echo=True)
+    await hass.services.async_call(
+        "gungors", "clear_integral", {"entity_id": WRAPPER, "value": 100.0}, blocking=True
+    )
+    await set_state(hass, SENSOR, "30")  # 100 - 16 * 10: output below 0
+    await advance(hass, freezer, 600)
+    await set_state(hass, SENSOR, "30.1")
+    # ki 0.01 * -10.1 * 600 s = -60.6: the integral shrinks although the output is below 0.
+    assert attr(hass, WRAPPER, "pid_i") == pytest.approx(39.4, abs=0.1)
+
+
+async def test_pid_recalc_without_sample_integrates_nothing(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    trv(hass, temperature=20)
+    await setup_trv(hass, echo=True)
+    await advance(hass, freezer, 600)
+    await set_state(hass, SENSOR, "19")
+    before = attr(hass, WRAPPER, "pid_i")
+    # Recalculations without a new sample do not add the last 600 s again.
+    for _ in range(3):
+        await hass.services.async_call(
+            "gungors", "set_pid_gain", {"entity_id": WRAPPER, "kp": 16}, blocking=True
+        )
+    assert attr(hass, WRAPPER, "pid_i") == before
+
+
+async def test_pid_off_clears_integral(hass: HomeAssistant, calls) -> None:
+    trv(hass, temperature=21)
+    await setup_trv(hass, echo=True)
+    await hass.services.async_call(
+        "gungors", "clear_integral", {"entity_id": WRAPPER, "value": 60.0}, blocking=True
+    )
+    await climate(hass, "set_hvac_mode", hvac_mode="off")
+    assert attr(hass, WRAPPER, "pid_i") == 0
+
+
+async def test_pwm_rejected_off_is_retried(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    await setup_pwm(hass)
+    await set_state(hass, SOCKET, "on")
+    calls.clear()
+    # Target below the room right after switching on: rejected (on cycle too short) ...
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": SALON, "temperature": 18}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert not calls.of("switch", "turn_off", SOCKET)
+    # ... and done once min_cycle_duration is over, without a new sample.
+    await advance(hass, freezer, 65)
+    assert calls.of("switch", "turn_off", SOCKET)
