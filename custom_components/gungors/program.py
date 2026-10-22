@@ -23,9 +23,10 @@ are active for it now (features/program.py enforces them).
 - A default can be a template (the covers' built-in one follows the sun:
   open while it is up); whenever its result changes, the entities whose default
   it is take the new value (unless a set rule holds that attribute).
-- The defaults come from the YAML (or built-in ones) until they are set with
-  `gungors.set_program_defaults` (the program card's defaults tab); those are
-  stored and replace the YAML ones from then on.
+- The defaults come from the YAML (`defaults:` of the calendar platform) over
+  the built-in ones; `gungors.reload` picks up a change. Defaults stored by
+  gungors before 1.9.0 (from the program card) are dropped once, with a warning
+  if they differed from the YAML ones.
 """
 from __future__ import annotations
 
@@ -67,7 +68,6 @@ from .rules import (
     defaults_json,
     dump_program,
     is_template,
-    parse_defaults,
     parse_program,
     rules_conflict,
 )
@@ -219,8 +219,6 @@ class ProgramManager:
         # Paused occurrences: "<uid>|<start isoformat>".
         self.paused: set[str] = set()
         self._yaml_defaults: dict[str, dict[str, Any]] = {}
-        # Defaults set from the card (store); None: the YAML ones apply.
-        self._stored_defaults: dict[str, dict[str, Any]] | None = None
         # Template defaults being tracked: text -> remove callback.
         self._templates: dict[str, CALLBACK_TYPE] = {}
 
@@ -229,25 +227,29 @@ class ProgramManager:
     async def async_configure(self, defaults: dict[str, dict[str, Any]]) -> None:
         """Called by the calendar platform: load the entries and start."""
         self._yaml_defaults = defaults
+        self._apply_defaults()
         if not self._loaded:
             data = await self._store.async_load()
             if data and data.get("ics"):
                 self.calendar = IcsCalendarStream.calendar_from_ics(data["ics"])
             if data:
                 self.paused = set(data.get("paused", []))
-                stored = data.get("defaults")
-                if isinstance(stored, dict):
-                    try:
-                        self._stored_defaults = {
-                            d: parse_defaults(d, stored.get(d, {})) for d in DEFAULT_DEFAULTS
-                        }
-                    except vol.Invalid as err:
-                        _LOGGER.warning("stored program defaults ignored: %s", err)
             self._loaded = True
+            save = False
+            if data and "defaults" in data:
+                # Set from the program card before 1.9.0; the YAML is the only source now.
+                if data["defaults"] != defaults_json(self.defaults):
+                    _LOGGER.warning(
+                        "program defaults set from the card are dropped, the YAML ones apply"
+                        " (put these in the calendar's `defaults:` to keep them): %s",
+                        data["defaults"],
+                    )
+                save = True
             if data and data.get("format", 1) < FORMAT:
                 self._migrate(data.get("format", 1))
+                save = True
+            if save:
                 await self._async_save()
-        self._apply_defaults()
         self.configured = True
         await self.async_refresh(force=True)
 
@@ -341,21 +343,16 @@ class ProgramManager:
             "paused": sorted(self.paused),
             "format": FORMAT,
         }
-        if self._stored_defaults is not None:
-            data["defaults"] = defaults_json(self._stored_defaults)
         await self._store.async_save(data)
 
     # --- defaults ------------------------------------------------------------
 
     def _apply_defaults(self) -> None:
-        """Defaults set from the card replace the YAML ones (built-in ones below both)."""
-        if self._stored_defaults is not None:
-            self.defaults = {d: dict(v) for d, v in self._stored_defaults.items()}
-        else:
-            self.defaults = {
-                domain: {**DEFAULT_DEFAULTS.get(domain, {}), **self._yaml_defaults.get(domain, {})}
-                for domain in DEFAULT_DEFAULTS
-            }
+        """The YAML defaults over the built-in ones, per domain."""
+        self.defaults = {
+            domain: {**DEFAULT_DEFAULTS.get(domain, {}), **self._yaml_defaults.get(domain, {})}
+            for domain in DEFAULT_DEFAULTS
+        }
         self._track_templates()
 
     @callback
@@ -395,23 +392,6 @@ class ProgramManager:
                 self.hass.async_create_task(
                     entity.gw_program_apply_defaults(attrs, domain_defaults)
                 )
-
-    async def async_set_defaults(self, defaults: dict[str, Any]) -> None:
-        """New defaults per domain (`gungors.set_program_defaults`); a domain left out keeps its own."""
-        if not isinstance(defaults, dict):
-            raise HomeAssistantError("defaults: a mapping of domain: {attribute: value}")
-        result = {d: dict(v) for d, v in self.defaults.items()}
-        for domain, values in defaults.items():
-            if domain not in DEFAULT_DEFAULTS:
-                raise HomeAssistantError(f"defaults: unknown domain '{domain}'")
-            try:
-                result[domain] = parse_defaults(domain, values or {})
-            except vol.Invalid as err:
-                raise HomeAssistantError(str(err)) from err
-        self._stored_defaults = result
-        self._apply_defaults()
-        await self._async_save()
-        self._changed()
 
     def _migrate(self, old: int) -> None:
         """Rewrite the entries in the current format.
