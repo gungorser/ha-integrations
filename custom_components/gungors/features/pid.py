@@ -13,8 +13,13 @@ The control loop of ScratMan's SmartThermostat with its PID class
 
 - A new temperature sample, a new target and a new mode recalculate the output;
   keep_alive re-applies the last one. The output goes down ``gw_demand()``.
-- Switching to OFF sets the demand to 0 once; with `force_off` (default) an output
-  that is still active while OFF is set to 0 again on each cycle.
+- Switching to OFF sets the demand to 0 once and clears the integral; with
+  `force_off` (default) an output that is still active while OFF is set to 0 again
+  on each cycle.
+- No heat while the room is above the target: the output is 0 then, whatever the
+  integral holds.
+- Each sample interval is integrated once: a recalculation without a new sample (new
+  target, new mode) does not add the last interval again.
 - The loop pauses while the entity is unavailable.
 - Services: `gungors.set_pid_gain`, `gungors.set_pid_mode`, `gungors.clear_integral`.
 """
@@ -85,6 +90,7 @@ class Pid(Feature):
     _pid_control: float = 0
     _pid_gains: dict[str, float] | None = None
     _pid_p = _pid_i = _pid_d = _pid_dt = 0.0
+    _pid_sample: float | None = None  # time of the sample the last calc integrated
 
     def _pid_setup(self) -> None:
         if self._pid_ctrl is not None:
@@ -135,6 +141,9 @@ class Pid(Feature):
                 self._pid_control = OUT_MIN
                 self._gw_temp_prev_time = None
                 self._pid_ctrl.clear_samples()
+                # The heat an earlier period needed says nothing about the next one.
+                self._pid_ctrl.integral = 0.0
+                self._pid_i = 0.0
                 if self.available:
                     await self.gw_demand(self._pid_control)
             return
@@ -199,10 +208,16 @@ class Pid(Feature):
         if self._gw_temp_prev_time > self._gw_temp_time:
             self._gw_temp_prev_time = self._gw_temp_time
         ctrl = self._pid_ctrl
+        prev_time = self._gw_temp_prev_time
+        if self._pid_sample == self._gw_temp_time:
+            prev_time = self._gw_temp_time  # no new sample: dt 0, nothing integrated again
+        self._pid_sample = self._gw_temp_time
         output, update = ctrl.calc(
             self._gw_current_temp, self._gw_target_temp,
-            self._gw_temp_time, self._gw_temp_prev_time, None,
+            self._gw_temp_time, prev_time, None,
         )
+        if ctrl.mode == "AUTO" and self._gw_current_temp > self._gw_target_temp:
+            output = OUT_MIN  # above the target: no heat
         precision = self.gw_conf(KEY)["output_precision"]
         self._pid_p = round(ctrl.proportional, precision)
         self._pid_i = round(ctrl.integral, precision)

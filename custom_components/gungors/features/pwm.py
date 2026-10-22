@@ -10,7 +10,8 @@ ScratMan's pwm_switch logic:
 Demand 100 keeps the heater on, 0 keeps it off; in between the heater is on for
 `period * demand / 100` per period, stretched to the minimum on/off times. A new
 target above (below) the room temperature switches on (off) at the next cycle. The
-heater is switched off while the entity is unavailable. hvac_action is heating
+heater is switched off while the entity is unavailable. A switch rejected because the
+cycle is too short is tried again as soon as the minimum time is over. hvac_action is heating
 while the heater is on.
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ import voluptuous as vol
 from homeassistant.const import ATTR_ENTITY_ID, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 
 from ..core import Feature, Request, register
 
@@ -56,6 +57,7 @@ class Pwm(Feature):
     _pwm_last_cycle = 0.0
     _pwm_force_on = False
     _pwm_force_off = False
+    _pwm_retry = None  # cancels the pending retry of a rejected switch
 
     @classmethod
     def gw_claims(cls, conf: Any) -> set[str]:
@@ -138,6 +140,7 @@ class Pwm(Feature):
             change = True
         else:
             _LOGGER.info("%s: turning on rejected, cycle too short", self.entity_id)
+            self._pwm_retry_later(self._pwm_min_off)
             return
         await self._pwm_call("turn_on")
         if change:
@@ -153,10 +156,29 @@ class Pwm(Feature):
             change = True
         else:
             _LOGGER.info("%s: turning off rejected, cycle too short", self.entity_id)
+            self._pwm_retry_later(self._pwm_min_on)
             return
         await self._pwm_call("turn_off")
         if change:
             self._pwm_last_cycle = time.time()
+
+    def _pwm_retry_later(self, minimum: float) -> None:
+        """Apply the current demand again once the minimum cycle time is over."""
+        if self._pwm_retry is not None:
+            self._pwm_retry()
+        delay = max(0.0, self._pwm_last_cycle + minimum - time.time()) + 1
+
+        async def retry(_now) -> None:
+            self._pwm_retry = None
+            await self.gw_demand(self._gw_demand)
+
+        self._pwm_retry = async_call_later(self.hass, delay, retry)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._pwm_retry is not None:
+            self._pwm_retry()
+            self._pwm_retry = None
+        await super().async_will_remove_from_hass()
 
     async def _pwm_switch(self, output: float) -> None:
         period = self.gw_conf(KEY)["period"]

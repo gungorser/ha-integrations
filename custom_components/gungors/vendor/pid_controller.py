@@ -1,6 +1,7 @@
 """PID controller vendored from ScratMan/HASmartThermostat (pid_controller.PID).
 
-Only the PID class (autotune left out), otherwise unchanged. Original licence (MIT):
+Only the PID class (autotune left out); one gungors change in ``calc`` (marked),
+otherwise unchanged. Original licence (MIT):
 
     Copyright (c) 2026 Adrien Bonnat
 
@@ -224,9 +225,12 @@ class PID:
         self._external = self._Ke * self._dext
 
         # In order to prevent windup, only integrate if the process is not saturated and set point
-        # is stable
-        if self._out_min < self._last_output < self._out_max and \
-                self._last_set_point == self._set_point:
+        # is stable. gungors change: only growth beyond out_max is blocked; an integral that
+        # pulls back toward the range always integrates (it is clamped below anyway). Before,
+        # an integral wound up to out_max never shrank while the room was above the set point
+        # (output below out_min), so it kept heating at and above the set point.
+        winding_up = self._last_output >= self._out_max and self._error > 0
+        if not winding_up and self._last_set_point == self._set_point:
             self._integral += self._Ki * self._error * self._dt
             if self._Ki:
                 # Take external temperature compensation into account for integral clamping if integral is used
