@@ -9,6 +9,7 @@ Custom integration `gungors` (Python). No agent: the main session works here its
 - Home Assistant conventions: async only, no blocking I/O in the event loop, entity platforms,
   restore state where the user expects it.
 - Test before a release: unit tests with `pytest-homeassistant-custom-component` where possible.
+  Run `pytest` (cloud sessions: the SessionStart hook installs `.venv` from `requirements_test.txt`).
 - Release: bump `manifest.json` version, commit, GitHub release `vX.Y.Z`, update in HACS
   (`ha_manage_hacs`), restart only with Sercan's approval, then check `ha_get_logs` and the
   wrapper entities.

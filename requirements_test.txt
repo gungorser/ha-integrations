@@ -1,0 +1,3 @@
+# Test environment for the gungors tests (installed by .claude/hooks/session-start.sh in cloud sessions).
+pytest-homeassistant-custom-component
+ical>=10.0.0
