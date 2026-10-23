@@ -145,6 +145,35 @@ def _calendar_event(instance: Instance) -> CalendarEvent:
     )
 
 
+def _replace_series(calendar: Calendar, uid: str, new_event: Event) -> bool:
+    """Change the repeat of a whole series, which ical refuses to edit in place.
+
+    The series (with its edited occurrences, which may no longer fall on the new
+    days) is replaced by the new entry under the same uid.
+    """
+    master = next(
+        (e for e in calendar.events if e.uid == uid and e.recurrence_id is None), None
+    )
+    if (
+        master is None
+        or master.rrule is None
+        or new_event.rrule is None
+        or master.rrule.as_rrule_str() == new_event.rrule.as_rrule_str()
+    ):
+        return False
+    calendar.events = [e for e in calendar.events if e.uid != uid]
+    EventStore(calendar).add(
+        new_event.model_copy(
+            update={
+                "uid": uid,
+                "created": master.created,
+                "sequence": (master.sequence or 0) + 1,
+            }
+        )
+    )
+    return True
+
+
 def _range(recurrence_range: str | None) -> Range:
     return Range.THIS_AND_FUTURE if recurrence_range == Range.THIS_AND_FUTURE else Range.NONE
 
@@ -218,6 +247,8 @@ class ProgramCalendar(CalendarEntity):
         new_event = _parse_event(event)
 
         def edit(calendar: Calendar) -> str:
+            if recurrence_id is None and _replace_series(calendar, uid, new_event):
+                return uid
             try:
                 EventStore(calendar).edit(
                     uid, new_event, recurrence_id=recurrence_id,

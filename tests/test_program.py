@@ -802,3 +802,40 @@ async def test_template_default_follows_its_result(
     # Its end applies the template's current result.
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
     assert hass.states.get(COVER).attributes["current_position"] == 30
+
+
+async def test_series_rrule_can_change(hass: HomeAssistant, calls, hass_ws_client) -> None:
+    """Editing a whole series may change its repeat (daily -> weekdays)."""
+    await setup_all(hass)
+    client = await hass_ws_client(hass)
+    now = dt_util.now()
+    event = {
+        "summary": "gece",
+        "dtstart": (now + timedelta(hours=1)).isoformat(),
+        "dtend": (now + timedelta(hours=2)).isoformat(),
+        "rrule": "FREQ=DAILY",
+        "description": json.dumps({"target": LIGHT, "rules": {"on": False}}),
+    }
+    await client.send_json_auto_id(
+        {"type": "calendar/event/create", "entity_id": CALENDAR, "event": event}
+    )
+    assert (await client.receive_json())["success"]
+    from custom_components.gungors.program import async_get_manager  # noqa: PLC0415
+
+    manager = async_get_manager(hass)
+    uid = manager.calendar.events[0].uid
+    for rrule in ("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "FREQ=WEEKLY;BYDAY=SA,SU"):
+        await client.send_json_auto_id(
+            {
+                "type": "calendar/event/update",
+                "entity_id": CALENDAR,
+                "uid": uid,
+                "event": {**event, "rrule": rrule},
+            }
+        )
+        result = await client.receive_json()
+        assert result["success"], result
+        events = manager.calendar.events
+        assert len(events) == 1
+        assert events[0].uid == uid
+        assert events[0].rrule.as_rrule_str() == rrule
