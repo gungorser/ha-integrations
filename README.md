@@ -130,10 +130,11 @@ climate:
   user resumes is not paused again (it then keeps the entity as the earlier one). Runs that
   ended more than 30 days ago are dropped.
 - `gungors.pin_program` (`uid`, `pinned: false` to unpin) pins an entry or a timeless
-  program for everyone; the program card lists the pinned ones first.
+  program for everyone; the program card lists the pinned ones first. The calendar's
+  `pinned` and `timeless` attributes list their uids (so a change updates its state).
 - Websocket `gungors/programs`: every entry (a series once) and timeless program with
   `state` (`running`, `paused`, `scheduled`, `done`, `idle`, `invalid`), the current or next
-  `start`/`end`, `pinned`, `paused_by` (the timeless program that paused it) and, for a
+  `start`/`end`, `all_day`, `pinned`, `paused_by` (the timeless program that paused it) and, for a
   timeless one, `run` (its running entry's uid, for pause/resume).
 
 `rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`

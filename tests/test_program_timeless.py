@@ -218,6 +218,9 @@ async def test_pins_and_list(
     assert items["Sabah"]["pinned"] and items["Sabah"]["state"] == "scheduled"
     assert items["Sabah"]["rrule"] == "FREQ=DAILY" and items["Sabah"]["recurrence_id"]
     assert items["Eski"]["state"] == "done" and items["Eski"]["start"]
+    assert not items["Eski"]["all_day"]
+    attributes = hass.states.get(CALENDAR).attributes
+    assert attributes["pinned"] == [morning] and attributes["timeless"] == [uid]
     assert not items["Bebek uyku"]["pinned"] and items["Bebek uyku"]["state"] == "idle"
 
     # A deleted entry loses its pin.
