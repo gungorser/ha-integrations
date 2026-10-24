@@ -64,4 +64,74 @@ resume_program:
       selector:
         text:
 
+pin_program:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    uid:
+      required: true
+      selector:
+        text:
+    pinned:
+      default: true
+      selector:
+        boolean:
+
+start_program:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    uid:
+      required: true
+      selector:
+        text:
+    duration:
+      selector:
+        duration:
+
+stop_program:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    uid:
+      required: true
+      selector:
+        text:
+
+save_timeless_program:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    uid:
+      selector:
+        text:
+    summary:
+      required: true
+      selector:
+        text:
+    description:
+      required: true
+      selector:
+        text:
+          multiline: true
+
+delete_timeless_program:
+  target:
+    entity:
+      integration: gungors
+      domain: calendar
+  fields:
+    uid:
+      required: true
+      selector:
+        text:
+
 reload:

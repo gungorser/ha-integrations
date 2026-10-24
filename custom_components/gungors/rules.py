@@ -197,6 +197,8 @@ class Program:
     # Sun-relative start and end; None: the entry's own time.
     start: SunTime | None = None
     end: SunTime | None = None
+    # A run of a timeless program (program.py): that program's uid.
+    timeless: str | None = None
 
     def domains(self) -> set[str]:
         return {DOMAINS[attr] for attr in self.rules}
@@ -313,12 +315,15 @@ def parse_program(description: str | None) -> Program:
     if not isinstance(data, dict):
         raise vol.Invalid("the description must be a mapping with target and rules")
     domains = sorted(set(DOMAINS.values()))
-    unknown = set(data) - {"target", "start", "end", "rules", *domains}
+    unknown = set(data) - {"target", "start", "end", "timeless", "rules", *domains}
     if unknown:
         raise vol.Invalid(
             f"unknown keys: {', '.join(sorted(map(str, unknown)))}"
-            f" (known: target, start, end, {', '.join(domains)})"
+            f" (known: target, start, end, timeless, {', '.join(domains)})"
         )
+    timeless = data.get("timeless")
+    if timeless is not None and (not isinstance(timeless, str) or not timeless.strip()):
+        raise vol.Invalid("timeless: the uid of a timeless program")
     sun = {k: parse_sun_time(k, data[k]) for k in ("start", "end") if data.get(k) is not None}
     target = data.get("target")
     if isinstance(target, str):
@@ -367,7 +372,10 @@ def parse_program(description: str | None) -> Program:
                 raise vol.Invalid(
                     f"set {NAMES[attr]} keeps {NAMES[other]} at {_scalar(external(other, value))}"
                 )
-    return Program(target=tuple(t.strip() for t in target), rules=parsed, **sun)
+    return Program(
+        target=tuple(t.strip() for t in target), rules=parsed,
+        timeless=timeless.strip() if timeless else None, **sun,
+    )
 
 
 _PLAIN = re.compile(r"^[^\s\-?:,\[\]{}#&*!|>'\"%@`][^:#,\[\]{}]*$")
@@ -395,6 +403,8 @@ def dump_program(program: Program) -> str:
     for key in ("start", "end"):
         if (moment := getattr(program, key)) is not None:
             lines.append(f"{key}: {moment}")
+    if program.timeless is not None:
+        lines.append(f"timeless: {_scalar(program.timeless)}")
     for domain in dict.fromkeys(DOMAINS.values()):
         rules = {a: c for a, c in program.rules.items() if DOMAINS[a] == domain}
         if not rules:

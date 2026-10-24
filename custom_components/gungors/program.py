@@ -20,6 +20,17 @@ are active for it now (features/program.py enforces them).
 - A running occurrence can be paused (`gungors.pause_program`): until it is
   resumed or ends it counts as not active, so its `set` attributes return to
   their defaults as at an end, and resuming applies it again as at a start.
+- A timeless program (`timeless` in the store, no time of its own) is started
+  and stopped on demand (`gungors.start_program` / `stop_program`): a start adds
+  a one-off entry from now for `duration` (24 h when not given) whose
+  description names the program (`timeless: <uid>`), a stop ends it now. While a
+  run is active it pauses every running entry it conflicts with (on a shared
+  entity, an attribute both can't hold) and resumes them when it ends or is
+  paused itself; an entry the user pauses or resumes meanwhile is left as they
+  put it. Runs skip the conflict check on saving; ones that ended more than
+  RUN_HISTORY ago are dropped.
+- Any entry or timeless program can be pinned (`gungors.pin_program`); the
+  program card lists the pinned ones first.
 - A default can be a template (the covers' built-in one follows the sun:
   open while it is up); whenever its result changes, the entities whose default
   it is take the new value (unless a set rule holds that attribute).
@@ -34,6 +45,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import datetime
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from ical.calendar import Calendar
@@ -88,6 +100,10 @@ MAX_SLEEP = datetime.timedelta(hours=1)
 # How far an occurrence's sun-relative time may lie from the entry's own time
 # (the time an entry is stored with is only a guess for sun-relative entries).
 SUN_MARGIN = datetime.timedelta(days=1)
+# A timeless program runs this long unless a duration is given.
+DEFAULT_RUN = datetime.timedelta(hours=24)
+# Ended runs of timeless programs are kept this long (the calendar shows them).
+RUN_HISTORY = datetime.timedelta(days=30)
 
 DEFAULT_DEFAULTS: dict[str, dict[str, Any]] = {
     "light": {"on": False, "color": (255, 255, 255)},
@@ -210,7 +226,7 @@ class ProgramManager:
         self.configured = False
         self.entities: dict[str, ProgramFeature] = {}
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self._assigned: dict[str, list[tuple[str, str]]] = {}
+        self._assigned: dict[str, list[tuple[str, str, str]]] = {}
         self._skipped: set[tuple[str, str | None, str]] = set()
         self._timer: CALLBACK_TYPE | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
@@ -218,6 +234,13 @@ class ProgramManager:
         self._loaded = False
         # Paused occurrences: "<uid>|<start isoformat>".
         self.paused: set[str] = set()
+        # Paused by a timeless run: paused key -> the run's key.
+        self.paused_by: dict[str, str] = {}
+        # Resumed by the user while a run conflicts: not paused again by runs.
+        self.kept: set[str] = set()
+        self.pinned: set[str] = set()
+        # Timeless programs: uid -> {"summary", "description"}.
+        self.timeless: dict[str, dict[str, str]] = {}
         self._yaml_defaults: dict[str, dict[str, Any]] = {}
         # Template defaults being tracked: text -> remove callback.
         self._templates: dict[str, CALLBACK_TYPE] = {}
@@ -234,6 +257,10 @@ class ProgramManager:
                 self.calendar = IcsCalendarStream.calendar_from_ics(data["ics"])
             if data:
                 self.paused = set(data.get("paused", []))
+                self.paused_by = dict(data.get("paused_by", {}))
+                self.kept = set(data.get("kept", []))
+                self.pinned = set(data.get("pinned", []))
+                self.timeless = dict(data.get("timeless", {}))
             self._loaded = True
             save = False
             if data and "defaults" in data:
@@ -333,6 +360,7 @@ class ProgramManager:
         if uid is not None:
             self.check(candidate, uid)
         self.calendar = candidate
+        self.pinned &= {e.uid for e in candidate.events} | set(self.timeless)
         await self._async_save()
         self._changed()
         await self.async_refresh()
@@ -341,6 +369,10 @@ class ProgramManager:
         data: dict[str, Any] = {
             "ics": IcsCalendarStream.calendar_to_ics(self.calendar),
             "paused": sorted(self.paused),
+            "paused_by": dict(sorted(self.paused_by.items())),
+            "kept": sorted(self.kept),
+            "pinned": sorted(self.pinned),
+            "timeless": self.timeless,
             "format": FORMAT,
         }
         await self._store.async_save(data)
@@ -415,6 +447,240 @@ class ProgramManager:
         for listener in list(self._listeners):
             listener()
 
+    # --- timeless programs -----------------------------------------------------
+
+    def timeless_uid(self, ref: str) -> str:
+        """The uid of a timeless program given by uid or name."""
+        if ref in self.timeless:
+            return ref
+        name = ref.strip().casefold()
+        for uid, item in self.timeless.items():
+            if item["summary"].strip().casefold() == name:
+                return uid
+        raise HomeAssistantError(f"No timeless program '{ref}'")
+
+    def _parse_timeless(self, summary: str, description: str) -> Program:
+        if not summary.strip():
+            raise HomeAssistantError("A timeless program needs a name")
+        try:
+            program = parse_program(description)
+        except vol.Invalid as err:
+            raise HomeAssistantError(f"'{summary}': {err}") from err
+        if program.start is not None or program.end is not None or program.timeless:
+            raise HomeAssistantError(f"'{summary}': a timeless program has no start or end")
+        self._check_targets(summary, program)
+        return program
+
+    async def async_save_timeless(
+        self, summary: str, description: str, uid: str | None = None
+    ) -> str:
+        """Add (no uid) or change a timeless program; a running run follows the change."""
+        if uid is not None and uid not in self.timeless:
+            raise HomeAssistantError(f"No timeless program '{uid}'")
+        program = self._parse_timeless(summary, description)
+        uid = uid or uuid.uuid4().hex
+        others = {v["summary"].strip().casefold() for k, v in self.timeless.items() if k != uid}
+        if summary.strip().casefold() in others:
+            raise HomeAssistantError(f"A timeless program named '{summary}' exists already")
+        self.timeless[uid] = {"summary": summary.strip(), "description": dump_program(program)}
+        run = self._run_of(uid)
+        if run is not None:
+            text = dump_program(replace(program, timeless=uid))
+
+            def edit(calendar: Calendar) -> str:
+                calendar.events = [
+                    e.model_copy(update={"summary": summary.strip(), "description": text})
+                    if e.uid == run.uid else e
+                    for e in calendar.events
+                ]
+                return run.uid
+
+            await self.async_change(edit)
+        else:
+            await self._async_save()
+            self._changed()
+        return uid
+
+    async def async_delete_timeless(self, uid: str) -> None:
+        if uid not in self.timeless:
+            raise HomeAssistantError(f"No timeless program '{uid}'")
+        if self._run_of(uid) is not None:
+            await self.async_stop(uid)
+        del self.timeless[uid]
+        self.pinned.discard(uid)
+        await self._async_save()
+        self._changed()
+
+    def _run_of(self, uid: str) -> Instance | None:
+        """The running (maybe paused) run of a timeless program."""
+        now = dt_util.now()
+        for instance in self.instances(now, now + datetime.timedelta(microseconds=1)):
+            if instance.program is not None and instance.program.timeless == uid:
+                return instance
+        return None
+
+    async def async_start(self, uid: str, duration: datetime.timedelta | None = None) -> None:
+        """Run a timeless program from now; a running one is left as it is."""
+        if uid not in self.timeless:
+            raise HomeAssistantError(f"No timeless program '{uid}'")
+        if self._run_of(uid) is not None:
+            return
+        duration = duration or DEFAULT_RUN
+        if duration < datetime.timedelta(minutes=1):
+            raise HomeAssistantError("The duration must be at least a minute")
+        item = self.timeless[uid]
+        program = self._parse_timeless(item["summary"], item["description"])
+        start = dt_util.now().replace(microsecond=0)
+        event = Event(
+            summary=item["summary"],
+            dtstart=start.replace(tzinfo=None),
+            dtend=(start + duration).replace(tzinfo=None),
+            description=dump_program(replace(program, timeless=uid)),
+        )
+        cutoff = start - RUN_HISTORY
+
+        def add(calendar: Calendar) -> Event:
+            calendar.events = [e for e in calendar.events if not self._old_run(e, cutoff)]
+            calendar.events.append(event)
+            return event
+
+        await self.async_change(add)
+
+    @staticmethod
+    def _old_run(event: Event, cutoff: datetime.datetime) -> bool:
+        if event.rrule is not None or _as_datetime(event.end) >= cutoff:
+            return False
+        program, _ = parse_instance(event)
+        return program is not None and program.timeless is not None
+
+    async def async_stop(self, uid: str) -> None:
+        """End the run of a timeless program now."""
+        run = self._run_of(uid)
+        if run is None:
+            return
+        end = max(dt_util.now().replace(microsecond=0), run.start + datetime.timedelta(seconds=1))
+
+        def edit(calendar: Calendar) -> str:
+            calendar.events = [
+                e.model_copy(update={"dtend": dt_util.as_local(end).replace(tzinfo=None)})
+                if e.uid == run.uid else e
+                for e in calendar.events
+            ]
+            return run.uid
+
+        await self.async_change(edit)
+
+    # --- pins and the list -------------------------------------------------------
+
+    async def async_pin(self, uid: str, pinned: bool = True) -> None:
+        if uid not in self.timeless and not any(e.uid == uid for e in self.calendar.events):
+            raise HomeAssistantError(f"No program '{uid}'")
+        if pinned:
+            self.pinned.add(uid)
+        else:
+            self.pinned.discard(uid)
+        await self._async_save()
+        self._changed()
+
+    def programs(self) -> list[dict[str, Any]]:
+        """Every entry and timeless program with its state (the program card's list).
+
+        state: running, paused, scheduled (its next occurrence follows), done (no
+        more occurrences within a year), idle (a timeless program not running) or
+        invalid (an unreadable entry). Runs of timeless programs are not listed
+        on their own; their program carries them.
+        """
+        now = dt_util.now()
+        tz = dt_util.get_default_time_zone()
+        horizon = now + CHECK_HORIZON
+        masters: dict[str, Event] = {}
+        for event in self.calendar.events:
+            if event.recurrence_id is None or event.uid not in masters:
+                masters[event.uid] = event
+        found: dict[str, Instance] = {}
+        runs: dict[str, Instance] = {}
+        wanted = {
+            uid for uid, e in masters.items()
+            if e.rrule is not None or _as_datetime(e.end) + SUN_MARGIN > now
+        }
+        timeline = self.calendar.timeline_tz(tz)
+        for event in timeline.active_after(now - SUN_MARGIN):
+            if _as_datetime(event.start) > horizon or not (wanted - set(found)):
+                break
+            if event.uid in found:
+                continue
+            instance = instance_of(event, self.hass)
+            if instance is None or instance.end <= now:
+                continue
+            found[event.uid] = instance
+        for instance in found.values():
+            if instance.program is not None and instance.program.timeless:
+                if instance.start <= now:
+                    runs[instance.program.timeless] = instance
+
+        def state(instance: Instance | None) -> str:
+            if instance is None:
+                return "done"
+            if instance.start > now:
+                return "scheduled"
+            return "paused" if self._key(instance) in self.paused else "running"
+
+        def times(instance: Instance | None) -> dict[str, Any]:
+            if instance is None:
+                return {"start": None, "end": None}
+            return {"start": instance.start.isoformat(), "end": instance.end.isoformat()}
+
+        def paused_by(instance: Instance | None) -> str | None:
+            by = self.paused_by.get(self._key(instance)) if instance is not None else None
+            return by.split("|", 1)[0] if by else None
+
+        result: list[dict[str, Any]] = []
+        for uid, event in masters.items():
+            program, error = parse_instance(event)
+            if program is not None and program.timeless:
+                continue
+            instance = found.get(uid)
+            if instance is None and event.rrule is None:
+                instance_done = instance_of(event, self.hass)
+                when = times(instance_done)
+            else:
+                when = times(instance)
+            result.append({
+                "uid": uid,
+                "summary": event.summary or "",
+                "description": event.description or "",
+                "rrule": event.rrule.as_rrule_str() if event.rrule else None,
+                "recurrence_id": instance.recurrence_id if instance is not None else None,
+                "timeless": False,
+                "pinned": uid in self.pinned,
+                "state": "invalid" if program is None else state(instance),
+                "paused_by": paused_by(instance),
+                "error": error,
+                **when,
+            })
+        for uid, item in self.timeless.items():
+            run = runs.get(uid)
+            result.append({
+                "uid": uid,
+                "summary": item["summary"],
+                "description": item["description"],
+                "rrule": None,
+                "recurrence_id": None,
+                "timeless": True,
+                "pinned": uid in self.pinned,
+                "state": state(run) if run is not None else "idle",
+                "paused_by": paused_by(run),
+                "run": run.uid if run is not None else None,
+                "error": None,
+                **times(run),
+            })
+        # paused_by names a run (its uid); show the timeless program's uid instead.
+        run_owner = {r.uid: uid for uid, r in runs.items()}
+        for item in result:
+            if item["paused_by"] is not None:
+                item["paused_by"] = run_owner.get(item["paused_by"], item["paused_by"])
+        return result
+
     # --- pause ---------------------------------------------------------------
 
     @staticmethod
@@ -439,7 +705,11 @@ class ProgramManager:
         running = self._running(uid)
         if not running:
             raise HomeAssistantError(f"Program {uid} is not running now")
-        self.paused |= {self._key(i) for i in running}
+        keys = {self._key(i) for i in running}
+        self.paused |= keys
+        for key in keys:  # the user's pause now: a run's end leaves it paused
+            self.paused_by.pop(key, None)
+            self.kept.discard(key)
         await self._async_save()
         self._changed()
         await self.async_refresh()
@@ -450,6 +720,9 @@ class ProgramManager:
         if not keys:
             return
         self.paused -= keys
+        for key in keys:  # a run had paused it: the user wants it back anyway
+            if self.paused_by.pop(key, None) is not None:
+                self.kept.add(key)
         await self._async_save()
         self._changed()
         await self.async_refresh()
@@ -466,9 +739,14 @@ class ProgramManager:
             if program is None:
                 raise HomeAssistantError(f"'{event.summary or ''}': {error}")
             self._check_targets(event.summary or "", program)
+        if any(p.timeless for e in changed_any if (p := parse_instance(e)[0]) is not None):
+            return  # a run: conflicts pause the other entry instead (async_refresh)
         instances = self.instances(now, now + CHECK_HORIZON, calendar)
         mine = [i for i in instances if i.uid == uid]
-        others = [i for i in instances if i.uid != uid and i.program is not None]
+        others = [
+            i for i in instances
+            if i.uid != uid and i.program is not None and i.program.timeless is None
+        ]
         for instance in mine:
             assert instance.program is not None
             entities = self.resolve(instance.program)
@@ -540,10 +818,7 @@ class ProgramManager:
         self._cancel_timer()
         now = dt_util.now()
         running = self.instances(now, now + datetime.timedelta(microseconds=1))
-        # A pause ends with its occurrence.
-        still_paused = self.paused & {self._key(i) for i in running}
-        if still_paused != self.paused:
-            self.paused = still_paused
+        if self._update_run_pauses(running):
             await self._async_save()
             self._changed()
         active = sorted(
@@ -567,7 +842,8 @@ class ProgramManager:
 
         for entity_id, entity in list(self.entities.items()):
             assigned = per_entity.get(entity_id, [])
-            key = [(i.uid, i.start.isoformat()) for i, _ in assigned]
+            # The rules too: an edit of a running entry applies at once.
+            key = [(i.uid, i.start.isoformat(), repr(r)) for i, r in assigned]
             if not force and self._assigned.get(entity_id) == key:
                 continue
             self._assigned[entity_id] = key
@@ -587,6 +863,72 @@ class ProgramManager:
                 _LOGGER.exception("%s: applying programs failed", entity_id)
 
         self._schedule(now)
+
+    def _update_run_pauses(self, running: list[Instance]) -> bool:
+        """Pause what the active timeless runs conflict with, resume what they no longer do.
+
+        Also ends the pauses of occurrences that ended. True when anything changed.
+        """
+        keys = {self._key(i) for i in running}
+        before = (set(self.paused), dict(self.paused_by), set(self.kept))
+        # A pause ends with its occurrence.
+        self.paused &= keys
+        self.kept &= keys
+        self.paused_by = {k: v for k, v in self.paused_by.items() if k in keys}
+        by_key = {self._key(i): i for i in running if i.program is not None}
+
+        def pausing(key: str) -> bool:
+            run = by_key.get(key)
+            return run is not None and run.program.timeless is not None and key not in self.paused
+
+        # A run paused in a pass releases what it paused in the next one.
+        for _ in range(5):
+            if not self._run_pause_pass(by_key, pausing):
+                break
+        return before != (self.paused, self.paused_by, self.kept)
+
+    def _run_pause_pass(
+        self, by_key: dict[str, Instance], pausing: Callable[[str], bool]
+    ) -> bool:
+        changed_any = False
+        # Release: the run that paused it ended or is paused itself. Repeat, as a
+        # released run may in turn have paused others.
+        changed = True
+        while changed:
+            changed = False
+            for key, by in list(self.paused_by.items()):
+                if not pausing(by):
+                    del self.paused_by[key]
+                    self.paused.discard(key)
+                    changed = changed_any = True
+        # Pause: the newest run wins over every other occurrence it conflicts with.
+        runs = sorted(
+            (i for k, i in by_key.items() if pausing(k)), key=lambda i: i.start, reverse=True
+        )
+        for run in runs:
+            run_key = self._key(run)
+            if run_key in self.paused:
+                continue  # paused by a newer run in this pass
+            for other in sorted(by_key.values(), key=lambda i: i.start):
+                key = self._key(other)
+                if key == run_key or key in self.paused or key in self.kept:
+                    continue
+                if other.program.timeless is not None and other.start > run.start:
+                    continue  # a newer run wins
+                if self._instances_conflict(run, other):
+                    self.paused.add(key)
+                    self.paused_by[key] = run_key
+                    changed_any = True
+                    _LOGGER.info("Program '%s' paused by '%s'", other.summary, run.summary)
+        return changed_any
+
+    def _instances_conflict(self, a: Instance, b: Instance) -> bool:
+        assert a.program is not None and b.program is not None
+        for entity_id in self.resolve(a.program) & self.resolve(b.program):
+            domain = entity_id.split(".", 1)[0]
+            if rules_conflict(a.program.rules, b.program.rules, domain) is not None:
+                return True
+        return False
 
     def _schedule(self, now: datetime.datetime) -> None:
         next_at = now + MAX_SLEEP

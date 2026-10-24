@@ -22,6 +22,11 @@ also applied whenever its result changes. They are set here only (`gungors.reloa
 picks up a change); the `defaults` attribute shows the ones in use.
 `gungors.pause_program` / `gungors.resume_program` (field `uid`) pause and resume
 an entry's running occurrence; the `paused` attribute lists the paused entries.
+Timeless programs (no time of their own) are kept by the manager:
+`gungors.save_timeless_program` / `delete_timeless_program` change them,
+`gungors.start_program` / `stop_program` (`uid` or the name, optional `duration`)
+run them. `gungors.pin_program` pins an entry or a timeless program. The
+websocket command `gungors/programs` lists them all with their state.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ from ical.store import EventStore, EventStoreError
 from ical.types import Range, Recur
 import voluptuous as vol
 
+from homeassistant.components import websocket_api
 from homeassistant.components.calendar import (
     EVENT_END,
     EVENT_RRULE,
@@ -45,7 +51,7 @@ from homeassistant.components.calendar import (
     CalendarEvent,
 )
 from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_platform
@@ -60,6 +66,7 @@ from .program import Instance, async_get_manager
 from .rules import defaults_json, parse_defaults
 
 CONF_DEFAULTS = "defaults"
+DATA_WS = "program_ws"
 
 
 def _defaults(value: Any) -> dict[str, dict[str, Any]]:
@@ -92,8 +99,34 @@ async def async_setup_platform(
     await manager.async_configure(config[CONF_DEFAULTS])
     async_add_entities([ProgramCalendar(config[CONF_NAME])], True)
     platform = entity_platform.async_get_current_platform()
-    for service, method in (("pause_program", "async_pause"), ("resume_program", "async_resume")):
-        platform.async_register_entity_service(service, {vol.Required("uid"): cv.string}, method)
+    uid = {vol.Required("uid"): cv.string}
+    for service, schema, method in (
+        ("pause_program", uid, "async_pause"),
+        ("resume_program", uid, "async_resume"),
+        ("pin_program", {**uid, vol.Optional("pinned", default=True): cv.boolean}, "async_pin"),
+        ("start_program", {**uid, vol.Optional("duration"): cv.positive_time_period},
+         "async_start_program"),
+        ("stop_program", uid, "async_stop_program"),
+        ("save_timeless_program", {
+            vol.Optional("uid"): cv.string,
+            vol.Required("summary"): cv.string,
+            vol.Required("description"): cv.string,
+        }, "async_save_timeless"),
+        ("delete_timeless_program", uid, "async_delete_timeless"),
+    ):
+        platform.async_register_entity_service(service, schema, method)
+    if not hass.data.setdefault(DOMAIN, {}).get(DATA_WS):
+        websocket_api.async_register_command(hass, ws_programs)
+        hass.data[DOMAIN][DATA_WS] = True
+
+
+@websocket_api.websocket_command({vol.Required("type"): "gungors/programs"})
+@callback
+def ws_programs(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Every program entry and timeless program with its state (program card)."""
+    connection.send_result(msg["id"], {"programs": async_get_manager(hass).programs()})
 
 
 def _parse_event(event: dict[str, Any]) -> Event:
@@ -219,6 +252,26 @@ class ProgramCalendar(CalendarEntity):
 
     async def async_resume(self, uid: str) -> None:
         await self._manager.async_resume(uid)
+
+    async def async_pin(self, uid: str, pinned: bool = True) -> None:
+        await self._manager.async_pin(uid, pinned)
+
+    async def async_start_program(self, uid: str, duration: timedelta | None = None) -> None:
+        manager = self._manager
+        await manager.async_start(manager.timeless_uid(uid), duration)
+
+    async def async_stop_program(self, uid: str) -> None:
+        manager = self._manager
+        await manager.async_stop(manager.timeless_uid(uid))
+
+    async def async_save_timeless(
+        self, summary: str, description: str, uid: str | None = None
+    ) -> None:
+        await self._manager.async_save_timeless(summary, description, uid)
+
+    async def async_delete_timeless(self, uid: str) -> None:
+        manager = self._manager
+        await manager.async_delete_timeless(manager.timeless_uid(uid))
 
     async def async_update(self) -> None:
         instance = self._manager.next_instance(dt_util.now())
