@@ -75,15 +75,17 @@ async def test_start_stop_and_duration(
     assert len(async_get_manager(hass).calendar.events) == 1
 
     await call(hass, "stop_program", uid=uid)
-    await tick(hass, freezer, timedelta(seconds=2))
     assert listed(hass)["Bebek uyku"]["state"] == "idle"
     assert hass.states.get(LIGHT).attributes["program"] == []
+    # A stopped run leaves the calendar.
+    assert async_get_manager(hass).calendar.events == []
 
     # With a duration it ends by itself.
     await call(hass, "start_program", uid=uid, duration={"minutes": 30})
     assert listed(hass)["Bebek uyku"]["state"] == "running"
     await tick(hass, freezer, timedelta(minutes=30, seconds=2))
     assert listed(hass)["Bebek uyku"]["state"] == "idle"
+    assert async_get_manager(hass).calendar.events == []  # so does an ended one
 
 
 async def test_run_pauses_the_conflicting_program(
@@ -177,8 +179,8 @@ async def test_edit_follows_running_and_delete_stops(
                                        "light": {"brightness_pct": {"min": 30, "set": True}}}))
     assert brightness(hass) in (76, 77)  # 30 %
     await call(hass, "delete_timeless_program", uid=uid)
-    await tick(hass, freezer, timedelta(seconds=2))
     assert listed(hass) == {}
+    assert async_get_manager(hass).calendar.events == []
     assert hass.states.get(LIGHT).attributes["program"] == []
 
 
@@ -231,15 +233,18 @@ async def test_pins_and_list(
     assert manager.pinned == set()
 
 
-async def test_old_runs_are_dropped(
+async def test_one_entry_per_timeless_program(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
     await setup_all(hass)
     uid = await save_sleep(hass)
+    manager = async_get_manager(hass)
+    # A leftover entry of an earlier run (e.g. from before 1.10.1) goes at the next start.
     await call(hass, "start_program", uid=uid, duration={"minutes": 5})
-    await tick(hass, freezer, timedelta(days=10))
+    old = manager.calendar.events[0]
+    await call(hass, "stop_program", uid=uid)
+    await tick(hass, freezer, timedelta(minutes=10))
+    manager.calendar.events.append(old)  # ended, not dropped yet
     await call(hass, "start_program", uid=uid, duration={"minutes": 5})
-    assert len(async_get_manager(hass).calendar.events) == 2
-    await tick(hass, freezer, timedelta(days=31))
-    await call(hass, "start_program", uid=uid, duration={"minutes": 5})
-    assert len(async_get_manager(hass).calendar.events) == 1
+    assert len(manager.calendar.events) == 1
+    assert manager.calendar.events[0].uid != old.uid
