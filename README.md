@@ -116,6 +116,25 @@ climate:
   `uid`): a paused running occurrence counts as ended (its set rules return the device to
   its defaults) until it is resumed, which applies it again as at a start, or until it ends. The
   calendar's `paused` attribute lists the paused entries' uids.
+- Timeless programs (`baby sleep`: no time of their own, started when needed) are kept by
+  gungors, not in the calendar: `gungors.save_timeless_program` (`summary`, `description` as
+  above but without `start`/`end`, optional `uid` to change one) and
+  `gungors.delete_timeless_program` (`uid`). `gungors.start_program` (`uid` or the name,
+  optional `duration`, 24 h when not given) adds a run: a one-off calendar entry from now
+  whose description carries `timeless: <uid>`; `gungors.stop_program` ends it now; starting
+  a running one does nothing. A change to the program applies to its running run at once.
+  Runs are not checked for conflicts on saving: while a run is active it pauses every
+  running entry it conflicts with (a shared entity and an attribute both can't hold), also
+  one that starts later, and resumes them when it ends or is paused; the newest run wins
+  over an older one the same way. An entry the user pauses meanwhile stays paused; one the
+  user resumes is not paused again (it then keeps the entity as the earlier one). Runs that
+  ended more than 30 days ago are dropped.
+- `gungors.pin_program` (`uid`, `pinned: false` to unpin) pins an entry or a timeless
+  program for everyone; the program card lists the pinned ones first.
+- Websocket `gungors/programs`: every entry (a series once) and timeless program with
+  `state` (`running`, `paused`, `scheduled`, `done`, `idle`, `invalid`), the current or next
+  `start`/`end`, `pinned`, `paused_by` (the timeless program that paused it) and, for a
+  timeless one, `run` (its running entry's uid, for pause/resume).
 
 `rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`
 (enforcement) are the full reference.
