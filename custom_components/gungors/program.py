@@ -23,12 +23,13 @@ are active for it now (features/program.py enforces them).
 - A timeless program (`timeless` in the store, no time of its own) is started
   and stopped on demand (`gungors.start_program` / `stop_program`): a start adds
   a one-off entry from now for `duration` (24 h when not given) whose
-  description names the program (`timeless: <uid>`), a stop ends it now. While a
+  description names the program (`timeless: <uid>`); a stop, its end or the
+  program's deletion removes that entry again, so the calendar holds at most
+  one entry per timeless program, while it runs. While a
   run is active it pauses every running entry it conflicts with (on a shared
   entity, an attribute both can't hold) and resumes them when it ends or is
   paused itself; an entry the user pauses or resumes meanwhile is left as they
-  put it. Runs skip the conflict check on saving; ones that ended more than
-  RUN_HISTORY ago are dropped.
+  put it. Runs skip the conflict check on saving.
 - Any entry or timeless program can be pinned (`gungors.pin_program`); the
   program card lists the pinned ones first.
 - A default can be a template (the covers' built-in one follows the sun:
@@ -102,8 +103,6 @@ MAX_SLEEP = datetime.timedelta(hours=1)
 SUN_MARGIN = datetime.timedelta(days=1)
 # A timeless program runs this long unless a duration is given.
 DEFAULT_RUN = datetime.timedelta(hours=24)
-# Ended runs of timeless programs are kept this long (the calendar shows them).
-RUN_HISTORY = datetime.timedelta(days=30)
 
 DEFAULT_DEFAULTS: dict[str, dict[str, Any]] = {
     "light": {"on": False, "color": (255, 255, 255)},
@@ -204,6 +203,14 @@ def instance_of(event: Event, hass: HomeAssistant | None = None) -> Instance | N
         error=error,
         event=event,
     )
+
+
+def _run_of_event(event: Event) -> str | None:
+    """The timeless program an entry is a run of, else None."""
+    if not event.description or "timeless" not in event.description:
+        return None
+    program, _ = parse_instance(event)
+    return program.timeless if program is not None else None
 
 
 def copy_calendar(calendar: Calendar) -> Calendar:
@@ -504,8 +511,7 @@ class ProgramManager:
     async def async_delete_timeless(self, uid: str) -> None:
         if uid not in self.timeless:
             raise HomeAssistantError(f"No timeless program '{uid}'")
-        if self._run_of(uid) is not None:
-            await self.async_stop(uid)
+        await self.async_stop(uid)
         del self.timeless[uid]
         self.pinned.discard(uid)
         await self._async_save()
@@ -537,38 +543,34 @@ class ProgramManager:
             dtend=(start + duration).replace(tzinfo=None),
             description=dump_program(replace(program, timeless=uid)),
         )
-        cutoff = start - RUN_HISTORY
 
         def add(calendar: Calendar) -> Event:
-            calendar.events = [e for e in calendar.events if not self._old_run(e, cutoff)]
+            # One entry per timeless program: any leftover of an earlier run goes.
+            calendar.events = [e for e in calendar.events if _run_of_event(e) != uid]
             calendar.events.append(event)
             return event
 
         await self.async_change(add)
 
-    @staticmethod
-    def _old_run(event: Event, cutoff: datetime.datetime) -> bool:
-        if event.rrule is not None or _as_datetime(event.end) >= cutoff:
-            return False
-        program, _ = parse_instance(event)
-        return program is not None and program.timeless is not None
-
     async def async_stop(self, uid: str) -> None:
-        """End the run of a timeless program now."""
-        run = self._run_of(uid)
-        if run is None:
+        """End the run of a timeless program now: its entry leaves the calendar."""
+        if not any(_run_of_event(e) == uid for e in self.calendar.events):
             return
-        end = max(dt_util.now().replace(microsecond=0), run.start + datetime.timedelta(seconds=1))
 
-        def edit(calendar: Calendar) -> str:
-            calendar.events = [
-                e.model_copy(update={"dtend": dt_util.as_local(end).replace(tzinfo=None)})
-                if e.uid == run.uid else e
-                for e in calendar.events
-            ]
-            return run.uid
+        def remove(calendar: Calendar) -> None:
+            calendar.events = [e for e in calendar.events if _run_of_event(e) != uid]
 
-        await self.async_change(edit)
+        await self.async_change(remove)
+
+    def _drop_ended_runs(self, now: datetime.datetime) -> bool:
+        """Remove the entries of runs that ended (by their duration). True if any."""
+        ended = {
+            e.uid for e in self.calendar.events
+            if _run_of_event(e) is not None and e.rrule is None and _as_datetime(e.end) <= now
+        }
+        if ended:
+            self.calendar.events = [e for e in self.calendar.events if e.uid not in ended]
+        return bool(ended)
 
     # --- pins and the list -------------------------------------------------------
 
@@ -820,7 +822,8 @@ class ProgramManager:
         self._cancel_timer()
         now = dt_util.now()
         running = self.instances(now, now + datetime.timedelta(microseconds=1))
-        if self._update_run_pauses(running):
+        dropped = self._drop_ended_runs(now)
+        if self._update_run_pauses(running) or dropped:
             await self._async_save()
             self._changed()
         active = sorted(
