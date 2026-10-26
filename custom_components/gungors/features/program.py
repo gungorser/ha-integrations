@@ -23,6 +23,11 @@ While programs are active the entity follows their rules:
   heating satisfies it, `color: red` recolours a lit light. A `set` rule also
   brings the device into it: a set brightness, colour or colour temperature rule
   keeps the light on, a set temperature rule keeps the heating on.
+- A `set` rule with only a min or only a max limit moves the device to that
+  limit when it starts, whatever the current value (a cover at 0 with `max 20
+  set` goes to 20; a light at 100 with `min 50 set` goes to 50). A `set` range
+  (min and max) moves the device only when it is outside the range, to the
+  nearest end of it.
 - When a `set` rule ends, the device returns to its defaults, except what other
   set rules still hold (light off and white, heating off, covers by the sun:
   open by day, closed at night). `let` rules just lift.
@@ -76,6 +81,8 @@ COOLDOWN = 10.0
 MAX_REPEATS = 3
 # s a service call's context counts as the request's origin
 CONTEXT_RECENT = 5.0
+# How close (in the rule's unit) a device must be to a set rule's limit to count as there.
+_LIMIT_TOLERANCE = {"position": 0.5, "brightness": 0.5, "temperature": 0.05}
 
 _COLOR_MODES = {ColorMode.HS, ColorMode.XY, ColorMode.RGB, ColorMode.RGBW, ColorMode.RGBWW}
 _COLOR_KEYS = (
@@ -127,6 +134,17 @@ def _finite(constraint: Constraint, fallback: float | None) -> float | None:
     return None
 
 
+def _limit(constraint: Constraint) -> float | None:
+    """The limit a one-sided rule moves its device to; None for a range or an exact value."""
+    if constraint.eq is not None or (constraint.min is not None and constraint.max is not None):
+        return None
+    if constraint.min is not None:
+        return float(constraint.min)
+    if constraint.max is not None:
+        return float(constraint.max)
+    return None
+
+
 def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
     result = constraint.as_dict()
     if "eq" in result:
@@ -163,6 +181,8 @@ class Program(Feature):
     # [{uid, summary, start, end, rules: {attr: Constraint}}] for this entity
     _prog_active: list[dict[str, Any]] = []
     _prog_set: set[str] = set()  # attributes set rules hold (for the defaults)
+    # attributes whose set rule just started and whose device has not reached its limit yet
+    _prog_pending: set[str] = set()
     _prog_sent_at = -COOLDOWN
     _prog_recheck = None
     _prog_last: dict[str, Any] | None = None  # the last correction sent
@@ -187,7 +207,9 @@ class Program(Feature):
         rules = self._prog_rules()
         held = {a for a, c in rules.items() if c.set}
         ended = [a for a in self._prog_set if a not in held]
+        started = held - self._prog_set
         self._prog_set = held
+        self._prog_pending = (self._prog_pending & held) | started
         self.async_write_ha_state()
         if ended:
             # The device returns to its defaults (a set brightness ending: light off).
@@ -413,12 +435,63 @@ class Program(Feature):
         return self._prog_clamp_cover(data, rules)
 
     def _prog_correction(self) -> dict[str, Any] | None:
+        start = self._prog_start_correction(self._prog_rules())
+        if start is not None:
+            return start
         domain = self._prog_domain
         if domain == "light":
             return self._prog_correct_light()
         if domain == "climate":
             return self._prog_correct_climate()
         return self._prog_correct_cover()
+
+    # set rules that start: move to their limit
+
+    def _prog_start_correction(self, rules: dict[str, Constraint]) -> dict[str, Any] | None:
+        """The move a started one-sided set rule asks for: once, to its limit."""
+        pending: set[str] = set()
+        move: dict[str, Any] | None = None
+        for attr in sorted(self._prog_pending):
+            constraint = rules.get(attr)
+            target = _limit(constraint) if constraint is not None else None
+            if target is None:
+                continue  # the rule ended, or it is a range: nothing to move to
+            current = self._prog_current(attr)
+            if current is not None and abs(current - target) <= _LIMIT_TOLERANCE[attr]:
+                continue  # already there
+            pending.add(attr)
+            if move is None and not self._prog_moving():
+                move = self._prog_start_move(attr, target, rules)
+        self._prog_pending = pending
+        return move
+
+    def _prog_current(self, attr: str) -> float | None:
+        if attr == "position":
+            return self.current_cover_position
+        if attr == "brightness":
+            return self._prog_brightness_pct()
+        if attr == "temperature":
+            return self.target_temperature
+        return None
+
+    def _prog_moving(self) -> bool:
+        return self._prog_domain == "cover" and bool(self.is_opening or self.is_closing)
+
+    def _prog_start_move(
+        self, attr: str, target: float, rules: dict[str, Constraint]
+    ) -> dict[str, Any] | None:
+        if attr == "position":
+            return {"position": int(round(target))}
+        if attr == "brightness":
+            return self._prog_clamp_light(
+                {"on": True, "brightness": round(target * 255 / 100)}, rules
+            )
+        if attr == "temperature":
+            data: dict[str, Any] = {"temperature": target}
+            if self.hvac_mode != HVACMode.HEAT:
+                data["hvac_mode"] = HVACMode.HEAT
+            return self._prog_clamp_climate(data, rules)
+        return None
 
     def _prog_default_request(self, wanted: dict[str, Any]) -> dict[str, Any] | None:
         if not wanted:
@@ -583,6 +656,7 @@ class Program(Feature):
         own = extra.get(KEY)
         held = (own.get("set") or own.get("eq")) if isinstance(own, dict) else None
         self._prog_set = {a for a in held if a in DOMAINS} if isinstance(held, (dict, list)) else set()
+        self._prog_pending = set()
         self._prog_active = []
 
     def gw_save(self) -> dict[str, Any]:
