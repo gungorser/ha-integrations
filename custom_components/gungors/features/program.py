@@ -1,15 +1,21 @@
 """`program`: follow the active entries of `calendar.program` (see rules.py).
 
-`- program` (first in the feature list), or `- program: {<name>: <default>}` to
+`- program` (first in the feature list), or `- program: {<n>: <default>}` to
 override the domain defaults of the program calendar for this entity (names as
 in the rules: `state`, `brightness_pct`, ..., a value or a template).
 
 While programs are active the entity follows their rules:
 
-- A request a user makes (a dashboard, the app, a script they run) that breaks a
-  rule is refused: nothing changes and the user's browsers show a browser_mod
-  popup saying it is not allowed, with the nearest allowed value to apply when
-  there is one (brightness 49 with `min 50` -> 50).
+- A request a user makes (a dashboard, the app, a script they run) is not
+  refused. It is brought to the nearest allowed value (brightness 49 with
+  `min 50` -> 50, a cover at 100 with `max 60` -> 60) and the user gets a popup
+  saying so. Two cases keep the device in its rule instead of turning it off:
+  a light turned off while its brightness has a floor (`min 50`) stays on at
+  that floor, and a heating turned off while a temperature rule holds stays on.
+- A cover stop is ignored while its position lies outside its `position` rule
+  (the program is moving it back into range), with a popup saying so. It is
+  accepted again once the position is in range, when the position is unknown,
+  or when the program has given up correcting the device.
 - Other requests (automations, other features) and the device changing by itself
   (a wall switch or dimmer, the thermostat dial) are brought to the nearest
   allowed value without asking; so is the state when a rule starts.
@@ -70,11 +76,6 @@ COOLDOWN = 10.0
 MAX_REPEATS = 3
 # s a service call's context counts as the request's origin
 CONTEXT_RECENT = 5.0
-LABELS = {
-    "on": "açık/kapalı", "brightness": "parlaklık", "color": "renk",
-    "color_temp": "renk sıcaklığı", "hvac_mode": "ısıtma", "temperature": "sıcaklık",
-    "position": "konum",
-}
 
 _COLOR_MODES = {ColorMode.HS, ColorMode.XY, ColorMode.RGB, ColorMode.RGBW, ColorMode.RGBWW}
 _COLOR_KEYS = (
@@ -114,10 +115,6 @@ def _hs_close(wanted: tuple[float, float], current: tuple[float, float]) -> bool
     return min(diff, 360 - diff) <= 8 and abs(sat - cur_sat) <= 12
 
 
-def _rgb_close(a: tuple[int, int, int], b: tuple[int, int, int]) -> bool:
-    return _hs_close(color_util.color_RGB_to_hs(*b), color_util.color_RGB_to_hs(*a))
-
-
 def _finite(constraint: Constraint, fallback: float | None) -> float | None:
     """A value inside the constraint, near `fallback` when given."""
     low, high = constraint.bounds()
@@ -138,7 +135,7 @@ def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
 
 
 def _own_defaults(value: Any) -> dict[str, Any]:
-    """`- program: {<name>: <default>}`: this entity's own defaults (read per domain later)."""
+    """`- program: {<n>: <default>}`: this entity's own defaults (read per domain later)."""
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -231,18 +228,24 @@ class Program(Feature):
                 self.hass.async_create_task(self._prog_enforce())
             return accepted
         user = self._prog_user(request)
-        if user is not None:
-            refused = self._prog_refusal(request.data)
-            if refused is not None:
-                _LOGGER.info("%s: %s refused by a program", self.entity_id, request.data)
-                self.hass.async_create_task(self._prog_notify(user, *refused))
+        if user is not None and self._prog_domain == "cover" and request.data.get("stop"):
+            if self._prog_stop_blocked():
+                self.hass.async_create_task(
+                    self._prog_inform(user, "perde kurala uyması için ayarlanıyor, durdurma kabul edilmedi")
+                )
                 return False
+            return await super().gw_request(request)
+        original = dict(request.data)
+        if user is not None:
+            request.data = self._prog_user_adjust(dict(request.data))
         data = self._prog_clamp(dict(request.data))
         if data is None:
             _LOGGER.info("%s: %s rejected by a program", self.entity_id, request.data)
             return False
         if data != request.data:
             _LOGGER.debug("%s: program clamped %s to %s", self.entity_id, request.data, data)
+        if user is not None and data != original:
+            self.hass.async_create_task(self._prog_inform(user, "istek kurala göre ayarlandı"))
         request.data = data
         return await super().gw_request(request)
 
@@ -308,7 +311,7 @@ class Program(Feature):
             self._prog_recheck()
             self._prog_recheck = None
 
-    # --- refusing user requests -----------------------------------------------
+    # --- user requests -------------------------------------------------------
 
     def _prog_user(self, request: Request) -> str | None:
         """The user behind a request from a service call, None for anything else."""
@@ -319,108 +322,63 @@ class Program(Feature):
             return None
         return context.user_id
 
-    def _prog_refusal(self, data: dict[str, Any]) -> tuple[str, dict[str, Any] | None] | None:
-        """(what breaks a rule, the service data of a suggestion or None), or None."""
+    def _prog_user_adjust(self, data: dict[str, Any]) -> dict[str, Any]:
+        """A user's request turned to fit the rules before it is clamped.
+
+        A light turned off while its brightness has a floor stays on (at the
+        clamped brightness); heating turned off while a temperature rule holds
+        stays on. Rules that allow the off state are left as they are.
+        """
         rules = self._prog_rules()
-        domain = self._prog_domain
+        if self._prog_domain == "light" and data.get("on") is False and "on" not in rules:
+            floor = rules["brightness"].bounds()[0] if "brightness" in rules else 0
+            if floor > 0 and self.is_on:
+                return {**data, "on": True}
+        if (
+            self._prog_domain == "climate"
+            and data.get("hvac_mode") == HVACMode.OFF
+            and "hvac_mode" not in rules
+            and "temperature" in rules
+            and self.hvac_mode != HVACMode.OFF
+        ):
+            return {**data, "hvac_mode": HVACMode.HEAT}
+        return data
 
-        def number(attr: str, value: float, unit: str, step: float) -> tuple[str, Any] | None:
-            if attr not in rules:
-                return None
-            allowed = rules[attr].clamp(value)
-            if abs(allowed - value) <= step:
-                return None
-            return f"{LABELS[attr]} {value:g}{unit}", allowed
+    def _prog_stop_blocked(self) -> bool:
+        """A stop is ignored while the cover is outside its position rule.
 
-        if domain == "light":
-            on = data.get("on")
-            if "on" in rules and on is not None and on != rules["on"].eq:
-                return LABELS["on"], None
-            if not on:
-                return None
-            if "brightness" in data and data["brightness"] is not None:
-                pct = data["brightness"] * 100 / 255
-                hit = number("brightness", round(pct), "%", 0.5)
-                if hit:
-                    return hit[0], {"brightness_pct": int(round(hit[1]))}
-            given = self._prog_given_rgb(data)
-            if "color" in rules and given is not None and not _rgb_close(given, rules["color"].eq):
-                return LABELS["color"], {"rgb_color": list(rules["color"].eq)}
-            if "color_temp" in rules:
-                kelvin = data.get("color_temp_kelvin")
-                wanted = rules["color_temp"].eq
-                if given is not None or (kelvin is not None and abs(kelvin - wanted) > 50):
-                    return LABELS["color_temp"], {"color_temp_kelvin": int(wanted)}
-            return None
-        if domain == "climate":
-            mode = data.get("hvac_mode")
-            if "hvac_mode" in rules and mode is not None and mode != rules["hvac_mode"].eq:
-                return LABELS["hvac_mode"], None
-            if data.get("temperature") is not None and mode != HVACMode.OFF:
-                hit = number("temperature", float(data["temperature"]), "°", 0.05)
-                if hit:
-                    return hit[0], {"temperature": hit[1]}
-            return None
-        if "position" not in rules:
-            return None
-        if data.get("stop"):
-            return "durdurma", None
-        if data.get("position") is not None:
-            hit = number("position", float(data["position"]), "%", 0.5)
-            if hit:
-                return hit[0], {"position": int(round(hit[1]))}
-        return None
+        The program is moving it back into range then. Not blocked when the
+        position is unknown or the program has given up correcting the device.
+        """
+        rules = self._prog_rules()
+        position = self.current_cover_position
+        if "position" not in rules or position is None:
+            return False
+        return not rules["position"].holds(position) and self._prog_repeats < MAX_REPEATS
 
-    @staticmethod
-    def _prog_given_rgb(data: dict[str, Any]) -> tuple[int, int, int] | None:
-        if data.get("rgb_color") is not None:
-            return tuple(int(v) for v in data["rgb_color"][:3])  # type: ignore[return-value]
-        if data.get("hs_color") is not None:
-            return color_util.color_hs_to_RGB(*data["hs_color"])
-        if data.get("xy_color") is not None:
-            return color_util.color_xy_to_RGB(*data["xy_color"])
-        if data.get("color_name") is not None:
-            try:
-                return tuple(color_util.color_name_to_rgb(data["color_name"]))  # type: ignore[return-value]
-            except ValueError:
-                return None
-        return None
-
-    async def _prog_notify(self, user_id: str, what: str, suggestion: dict[str, Any] | None) -> None:
-        """The browser_mod popup on the browsers of the user who was refused."""
+    async def _prog_inform(self, user_id: str, text: str) -> None:
+        """A popup on the browsers of the user whose request was adjusted or ignored."""
         person = next(
             (s.entity_id for s in self.hass.states.async_all("person")
              if s.attributes.get("user_id") == user_id),
             None,
         )
         if person is None or not self.hass.services.has_service("browser_mod", "popup"):
-            _LOGGER.info("%s: no browser to tell user %s about the refusal", self.entity_id, user_id)
+            _LOGGER.info("%s: no browser to tell user %s: %s", self.entity_id, user_id, text)
             return
         name = self.name or self.entity_id
         programs = ", ".join(p["summary"] for p in self._prog_active if p["summary"]) or "program"
-        text = f"{name}: {what} izin verilmiyor ({programs})."
         data: dict[str, Any] = {
             "user_id": [person],
-            "title": "İzin verilmiyor",
-            "content": text,
+            "title": "Program",
+            "content": f"{name}: {text} ({programs}).",
             "tag": f"gungors_program_{self.entity_id}",
             "timeout": 15000,
         }
-        if suggestion is not None:
-            service = {"light": "light.turn_on", "climate": "climate.set_temperature",
-                       "cover": "cover.set_cover_position"}[self._prog_domain]
-            value = next(iter(suggestion.values()))
-            shown = ", ".join(map(str, value)) if isinstance(value, list) else f"{value:g}"
-            data["content"] = f"{text} Öneri: {shown}"
-            data["right_button"] = f"{shown} uygula"
-            data["right_button_action"] = {
-                "service": service, "data": {"entity_id": self.entity_id, **suggestion}
-            }
-            data["left_button"] = "Vazgeç"
         try:
             await self.hass.services.async_call("browser_mod", "popup", data, blocking=False)
         except Exception as err:  # noqa: BLE001  (a popup must never break a request)
-            _LOGGER.warning("%s: refusal popup failed: %s", self.entity_id, err)
+            _LOGGER.warning("%s: program popup failed: %s", self.entity_id, err)
 
     # --- rules per domain ----------------------------------------------------
 
@@ -604,7 +562,7 @@ class Program(Feature):
         if "position" not in rules:
             return data
         if data.get("stop"):
-            return None  # a stop could leave the allowed range
+            return None  # a stop could leave the allowed range (user stops: see gw_request)
         if data.get("position") is not None:
             data["position"] = int(round(rules["position"].clamp(float(data["position"]))))
         return data
