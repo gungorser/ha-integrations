@@ -5,6 +5,7 @@ from . import (  # noqa: F401
     link_climate,
     link_cover,
     link_light,
+    occupancy,
     pid,
     program,
     pwm,

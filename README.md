@@ -35,6 +35,7 @@ entry that breaks a rule is not created and the log says why.
 | `travel_time` | cover | - or `{z2m_base_topic}` | Position estimation for curtain motors that report only at the end (Tuya via Z2M) |
 | `invert` | cover | - | The device's open is the room's close |
 | `window` | cover | binary_sensor | Holds remote commands while the window is open; wall buttons (pushbutton blueprint, `gungors_physical_cover`) are physical and always go through |
+| `occupancy` | light | binary_sensor, or `{sensor, brightness_pct, transition, after_sunset_only}` | A motion sensor lights the light (`brightness_pct` 50, `transition` 2 s, only after sunset unless `after_sunset_only: false`) and darkens it when the motion ends, but only if the sensor lit it. A light that is on wins over motion and belongs to whoever turned it on; every request that is not the sensor's (dashboard, pushbutton, automation, program, the device itself) is the user's and takes the light over. Put it after `program`, before `link` |
 | `temperature` | climate | sensor | Room temperature |
 | `pid` | climate | `{kp, ki, kd, keep_alive, force_off, ...}` | Heating demand 0-100 (ScratMan's PID, vendored) |
 | `valve` | climate | `{opening, closing, min}` | Demand onto the TRV valve opening/closing degree numbers |
@@ -101,7 +102,7 @@ climate:
   value. Automations, wall switches and dials, and the state at the start are brought to
   the nearest allowed value without asking.
 - When a set rule ends the device returns to its defaults (calendar `defaults`,
-  overridable per entity with `- program: {<name>: <value>}`: light `state: "off"`,
+  overridable per entity with `- program: {<n>: <value>}`: light `state: "off"`,
   `rgb_color: [255, 255, 255]`; climate `state: "off"`; cover `current_position:
   "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"`, merged per domain with the
   calendar's YAML `defaults:`, which are the only place to change them: edit the YAML, then

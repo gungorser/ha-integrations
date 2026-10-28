@@ -505,34 +505,35 @@ async def test_user_request_is_refused_with_a_popup(
     await add_entry(hass, "okuma", {"target": LIGHT, "light": {"brightness": {"min": 50}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(seconds=11))
-    before = brightness(hass)
     calls.clear()
     await hass.services.async_call(
         "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 49}, blocking=True,
         context=Context(user_id=hass_admin_user.id),
     )
     await hass.async_block_till_done()
-    assert not calls.of("light", "turn_on", LAMP)
-    assert brightness(hass) == before
+    # The 49% request is not allowed: the light is brought to the nearest allowed value (50%).
+    assert calls.of("light", "turn_on", LAMP)[-1]["brightness"] == 128
+    assert brightness(hass) == 128
     assert len(popups) == 1
     assert popups[0]["user_id"] == ["person.sercan"]
-    assert popups[0]["right_button_action"]["data"] == {
-        "entity_id": LIGHT, "brightness_pct": 50
-    }
-    # Allowed values pass; so does turning it off (off satisfies a let rule).
+    assert "istek kurala göre ayarlandı" in popups[0]["content"]
+    # Allowed values pass without a popup.
     await hass.services.async_call(
         "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 70}, blocking=True,
         context=Context(user_id=hass_admin_user.id),
     )
     await hass.async_block_till_done()
     assert brightness(hass) == 178
+    assert len(popups) == 1
+    # Turning it off: a light with a brightness floor stays on at that floor, with a popup.
     await hass.services.async_call(
         "light", "turn_off", {"entity_id": LIGHT}, blocking=True,
         context=Context(user_id=hass_admin_user.id),
     )
     await hass.async_block_till_done()
-    assert hass.states.get(LIGHT).state == "off"
-    assert len(popups) == 1
+    assert hass.states.get(LIGHT).state == "on"
+    assert brightness(hass) == 178
+    assert len(popups) == 2
 
 
 async def test_default_after_restart(hass: HomeAssistant, calls) -> None:
