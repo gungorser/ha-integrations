@@ -505,15 +505,15 @@ async def test_user_request_is_refused_with_a_popup(
     await add_entry(hass, "okuma", {"target": LIGHT, "light": {"brightness": {"min": 50}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(seconds=11))
-    before = brightness(hass)
     calls.clear()
     await hass.services.async_call(
         "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 49}, blocking=True,
         context=Context(user_id=hass_admin_user.id),
     )
     await hass.async_block_till_done()
-    assert not calls.of("light", "turn_on", LAMP)
-    assert brightness(hass) == before
+    # The 49% request is not allowed: the light is brought to the nearest allowed value (50%).
+    assert calls.of("light", "turn_on", LAMP)[-1]["brightness"] == 128
+    assert brightness(hass) == 128
     assert len(popups) == 1
     assert popups[0]["user_id"] == ["person.sercan"]
     assert popups[0]["right_button_action"]["data"] == {
