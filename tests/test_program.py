@@ -516,9 +516,7 @@ async def test_user_request_is_refused_with_a_popup(
     assert brightness(hass) == 128
     assert len(popups) == 1
     assert popups[0]["user_id"] == ["person.sercan"]
-    assert popups[0]["right_button_action"]["data"] == {
-        "entity_id": LIGHT, "brightness_pct": 50
-    }
+    assert "istek kurala göre ayarlandı" in popups[0]["content"]
     # Allowed values pass; so does turning it off (off satisfies a let rule).
     await hass.services.async_call(
         "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 70}, blocking=True,
