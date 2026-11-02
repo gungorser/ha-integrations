@@ -153,6 +153,8 @@ pairs are the `link` values in ha-configs `packages/covers.yaml`, `packages/heat
 
 - **ha-configs**: the YAML that configures these platforms (`packages/covers.yaml`,
   `packages/heating.yaml`) and the pushbutton blueprint that fires `gungors_physical_cover`.
+  Naming rule for the physical devices behind the wrappers:
+  https://github.com/gungorser/ha-configs#naming-physical-devices
 - **ha-floorplan / ha-dashboards**: the 3D floor view shows the wrapper entities.
 
 ## Releasing
