@@ -3,8 +3,9 @@
 `link: event.sercan_pushbutton_action` (Zigbee2MQTT's event entity of the device).
 
 - Every new event of the original (its state is the event's time) is a press:
-  a physical request ``{"event_type": ...}`` through the features. Its event type
-  becomes a slot (`single` of a one-button model is `1_single`).
+  a physical request ``{"event_type": ...}`` through the features. Zigbee2MQTT
+  splits `2_hold` into event type `hold` and attribute `button: "2"`; both become
+  the slot `2_hold` (`single` without a button is `1_single`).
 - The wrapper is available while the original is, and takes its event types.
 - The state the original has when Home Assistant starts (its last event), and
   the same event again after the original was unavailable, are not presses.
@@ -83,7 +84,9 @@ class EventLink(Feature):
         event_type = new.attributes.get("event_type")
         if not event_type:
             return
-        self.hass.async_create_task(self.gw_physical({"event_type": slot_of(str(event_type))}))
+        button = new.attributes.get("button")
+        slot = f"{button}_{event_type}" if button else slot_of(str(event_type))
+        self.hass.async_create_task(self.gw_physical({"event_type": slot}))
 
     @property
     def available(self) -> bool:
