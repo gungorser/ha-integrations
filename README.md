@@ -29,7 +29,7 @@ entry that breaks a rule is not created and the log says why.
 
 | Feature | Domains | Value | What it does |
 |---|---|---|---|
-| `program` | all | - or `{<attr>: <default>}` | Follows the active entries of `calendar.program` (below); put it first. The value overrides the calendar's defaults for this entity |
+| `program` | all | - or `{<attr>: <default>, preheat: {rate, max}}` | Follows the active entries of `calendar.program` (below); put it first. The value overrides the calendar's defaults for this entity; `preheat` (climate) reaches a coming program's set temperature by its start (below) |
 | `link` | all | entity id, or a list (group) | The original the wrapper drives; the wrapper is unavailable while it is. With only `link` the wrapper is the original: it keeps no state of its own and changes only when the original reports; other features change the behaviour. Cover: a cover or an `input_number`/`number` 0-100 (a list: their average). Climate: a climate (mode and target are the thermostat's). Light: a light or a switch |
 | `direction` | cover | - or `{start_timeout, stop_silence}` | Movement tracking for blinds that only report positions (IKEA via Z2M) |
 | `travel_time` | cover | - or `{z2m_base_topic}` | Position estimation for curtain motors that report only at the end (Tuya via Z2M) |
@@ -49,7 +49,7 @@ Attributes other repositories read: cover `actual_position`, `pending_position`,
 `gungors_physical_cover` event, the others the normal cover services),
 `calibrated`, `position_source`, `open_time`, `close_time`; climate `hvac_action`,
 `physical_thermostat`, `control_output`, `heater_value`, `kp`, `ki`,
-`kd`, `pid_i`, `pid_mode`; every entity with `program`:
+`kd`, `pid_i`, `pid_mode`, `preheat`, `preheat_last` (with `program: {preheat: ...}`); every entity with `program`:
 `program` (its active programs: `uid`, `summary`, `start`, `end`, `rules`). A group wrapper has `entity_id`
 (its members) so `expand()` works.
 
@@ -130,12 +130,25 @@ climate:
   one that starts later, and resumes them when it ends or is paused; the newest run wins
   over an older one the same way. An entry the user pauses meanwhile stays paused; one the
   user resumes is not paused again (it then keeps the entity as the earlier one).
+- Preheat: a thermostat with `- program: {preheat: {rate: 1.5}}` (°C per hour; `max`
+  how early at most, 3 h when not given) is at a program's set temperature (`eq`, or the
+  `min` of a range) by the program's start. (target - room temperature) / rate before the
+  start the program's temperature rule applies as if it had started: requests are brought
+  to it like any rule, and it goes before the temperature rules of programs running then.
+  Once open the window stays open until the start (also over a restart); pausing the
+  program (`gungors.pause_program` works on it then, the pause lasts until its end) or
+  deleting it closes it and the heating returns as at a set rule's end. Programs with
+  `climate: preheat: false` and timeless runs are not preheated for. The thermostat's
+  `preheat` attribute is the plan (`target`, `at`, `start`, `rate`, `active`),
+  `preheat_last` the latest outcome (`reached`, `late_min`); the calendar's `preheating`
+  attribute lists the programs being preheated for, and in `gungors/programs` such a
+  program has state `preheating` and `preheat: {start, active}`.
 - `gungors.pin_program` (`uid`, `pinned: false` to unpin) pins an entry or a timeless
   program for everyone; the program card lists the pinned ones first. The calendar's
   `pinned` and `timeless` attributes list their uids (so a change updates its state).
 - Websocket `gungors/programs`: every entry (a series once) and timeless program with
-  `state` (`running`, `paused`, `scheduled`, `done`, `idle`, `invalid`), the current or next
-  `start`/`end`, `all_day`, `pinned`, `paused_by` (the timeless program that paused it) and, for a
+  `state` (`running`, `paused`, `scheduled`, `preheating`, `done`, `idle`, `invalid`), the current or next
+  `start`/`end`, `all_day`, `pinned`, `preheat`, `paused_by` (the timeless program that paused it) and, for a
   timeless one, `run` (its running entry's uid, for pause/resume).
 
 `rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`

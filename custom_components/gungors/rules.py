@@ -199,6 +199,8 @@ class Program:
     end: SunTime | None = None
     # A run of a timeless program (program.py): that program's uid.
     timeless: str | None = None
+    # Climate set temperature rules are reached by the start (`climate: preheat: false`: not).
+    preheat: bool = True
 
     def domains(self) -> set[str]:
         return {DOMAINS[attr] for attr in self.rules}
@@ -333,6 +335,7 @@ def parse_program(description: str | None) -> Program:
     ):
         raise vol.Invalid("target: an area, an entity id or a list of them")
     pairs: list[tuple[Any, Any]] = []
+    preheat = True
     if "rules" in data:
         if not isinstance(data["rules"], dict):
             raise vol.Invalid("rules: a mapping of attribute: value")
@@ -346,6 +349,12 @@ def parse_program(description: str | None) -> Program:
         values = data[domain]
         if not isinstance(values, dict) or not values:
             raise vol.Invalid(f"{domain}: a mapping of attribute: value")
+        if domain == "climate" and "preheat" in values:
+            values = dict(values)
+            flag = values.pop("preheat")
+            if not isinstance(flag, bool):
+                raise vol.Invalid("climate: preheat is true or false")
+            preheat = flag
         for key, value in values.items():
             attr = attr_of(domain, key)
             if attr is None:
@@ -374,7 +383,7 @@ def parse_program(description: str | None) -> Program:
                 )
     return Program(
         target=tuple(t.strip() for t in target), rules=parsed,
-        timeless=timeless.strip() if timeless else None, **sun,
+        timeless=timeless.strip() if timeless else None, preheat=preheat, **sun,
     )
 
 
@@ -419,6 +428,8 @@ def dump_program(program: Program) -> str:
             else:
                 value = "{" + ", ".join(f"{k}: {_scalar(v)}" for k, v in as_dict.items()) + "}"
             lines.append(f"  {NAMES[attr]}: {value}")
+        if domain == "climate" and not program.preheat:
+            lines.append("  preheat: false")
     return "\n".join(lines) + "\n"
 
 

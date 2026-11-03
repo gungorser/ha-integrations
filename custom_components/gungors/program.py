@@ -30,6 +30,11 @@ are active for it now (features/program.py enforces them).
   entity, an attribute both can't hold) and resumes them when it ends or is
   paused itself; an entry the user pauses or resumes meanwhile is left as they
   put it. Runs skip the conflict check on saving.
+- Preheat: thermostats also get the programs starting within PREHEAT_HORIZON
+  whose climate set temperature rule they should reach by the start (entries
+  with `climate: preheat: false` and timeless runs excluded); features/program.py
+  opens the window. An occurrence being preheated can be paused like a running
+  one; its pause lasts until its end.
 - Any entry or timeless program can be pinned (`gungors.pin_program`); the
   program card lists the pinned ones first.
 - A default can be a template (the covers' built-in one follows the sun:
@@ -103,6 +108,8 @@ MAX_SLEEP = datetime.timedelta(hours=1)
 SUN_MARGIN = datetime.timedelta(days=1)
 # A timeless program runs this long unless a duration is given.
 DEFAULT_RUN = datetime.timedelta(hours=24)
+# Thermostats hear of programs this far ahead, to preheat for them (features/program.py).
+PREHEAT_HORIZON = datetime.timedelta(hours=3)
 
 DEFAULT_DEFAULTS: dict[str, dict[str, Any]] = {
     "light": {"on": False, "color": (255, 255, 255)},
@@ -251,6 +258,8 @@ class ProgramManager:
         self._yaml_defaults: dict[str, dict[str, Any]] = {}
         # Template defaults being tracked: text -> remove callback.
         self._templates: dict[str, CALLBACK_TYPE] = {}
+        # What each thermostat preheats for: entity id -> its gw_preheat_info().
+        self.preheat: dict[str, dict[str, Any]] = {}
 
     # --- setup ---------------------------------------------------------------
 
@@ -587,10 +596,12 @@ class ProgramManager:
     def programs(self) -> list[dict[str, Any]]:
         """Every entry and timeless program with its state (the program card's list).
 
-        state: running, paused, scheduled (its next occurrence follows), done (no
-        more occurrences within a year), idle (a timeless program not running) or
+        state: running, paused, scheduled (its next occurrence follows), preheating
+        (a thermostat heats for its next occurrence already), done (no more
+        occurrences within a year), idle (a timeless program not running) or
         invalid (an unreadable entry). Runs of timeless programs are not listed
-        on their own; their program carries them.
+        on their own; their program carries them. `preheat`: the earliest planned or
+        started preheat for the next occurrence (`start`, `active`), else None.
         """
         now = dt_util.now()
         tz = dt_util.get_default_time_zone()
@@ -620,12 +631,17 @@ class ProgramManager:
                 if instance.start <= now:
                     runs[instance.program.timeless] = instance
 
+        preheating = self.preheating()
+
         def state(instance: Instance | None) -> str:
             if instance is None:
                 return "done"
+            key = self._key(instance)
             if instance.start > now:
-                return "scheduled"
-            return "paused" if self._key(instance) in self.paused else "running"
+                if key in self.paused:
+                    return "paused"
+                return "preheating" if key in preheating else "scheduled"
+            return "paused" if key in self.paused else "running"
 
         def times(instance: Instance | None) -> dict[str, Any]:
             if instance is None:
@@ -658,6 +674,7 @@ class ProgramManager:
                 "pinned": uid in self.pinned,
                 "state": "invalid" if program is None else state(instance),
                 "paused_by": paused_by(instance),
+                "preheat": self._preheat_of(self._key(instance)) if instance is not None else None,
                 "error": error,
                 **when,
             })
@@ -697,19 +714,51 @@ class ProgramManager:
                 if i.uid == uid]
 
     def paused_now(self) -> list[str]:
-        """The uids of the running occurrences that are paused."""
+        """The uids of the running (or preheating) occurrences that are paused."""
         now = dt_util.now()
-        return sorted({
+        running = {
             i.uid for i in self.instances(now, now + datetime.timedelta(microseconds=1))
             if self._key(i) in self.paused
-        })
+        }
+        ahead = {
+            k.split("|", 1)[0] for k in self.paused
+            if datetime.datetime.fromisoformat(k.split("|", 1)[1]) > now
+        }
+        return sorted(running | ahead)
+
+    # --- preheat -------------------------------------------------------------
+
+    def preheating(self) -> set[str]:
+        """The keys of the occurrences a thermostat preheats for now."""
+        return {i["key"] for i in self.preheat.values() if i.get("active")}
+
+    @callback
+    def preheat_changed(self, entity_id: str, info: dict[str, Any] | None) -> None:
+        """A thermostat's preheat plan changed; a window opening or closing is told."""
+        before = self.preheating()
+        if info is None:
+            self.preheat.pop(entity_id, None)
+        else:
+            self.preheat[entity_id] = info
+        if self.preheating() != before:
+            self._changed()
+
+    def _preheat_of(self, key: str) -> dict[str, Any] | None:
+        """The earliest preheat (planned or started) for an occurrence, of any thermostat."""
+        infos = [i for i in self.preheat.values() if i.get("key") == key]
+        if not infos:
+            return None
+        return {
+            "start": min(i["start"] for i in infos),
+            "active": any(i.get("active") for i in infos),
+        }
 
     async def async_pause(self, uid: str) -> None:
         """Pause the running occurrence of entry `uid` until resumed or its end."""
-        running = self._running(uid)
-        if not running:
+        keys = {self._key(i) for i in self._running(uid)}
+        keys |= {k for k in self.preheating() if k.split("|", 1)[0] == uid}
+        if not keys:
             raise HomeAssistantError(f"Program {uid} is not running now")
-        keys = {self._key(i) for i in running}
         self.paused |= keys
         for key in keys:  # the user's pause now: a run's end leaves it paused
             self.paused_by.pop(key, None)
@@ -822,8 +871,13 @@ class ProgramManager:
         self._cancel_timer()
         now = dt_util.now()
         running = self.instances(now, now + datetime.timedelta(microseconds=1))
+        coming = [
+            i for i in self.instances(now, now + PREHEAT_HORIZON)
+            if i.start > now and i.program is not None and i.program.preheat
+            and i.program.timeless is None
+        ]
         dropped = self._drop_ended_runs(now)
-        if self._update_run_pauses(running) or dropped:
+        if self._update_run_pauses(running, coming) or dropped:
             await self._async_save()
             self._changed()
         active = sorted(
@@ -844,15 +898,24 @@ class ProgramManager:
                     self._notify_skip(instance, clash, entity_id)
                     continue
                 accepted.append((instance, rules))
-
-        for entity_id, entity in list(self.entities.items()):
-            assigned = per_entity.get(entity_id, [])
-            # The rules too: an edit of a running entry applies at once.
-            key = [(i.uid, i.start.isoformat(), repr(r)) for i, r in assigned]
-            if not force and self._assigned.get(entity_id) == key:
+        # Programs a thermostat may preheat for: their climate set temperature rules.
+        upcoming: dict[str, list[tuple[Instance, dict]]] = {e: [] for e in self.entities}
+        for instance in sorted(coming, key=lambda i: (i.start, i.uid)):
+            assert instance.program is not None
+            if self._key(instance) in self.paused:
                 continue
-            self._assigned[entity_id] = key
-            programs = [
+            rules = {
+                a: c for a, c in instance.program.rules.items()
+                if a in ("temperature", "hvac_mode") and DOMAINS[a] == "climate"
+            }
+            if "temperature" not in rules or not rules["temperature"].set:
+                continue
+            for entity_id in self.resolve(instance.program):
+                if entity_id.startswith("climate.") and entity_id in upcoming:
+                    upcoming[entity_id].append((instance, rules))
+
+        def listed(pairs: list[tuple[Instance, dict]]) -> list[dict[str, Any]]:
+            return [
                 {
                     "uid": i.uid,
                     "summary": i.summary,
@@ -860,24 +923,37 @@ class ProgramManager:
                     "end": i.end.isoformat(),
                     "rules": rules,
                 }
-                for i, rules in assigned
+                for i, rules in pairs
             ]
+
+        for entity_id, entity in list(self.entities.items()):
+            assigned = per_entity.get(entity_id, [])
+            coming_here = upcoming.get(entity_id, [])
+            # The rules too: an edit of a running entry applies at once.
+            key = [(i.uid, i.start.isoformat(), repr(r)) for i, r in assigned]
+            key += [("next", i.uid, i.start.isoformat(), repr(r)) for i, r in coming_here]
+            if not force and self._assigned.get(entity_id) == key:
+                continue
+            self._assigned[entity_id] = key
             try:
-                await entity.gw_program_set(programs, self.defaults.get(entity_id.split(".")[0], {}))
+                await entity.gw_program_set(
+                    listed(assigned), self.defaults.get(entity_id.split(".")[0], {}),
+                    listed(coming_here),
+                )
             except Exception:  # noqa: BLE001  (one entity must not stop the others)
                 _LOGGER.exception("%s: applying programs failed", entity_id)
 
         self._schedule(now)
 
-    def _update_run_pauses(self, running: list[Instance]) -> bool:
+    def _update_run_pauses(self, running: list[Instance], coming: list[Instance] = ()) -> bool:
         """Pause what the active timeless runs conflict with, resume what they no longer do.
 
         Also ends the pauses of occurrences that ended. True when anything changed.
         """
         keys = {self._key(i) for i in running}
         before = (set(self.paused), dict(self.paused_by), set(self.kept))
-        # A pause ends with its occurrence.
-        self.paused &= keys
+        # A pause ends with its occurrence (one paused while preheating lasts until its end).
+        self.paused &= keys | {self._key(i) for i in coming}
         self.kept &= keys
         self.paused_by = {k: v for k, v in self.paused_by.items() if k in keys}
         by_key = {self._key(i): i for i in running if i.program is not None}
@@ -937,8 +1013,8 @@ class ProgramManager:
 
     def _schedule(self, now: datetime.datetime) -> None:
         next_at = now + MAX_SLEEP
-        for instance in self.instances(now, next_at):
-            for moment in (instance.start, instance.end):
+        for instance in self.instances(now, next_at + PREHEAT_HORIZON):
+            for moment in (instance.start, instance.end, instance.start - PREHEAT_HORIZON):
                 if now < moment < next_at:
                     next_at = moment
         self._timer = async_track_point_in_utc_time(

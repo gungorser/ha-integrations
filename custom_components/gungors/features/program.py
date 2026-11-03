@@ -35,13 +35,34 @@ While programs are active the entity follows their rules:
   changes, unless a set rule holds the attribute. Defaults are applied at those
   moments only; they never lock anything.
 
+Preheat (climate): `- program: {preheat: {rate: 1.5, max: {hours: 3}}}` (rate in
+°C per hour; max 3 h when not given). The thermostat then reaches the set
+temperature rule of a coming program (`eq`, or the `min` of a range) by its start:
+
+- From (target - room temperature) / rate before the start (at most `max`), the
+  program's temperature rule (and the heating it implies) applies as if the
+  program had started: user requests are brought to it with a popup as usual,
+  and it goes before the temperature rules of programs running now. Only the
+  next coming program counts; none when the room is at its target already.
+- The window, once open, stays open until the start (latched, also over a
+  restart), so the room warming up does not end it. It closes early when the
+  program is deleted or paused (the pause lasts until its end); the heating then
+  returns as when a set rule ends.
+- Programs with `climate: preheat: false` and timeless runs are not preheated for.
+
 Attribute `program`: the active programs of this entity (summary, start, end,
-rules). The attributes `set` rules hold survive a restart, so a program that
+rules; a preheat window shows with `preheat: true`). `preheat`: the plan for the
+next program (`uid`, `summary`, `target`, `at` its start, `start` the planned or
+actual window start, `rate`, `active`), or None. `preheat_last`: how the latest
+window ended (`target`, `at`, `opened`, `reached` the time the room got there or
+None, `late_min` minutes after the start, negative when early).
+The attributes `set` rules hold survive a restart, so a program that
 ended while Home Assistant was down still restores the defaults.
 """
 from __future__ import annotations
 
 from dataclasses import replace
+import datetime
 import logging
 import time
 from typing import Any
@@ -52,9 +73,14 @@ from homeassistant.components.climate import HVACMode
 from homeassistant.components.light import ColorMode
 from homeassistant.core import Event, State, callback
 from homeassistant.exceptions import TemplateError
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.template import Template
-from homeassistant.util import color as color_util
+from homeassistant.util import color as color_util, dt as dt_util
 
 from ..core import SOURCE_REMOTE, Feature, Request, register
 from ..rules import (
@@ -81,6 +107,17 @@ COOLDOWN = 10.0
 MAX_REPEATS = 3
 # s a service call's context counts as the request's origin
 CONTEXT_RECENT = 5.0
+# Preheat: how often the window is checked, how close the room must get to count as there,
+# and how long after the start a window that never got there is given up.
+PREHEAT_CHECK = datetime.timedelta(minutes=1)
+PREHEAT_REACHED = 0.05
+PREHEAT_FOLLOW = datetime.timedelta(hours=2)
+PREHEAT_SCHEMA = vol.Schema({
+    vol.Required("rate"): vol.All(vol.Coerce(float), vol.Range(min=0.1)),
+    vol.Optional("max", default=datetime.timedelta(hours=3)): cv.positive_time_period,
+})
+# Rules a preheat window brings forward (and takes over from running programs).
+PREHEAT_ATTRS = ("temperature", "hvac_mode")
 # How close (in the rule's unit) a device must be to a set rule's limit to count as there.
 _LIMIT_TOLERANCE = {"position": 0.5, "brightness": 0.5, "temperature": 0.05}
 
@@ -145,6 +182,11 @@ def _limit(constraint: Constraint) -> float | None:
     return None
 
 
+def _constraint_fields(constraint: Constraint) -> dict[str, Any]:
+    """A constraint as the keyword arguments that rebuild it (restore data)."""
+    return {"eq": constraint.eq, "min": constraint.min, "max": constraint.max, "set": constraint.set}
+
+
 def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
     result = constraint.as_dict()
     if "eq" in result:
@@ -152,12 +194,29 @@ def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
     return result
 
 
+def _preheat_target(constraint: Constraint | None) -> float | None:
+    """The temperature a preheat aims at: a set rule's exact value or its floor."""
+    if constraint is None or not constraint.set:
+        return None
+    if constraint.eq is not None:
+        return float(constraint.eq)
+    return float(constraint.min) if constraint.min is not None else None
+
+
 def _own_defaults(value: Any) -> dict[str, Any]:
-    """`- program: {<n>: <default>}`: this entity's own defaults (read per domain later)."""
+    """`- program: {<n>: <default>, preheat: {...}}`: this entity's own defaults (read per
+    domain later) and its preheat settings."""
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise vol.Invalid("program: a mapping of attribute: default value")
+    value = dict(value)
+    preheat = value.pop("preheat", None)
+    if preheat is not None:
+        try:
+            preheat = PREHEAT_SCHEMA(preheat)
+        except vol.Invalid as err:
+            raise vol.Invalid(f"program: preheat: {err}") from err
     for key, default in value.items():
         domains = [d for d in dict.fromkeys(DOMAINS.values()) if attr_of(d, key) is not None]
         if not domains:
@@ -170,7 +229,9 @@ def _own_defaults(value: Any) -> dict[str, Any]:
                 errors.append(err)
         if len(errors) == len(domains):
             raise errors[0]
-    return dict(value)
+    if preheat is not None:
+        value["preheat"] = preheat
+    return value
 
 
 @register("cover", "climate", "light")
@@ -187,6 +248,16 @@ class Program(Feature):
     _prog_recheck = None
     _prog_last: dict[str, Any] | None = None  # the last correction sent
     _prog_repeats = 0  # how often in a row it was sent
+    # Preheat (climate): the manager's running and coming programs, the open window
+    # ({uid, summary, at, end, rules, opened, target}), the latest outcome, the
+    # window being followed until the room gets there.
+    _prog_given: list[dict[str, Any]] = []
+    _prog_coming: list[dict[str, Any]] = []
+    _prog_defaults_given: dict[str, Any] = {}
+    _prog_window: dict[str, Any] | None = None
+    _prog_preheat_last: dict[str, Any] | None = None
+    _prog_follow: dict[str, Any] | None = None
+    _prog_plan: dict[str, Any] | None = None
 
     @property
     def _prog_domain(self) -> str:
@@ -200,9 +271,23 @@ class Program(Feature):
         mine = {k: v for k, v in own.items() if attr_of(domain, k) is not None}
         return {**domain_defaults, **parse_defaults(domain, mine)}
 
-    async def gw_program_set(self, active: list[dict[str, Any]], defaults: dict[str, Any]) -> None:
-        """The manager's new set of active programs for this entity."""
-        self._prog_active = active
+    async def gw_program_set(
+        self,
+        active: list[dict[str, Any]],
+        defaults: dict[str, Any],
+        coming: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """The manager's new set of active (and, for preheat, coming) programs."""
+        self._prog_given = active
+        self._prog_coming = coming or []
+        self._prog_defaults_given = defaults
+        self._prog_preheat_eval()
+        await self._prog_apply()
+
+    async def _prog_apply(self) -> None:
+        """Enforce the active programs (the manager's plus an open preheat window)."""
+        defaults = self._prog_defaults_given
+        self._prog_active = self._prog_effective()
         self._prog_last, self._prog_repeats = None, 0
         rules = self._prog_rules()
         held = {a for a, c in rules.items() if c.set}
@@ -240,6 +325,121 @@ class Program(Feature):
         except (TemplateError, vol.Invalid) as err:
             _LOGGER.warning("%s: default %s %r: %s", self.entity_id, NAMES[attr], value, err)
             return None
+
+    # --- preheat -------------------------------------------------------------
+
+    def _prog_preheat_conf(self) -> dict[str, Any] | None:
+        if self._prog_domain != "climate":
+            return None
+        return (self.gw_conf(KEY) or {}).get("preheat")
+
+    def _prog_effective(self) -> list[dict[str, Any]]:
+        """The manager's programs plus the open window, which takes over their temperature."""
+        window = self._prog_window
+        if window is None:
+            return self._prog_given
+        others = [
+            {**p, "rules": {a: c for a, c in p["rules"].items() if a not in PREHEAT_ATTRS}}
+            for p in self._prog_given if p["uid"] != window["uid"]
+        ]
+        return [*others, {
+            "uid": window["uid"], "summary": window["summary"], "start": window["at"],
+            "end": window["end"], "rules": window["rules"], "preheat": True,
+        }]
+
+    def _prog_lead(self, target: float, conf: dict[str, Any]) -> datetime.timedelta | None:
+        """How long before the start heating must begin; None: the room is there already."""
+        current = self.current_temperature
+        if current is None or current >= target - PREHEAT_REACHED:
+            return None
+        hours = (target - current) / conf["rate"]
+        return min(datetime.timedelta(hours=hours), conf["max"])
+
+    def _prog_preheat_eval(self) -> bool:
+        """Open or close the window for the next coming program. True: it opened or closed."""
+        conf = self._prog_preheat_conf()
+        now = dt_util.utcnow()
+        before = self._prog_window
+        window = before
+        coming = sorted(self._prog_coming, key=lambda p: p["start"])
+        if window is not None and (conf is None or not any(
+            p["uid"] == window["uid"] and p["start"] == window["at"] for p in coming
+        )):
+            window = None  # started, deleted or paused
+        plan: dict[str, Any] | None = None
+        if conf is not None and coming:
+            nxt = next(
+                (p for p in coming if window is not None and p["uid"] == window["uid"]
+                 and p["start"] == window["at"]),
+                coming[0],
+            )
+            target = _preheat_target(nxt["rules"].get("temperature"))
+            at = dt_util.parse_datetime(nxt["start"])
+            if target is not None and at is not None:
+                plan = {"uid": nxt["uid"], "summary": nxt["summary"], "target": target,
+                        "at": nxt["start"], "rate": conf["rate"], "start": None, "active": False}
+                if window is not None and window["uid"] == nxt["uid"]:
+                    plan.update(start=window["opened"], active=True)
+                elif window is None and (lead := self._prog_lead(target, conf)) is not None:
+                    opens = at - lead
+                    plan["start"] = opens.isoformat()
+                    if now >= opens:
+                        window = {
+                            "uid": nxt["uid"], "summary": nxt["summary"], "at": nxt["start"],
+                            "end": nxt["end"], "rules": nxt["rules"], "target": target,
+                            "opened": dt_util.as_local(now).isoformat(),
+                        }
+                        plan.update(start=window["opened"], active=True)
+                        self._prog_follow = dict(window)
+                        _LOGGER.info(
+                            "%s: preheating for '%s' (%.1f° by %s)",
+                            self.entity_id, nxt["summary"], target, nxt["start"],
+                        )
+        self._prog_window = window
+        self._prog_plan = plan
+        self._prog_follow_check(now)
+        from ..program import async_get_manager  # noqa: PLC0415
+
+        info = None
+        if plan is not None and plan["start"] is not None:
+            info = {"key": f"{plan['uid']}|{plan['at']}", "uid": plan["uid"],
+                    "start": plan["start"], "active": plan["active"]}
+        async_get_manager(self.hass).preheat_changed(self.entity_id, info)
+        return (before is None) != (window is None) or (
+            before is not None and window is not None and before["uid"] != window["uid"]
+        )
+
+    def _prog_follow_check(self, now: datetime.datetime) -> None:
+        """Note when the room reached the target of the latest window."""
+        follow = self._prog_follow
+        if follow is None:
+            return
+        at = dt_util.parse_datetime(follow["at"])
+        current = self.current_temperature
+        reached = current is not None and current >= follow["target"] - PREHEAT_REACHED
+        if not reached and (at is None or now < at + PREHEAT_FOLLOW):
+            return
+        self._prog_follow = None
+        self._prog_preheat_last = {
+            "summary": follow["summary"], "target": follow["target"], "at": follow["at"],
+            "opened": follow["opened"],
+            "reached": dt_util.as_local(now).isoformat() if reached else None,
+            "late_min": round((now - at).total_seconds() / 60) if reached and at else None,
+        }
+
+    def _prog_preheat_tick(self) -> None:
+        if self._prog_preheat_conf() is None:
+            return
+        shown = (self._prog_plan, self._prog_preheat_last)
+        if self._prog_preheat_eval():
+            self.hass.async_create_task(self._prog_apply())
+        elif (self._prog_plan, self._prog_preheat_last) != shown:
+            self.async_write_ha_state()
+
+    def gw_temperature_changed(self) -> None:
+        super().gw_temperature_changed()
+        if self._prog_coming or self._prog_window is not None or self._prog_follow is not None:
+            self._prog_preheat_tick()
 
     # --- chain ---------------------------------------------------------------
 
@@ -281,9 +481,21 @@ class Program(Feature):
         from ..program import async_get_manager  # noqa: PLC0415
 
         self.async_on_remove(async_get_manager(self.hass).register(self))
+        if self._prog_preheat_conf() is not None:
+
+            @callback
+            def check(_now) -> None:
+                if self._prog_coming or self._prog_window is not None or self._prog_follow:
+                    self._prog_preheat_tick()
+
+            self.async_on_remove(async_track_time_interval(self.hass, check, PREHEAT_CHECK))
 
     async def async_will_remove_from_hass(self) -> None:
         self._prog_cancel_recheck()
+        if self._prog_preheat_conf() is not None:
+            from ..program import async_get_manager  # noqa: PLC0415
+
+            async_get_manager(self.hass).preheat_changed(self.entity_id, None)
         await super().async_will_remove_from_hass()
 
     @callback
@@ -658,10 +870,30 @@ class Program(Feature):
         self._prog_set = {a for a in held if a in DOMAINS} if isinstance(held, (dict, list)) else set()
         self._prog_pending = set()
         self._prog_active = []
+        self._prog_window = None
+        self._prog_preheat_last = None
+        if isinstance(own, dict):
+            window = own.get("window")
+            if isinstance(window, dict) and {"uid", "at", "rules", "target"} <= set(window):
+                try:
+                    window["rules"] = {
+                        a: Constraint(**c) for a, c in window["rules"].items() if a in PREHEAT_ATTRS
+                    }
+                    self._prog_window = window
+                except TypeError:
+                    pass
+            if isinstance(own.get("preheat_last"), dict):
+                self._prog_preheat_last = own["preheat_last"]
 
     def gw_save(self) -> dict[str, Any]:
         data = super().gw_save()
         data[KEY] = {"set": sorted(self._prog_set)}
+        if self._prog_window is not None:
+            window = dict(self._prog_window)
+            window["rules"] = {a: _constraint_fields(c) for a, c in window["rules"].items()}
+            data[KEY]["window"] = window
+        if self._prog_preheat_last is not None:
+            data[KEY]["preheat_last"] = self._prog_preheat_last
         return data
 
     @property
@@ -674,7 +906,11 @@ class Program(Feature):
                 "start": p["start"],
                 "end": p["end"],
                 "rules": {NAMES[a]: _shown(a, c) for a, c in p["rules"].items()},
+                **({"preheat": True} if p.get("preheat") else {}),
             }
             for p in self._prog_active
         ]
+        if self._prog_preheat_conf() is not None:
+            attrs["preheat"] = getattr(self, "_prog_plan", None)
+            attrs["preheat_last"] = self._prog_preheat_last
         return attrs
