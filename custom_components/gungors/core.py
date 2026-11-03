@@ -66,12 +66,15 @@ class Request:
     ``data`` holds the domain fields (cover: position / stop, climate: hvac_mode /
     temperature, light: on + service data). ``from_device`` marks a change the
     device already made: it is applied to the wrapper but not sent back.
+    ``adjusted`` tells the sender (a pushbutton) that a feature changed it.
     """
 
     data: dict[str, Any]
     source: str = SOURCE_REMOTE
     from_device: bool = False
     tags: set[str] = field(default_factory=set)
+    # Set by a feature that changed the request (a program rule clamped it).
+    adjusted: bool = False
 
 
 class Feature:

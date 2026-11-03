@@ -134,4 +134,18 @@ delete_timeless_program:
       selector:
         text:
 
+blink:
+  target:
+    entity:
+      integration: gungors
+      domain: light
+  fields:
+    rgb_color:
+      selector:
+        color_rgb:
+    count:
+      default: 1
+      selector:
+        number: {min: 1, max: 5}
+
 reload:

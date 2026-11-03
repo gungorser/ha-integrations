@@ -40,8 +40,9 @@ are active for it now (features/program.py enforces them).
 - A default can be a template (the covers' built-in one follows the sun:
   open while it is up); whenever its result changes, the entities whose default
   it is take the new value (unless a set rule holds that attribute).
-- The defaults come from the YAML (`defaults:` of the calendar platform) over
-  the built-in ones; `gungors.reload` picks up a change. Defaults stored by
+- The defaults come from the `default` presets (presets.py, `gungors: presets:`)
+  over the older calendar `defaults:` over the built-in ones; `gungors.reload`
+  picks up a change. Defaults stored by
   gungors before 1.9.0 (from the program card) are dropped once, with a warning
   if they differed from the YAML ones.
 """
@@ -396,12 +397,23 @@ class ProgramManager:
     # --- defaults ------------------------------------------------------------
 
     def _apply_defaults(self) -> None:
-        """The YAML defaults over the built-in ones, per domain."""
+        """The `default` presets over the calendar's YAML defaults over the built-in ones."""
+        from .presets import yaml_default  # noqa: PLC0415
+
         self.defaults = {
-            domain: {**DEFAULT_DEFAULTS.get(domain, {}), **self._yaml_defaults.get(domain, {})}
+            domain: {
+                **DEFAULT_DEFAULTS.get(domain, {}),
+                **self._yaml_defaults.get(domain, {}),
+                **yaml_default(self.hass, domain),
+            }
             for domain in DEFAULT_DEFAULTS
         }
         self._track_templates()
+
+    @callback
+    def async_presets_changed(self) -> None:
+        """The presets were reloaded: their `default`s are the domain defaults."""
+        self._apply_defaults()
 
     @callback
     def _track_templates(self) -> None:
@@ -525,6 +537,10 @@ class ProgramManager:
         self.pinned.discard(uid)
         await self._async_save()
         self._changed()
+
+    def is_running(self, uid: str) -> bool:
+        """Whether a timeless program has a run now (also a paused one)."""
+        return self._run_of(uid) is not None
 
     def _run_of(self, uid: str) -> Instance | None:
         """The running (maybe paused) run of a timeless program."""
