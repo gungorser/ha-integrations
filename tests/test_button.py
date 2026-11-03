@@ -20,8 +20,7 @@ from .test_program import LAMP, LIGHT, THERMOSTAT, TRV, add_entry, lamp, setup_a
 
 EVT = "event.salon_pushbutton_action"
 WRAPPER = "event.salon_pushbutton"
-TYPES = ["1_single", "1_double", "1_hold", "2_single", "2_double", "2_hold",
-         "3_single", "3_double", "3_hold"]
+TYPES = ["single", "double", "hold"]  # Zigbee2MQTT
 TARGET = {"entity_id": [LIGHT, THERMOSTAT, "cover.salon_cover"]}
 
 
@@ -41,7 +40,11 @@ def original(hass: HomeAssistant, event_type: str | None = None, state: str | No
     _count += 1
     if state is None:
         state = (dt_util.utcnow() + timedelta(milliseconds=_count)).isoformat()
-    hass.states.async_set(EVT, state, {"event_type": event_type, "event_types": TYPES})
+    # Zigbee2MQTT's shape: `2_hold` is event_type `hold` with attribute button `2`.
+    attrs = {"event_type": event_type, "event_types": TYPES}
+    if event_type and "_" in event_type:
+        attrs["button"], attrs["event_type"] = event_type.split("_", 1)
+    hass.states.async_set(EVT, state, attrs)
 
 
 async def press(hass: HomeAssistant, slot: str) -> None:
@@ -100,7 +103,7 @@ async def test_presses_are_mirrored(hass: HomeAssistant, calls) -> None:
     hass.states.async_set(EVT, "unavailable", {})
     await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).state == "unavailable"
-    hass.states.async_set(EVT, last, {"event_type": "2_hold", "event_types": TYPES})
+    hass.states.async_set(EVT, last, {"event_type": "hold", "button": "2", "event_types": TYPES})
     await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).state == before
 
