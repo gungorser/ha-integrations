@@ -244,6 +244,7 @@ class ProgramCalendar(CalendarEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "paused": self._manager.paused_now(),
+            "preheating": sorted({k.split("|", 1)[0] for k in self._manager.preheating()}),
             "pinned": sorted(self._manager.pinned),
             "timeless": sorted(self._manager.timeless),
             "defaults": defaults_json(self._manager.defaults),
