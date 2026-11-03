@@ -1,9 +1,11 @@
 """Every gungors feature; importing this package registers them (see core.register)."""
 from . import (  # noqa: F401
+    button,
     direction,
     invert,
     link_climate,
     link_cover,
+    link_event,
     link_light,
     occupancy,
     pid,

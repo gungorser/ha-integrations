@@ -2,9 +2,10 @@
 
 Home-grown Home Assistant integration (domain `gungors`): wrapper entities that drive hidden
 original entities and add behaviour on top. Installed through HACS as a custom repository
-(category **Integration**). Platforms are configured in YAML (`cover:`, `climate:`, `light:` with
-`- platform: gungors`); the YAML lives in the `ha-configs` repository (`packages/covers.yaml`,
-`packages/heating.yaml`, `packages/lights.yaml`).
+(category **Integration**). Platforms are configured in YAML (`cover:`, `climate:`, `light:`,
+`event:` with `- platform: gungors`); the YAML lives in the `ha-configs` repository
+(`packages/covers.yaml`, `packages/heating.yaml`, `packages/lights.yaml`,
+`packages/pushbuttons.yaml`, `packages/presets.yaml`).
 
 ## Features
 
@@ -40,6 +41,8 @@ entry that breaks a rule is not created and the log says why.
 | `pid` | climate | `{kp, ki, kd, keep_alive, force_off, ...}` | Heating demand 0-100 (ScratMan's PID, vendored) |
 | `valve` | climate | `{opening, closing, min}` | Demand onto the TRV valve opening/closing degree numbers |
 | `pwm` | climate | `{entity, period, min_cycle_duration}` | Demand onto an on/off heater by pulse-width modulation |
+| `buttons` | event | `{<button>: <function>}` | Pushbutton ready functions per button: `light`, `climate`, `cover` (below) |
+| `custom` | event | `{<slot>: {action, target, data}}` | Any action on a free slot of a pushbutton (`2_hold`) |
 
 Each feature module's docstring (`features/*.py`) is its full reference: behaviour, options,
 attributes. Base classes: `cover.py`, `climate.py`, `light.py`.
@@ -54,8 +57,68 @@ Attributes other repositories read: cover `actual_position`, `pending_position`,
 (its members) so `expand()` works.
 
 Services: `gungors.set_pid_gain`, `gungors.set_pid_mode`,
-`gungors.clear_integral`, `gungors.reload` (reloads the YAML of all platforms; Python changes
+`gungors.clear_integral`, `gungors.blink` (lights: `rgb_color`, `count`; flashes the original
+and puts it back as it was; not a request, so no rule or `occupancy` sees it; a real request
+ends it), `gungors.reload` (reloads the YAML of all platforms and the presets; Python changes
 still need a restart).
+
+## Presets
+
+Named attribute sets per domain, shared by the program defaults and the pushbuttons
+(`presets.py`):
+
+```yaml
+gungors:
+  presets:
+    light:
+      default: {state: "off", rgb_color: [255, 255, 255], brightness_pct: 100}
+      dim: {brightness_pct: 10}
+      night: {rgb_color: [255, 0, 0]}
+    climate:
+      default: {state: "off"}
+    cover:
+      default: {current_position: "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"}
+```
+
+Attribute names as in the program rules; a value may be a template. A preset sets only the
+attributes it lists. `default` is also the domain's program default (over the calendar's older
+`defaults:`). Presets missing from the YAML have the built-in values above.
+
+## Pushbuttons
+
+`event: - platform: gungors` mirrors a button device's own event entity (Zigbee2MQTT
+`event.<device>_action`, enabled with Z2M's Home Assistant option for event entities) and acts
+on its presses (`event.py`, `features/button.py` are the full reference):
+
+```yaml
+event:
+  - platform: gungors
+    name: bebek_pushbutton
+    target: {area_id: bebek}        # optional: the device's area otherwise
+    features:
+      - buttons:
+          1: cover
+          2:
+            climate:
+              program: "Bebek uyku"  # optional: double press starts / stops it
+          3: light
+      - custom:
+          2_hold: {action: switch.toggle, target: {entity_id: switch.x}}
+      - link: event.bebek_pushbutton_action
+```
+
+- Slots are `<button>_<gesture>` (`single`, `double`, `hold`; a one-button model's are button
+  1's). `light` and `cover` take all three of their button, `climate` single (double only with
+  `program`). `custom` takes any free slot. A slot taken twice or one function on two buttons is
+  a config error.
+- `light`: single off / on at `default`; double toggles the brightness between `dim` and
+  `default`; hold toggles the colour between `night` and `default` (args `single:`, `double:`,
+  `hold:` name other presets).
+- `climate`: single toggles (one blink: green on, blue off); double starts or stops the
+  timeless program (two blinks).
+- `cover`: single open, double close (physical: through an open window); hold closes the whole
+  floor with a backup scene, or restores it.
+- A request a program rule limits is applied as the rule allows and the lights blink twice in red.
 
 Tests: `pip install pytest-homeassistant-custom-component`, then `pytest`.
 

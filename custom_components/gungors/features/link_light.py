@@ -10,9 +10,16 @@ any member is on, commands go to all of them; members may be gungors lights).
 - A change of the on state that we did not command is a physical request (it
   goes through the features, e.g. a program rule brings it back). A report
   within a few seconds after our own command is its result and is taken as is.
+
+Blink (`gungors.blink`, feedback such as a pushbutton's): the original is flashed
+`count` times in a colour and then put back as it was just before (off stays
+off). It goes straight to the original, below every feature: it is not a request,
+so no program rule limits it and `occupancy` does not take it as the user's. A
+real request during a blink ends the blink and wins.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -31,6 +38,18 @@ _LOGGER = logging.getLogger(__name__)
 
 KEY = "link"
 ECHO_WINDOW = 5.0  # s after a command in which reports are its result
+BLINK_ON = 0.5  # s a blink stays lit
+BLINK_OFF = 0.4  # s between two blinks
+BLINK_SETTLE = 2.0  # s after the last blink step before the rules judge the light again
+# Attributes a blink puts back (the colour by the colour mode the light was in).
+_RESTORE_COLOR = {
+    "color_temp": "color_temp_kelvin",
+    "hs": "hs_color",
+    "xy": "xy_color",
+    "rgb": "rgb_color",
+    "rgbw": "rgbw_color",
+    "rgbww": "rgbww_color",
+}
 # Not sent on: "on" is the service, and HA hands entities the deprecated mired
 # "color_temp" next to "color_temp_kelvin", which light.turn_on rejects together.
 _NOT_SENT = {"on", "color_temp"}
@@ -50,6 +69,8 @@ class LightLink(Feature):
 
     _link_available = False
     _link_sent_at = 0.0
+    _link_blink: asyncio.Task | None = None
+    gw_blinking = False
 
     @classmethod
     def gw_claims(cls, conf: Any) -> set[str]:
@@ -136,10 +157,99 @@ class LightLink(Feature):
             return
         # Not passed on to the base on purpose: the wrapper changes when the
         # original reports, not when it is commanded.
+        self._link_stop_blink()
         if not self._link_available:
             return
         kwargs = {k: v for k, v in request.data.items() if k not in _NOT_SENT}
         await self._link_send(bool(request.data.get("on")), kwargs)
+
+    # --- blink ----------------------------------------------------------------
+
+    async def gw_blink(self, rgb_color: list[int] | tuple[int, int, int] | None = None,
+                       count: int = 1) -> None:
+        """Flash the original `count` times, then put it back as it was."""
+        if not self._link_available:
+            return
+        self._link_stop_blink()
+        before = [s for s in self._link_states() if s.state != STATE_UNKNOWN]
+        self.gw_blinking = True
+        self._link_blink = self.hass.async_create_background_task(
+            self._link_blink_run(before, tuple(rgb_color) if rgb_color else None, count),
+            f"gungors blink {self.entity_id}",
+        )
+
+    def _link_stop_blink(self) -> None:
+        if self._link_blink is not None and not self._link_blink.done():
+            self._link_blink.cancel()
+        self._link_blink = None
+        self.gw_blinking = False
+
+    async def _link_blink_run(self, before: list[State], rgb: tuple[int, int, int] | None,
+                              count: int) -> None:
+        try:
+            for index in range(count):
+                if index or any(s.state == STATE_ON for s in before):
+                    await self._link_send(False, {"transition": 0})
+                    await asyncio.sleep(BLINK_OFF)
+                lit: dict[str, Any] = {"transition": 0, "brightness": 255}
+                if rgb is not None:
+                    lit["rgb_color"] = rgb
+                await self._link_blink_on(lit, before)
+                await asyncio.sleep(BLINK_ON)
+            await self._link_restore(before)
+            await asyncio.sleep(BLINK_SETTLE)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if asyncio.current_task() is self._link_blink:
+                self._link_blink = None
+                self.gw_blinking = False
+
+    async def _link_blink_on(self, data: dict[str, Any], before: list[State]) -> None:
+        """Every member lit; colour and brightness only for lights that take them."""
+        self._link_sent_at = time.monotonic()
+        found = {s.entity_id: s for s in before}
+        for entity_id in self._link_entities:
+            state = found.get(entity_id) or self.hass.states.get(entity_id)
+            if entity_id.startswith("switch."):
+                await self.hass.services.async_call(
+                    "switch", "turn_on", {ATTR_ENTITY_ID: entity_id}, blocking=False
+                )
+                continue
+            modes = set((state.attributes.get(ATTR_SUPPORTED_COLOR_MODES) or []) if state else [])
+            kwargs = {"transition": 0}
+            if modes - {ColorMode.ONOFF}:
+                kwargs["brightness"] = data["brightness"]
+            if "rgb_color" in data and modes & {"hs", "xy", "rgb", "rgbw", "rgbww"}:
+                kwargs["rgb_color"] = data["rgb_color"]
+            await self.hass.services.async_call(
+                "light", "turn_on", {ATTR_ENTITY_ID: entity_id, **kwargs}, blocking=False
+            )
+
+    async def _link_restore(self, before: list[State]) -> None:
+        """Put each member back as it was before the blink."""
+        self._link_sent_at = time.monotonic()
+        for state in before:
+            domain = state.domain
+            if state.state != STATE_ON:
+                data: dict[str, Any] = {ATTR_ENTITY_ID: state.entity_id}
+                if domain == "light":
+                    data["transition"] = 0
+                await self.hass.services.async_call(domain, "turn_off", data, blocking=False)
+                continue
+            data = {ATTR_ENTITY_ID: state.entity_id}
+            if domain == "light":
+                data["transition"] = 0
+                if state.attributes.get("brightness") is not None:
+                    data["brightness"] = state.attributes["brightness"]
+                key = _RESTORE_COLOR.get(str(state.attributes.get("color_mode")))
+                if key and state.attributes.get(key) is not None:
+                    data[key] = state.attributes[key]
+            await self.hass.services.async_call(domain, "turn_on", data, blocking=False)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._link_stop_blink()
+        await super().async_will_remove_from_hass()
 
     async def gw_push(self) -> None:
         await super().gw_push()

@@ -463,7 +463,10 @@ class Program(Feature):
         data = self._prog_clamp(dict(request.data))
         if data is None:
             _LOGGER.info("%s: %s rejected by a program", self.entity_id, request.data)
+            request.adjusted = True
             return False
+        if data != original:
+            request.adjusted = True
         if data != request.data:
             _LOGGER.debug("%s: program clamped %s to %s", self.entity_id, request.data, data)
         if user is not None and data != original:
@@ -500,7 +503,8 @@ class Program(Feature):
 
     @callback
     def _prog_state_changed(self, event: Event) -> None:
-        if self._prog_active:
+        # A blink (gungors.blink) is feedback, not a state the rules judge.
+        if self._prog_active and not getattr(self, "gw_blinking", False):
             self.hass.async_create_task(self._prog_enforce())
 
     async def _prog_enforce(self, force: bool = False) -> None:
