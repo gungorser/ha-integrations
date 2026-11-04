@@ -315,7 +315,11 @@ async def test_target_defaults_to_device_area(hass: HomeAssistant, calls) -> Non
 # --- blink -----------------------------------------------------------------------
 
 
-async def test_blink_restores(hass: HomeAssistant, calls) -> None:
+async def test_blink_restores(hass: HomeAssistant, calls, monkeypatch) -> None:
+    # Short real steps: with no delay at all, the non-blocking calls of one step may
+    # run after those of the next, so the recorded order is not the sent order.
+    monkeypatch.setattr(link_light, "BLINK_ON", 0.01)
+    monkeypatch.setattr(link_light, "BLINK_OFF", 0.01)
     await setup_all(hass)
     lamp(hass, True, 120, rgb=(0, 255, 0))
     await hass.async_block_till_done()
@@ -323,7 +327,7 @@ async def test_blink_restores(hass: HomeAssistant, calls) -> None:
     await hass.services.async_call(
         "gungors", "blink", {"entity_id": LIGHT, "rgb_color": [0, 0, 255], "count": 2}, blocking=True
     )
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     ons = lamp_calls(calls, "turn_on")
     assert [tuple(d.get("rgb_color") or ()) for d in ons[:2]] == [(0, 0, 255), (0, 0, 255)]
     assert ons[-1]["brightness"] == 120
@@ -334,7 +338,7 @@ async def test_blink_restores(hass: HomeAssistant, calls) -> None:
     await hass.async_block_till_done()
     calls.clear()
     await hass.services.async_call("gungors", "blink", {"entity_id": LIGHT}, blocking=True)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert lamp_calls(calls, "turn_off")
 
 
