@@ -4,8 +4,8 @@ Home-grown Home Assistant integration (domain `gungors`): wrapper entities that 
 original entities and add behaviour on top. Installed through HACS as a custom repository
 (category **Integration**). Platforms are configured in YAML (`cover:`, `climate:`, `light:`,
 `event:` with `- platform: gungors`); the YAML lives in the `ha-configs` repository
-(`gungors/covers.yaml`, `gungors/heating.yaml`, `gungors/lights.yaml`,
-`gungors/pushbuttons.yaml`, `gungors/presets.yaml`).
+(`gungors/packages/covers.yaml`, `gungors/packages/heating.yaml`, `gungors/packages/lights.yaml`,
+`gungors/packages/pushbuttons.yaml`, `gungors/packages/presets.yaml`).
 
 ## Features
 
@@ -229,13 +229,13 @@ climate:
 Every gungors entity drives an original device entity, which is hidden in Home Assistant:
 dashboards and automations use the wrapper (`cover.sercan_cover`, `climate.<room>_thermostat`),
 never the original (`cover.sercan_blind`, `climate.<room>_climate`). The wrapper-to-original
-pairs are the `link` values in ha-configs `gungors/covers.yaml`, `gungors/heating.yaml` and
-`gungors/lights.yaml`.
+pairs are the `link` values in ha-configs `gungors/packages/covers.yaml`, `gungors/packages/heating.yaml` and
+`gungors/packages/lights.yaml`.
 
 ## Related repositories
 
-- **ha-configs**: the YAML that configures these platforms (`gungors/covers.yaml`,
-  `gungors/heating.yaml`) and the pushbutton blueprint that fires `gungors_physical_cover`.
+- **ha-configs**: the YAML that configures these platforms (`gungors/packages/covers.yaml`,
+  `gungors/packages/heating.yaml`) and the pushbutton blueprint that fires `gungors_physical_cover`.
   Naming rule for the physical devices behind the wrappers:
   https://github.com/gungorser/ha-configs#naming-physical-devices
 - **ha-floorplan / ha-dashboards**: the 3D floor view shows the wrapper entities.
