@@ -20,6 +20,7 @@ from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util
 
 from ..core import Feature, register
 
@@ -36,6 +37,7 @@ class EventLink(Feature):
 
     _link_available = False
     _link_last: str | None = None  # the original's last event (its state) seen
+    _link_since = None  # when the wrapper started listening (UTC)
 
     @classmethod
     def gw_claims(cls, conf: Any) -> set[str]:
@@ -57,6 +59,7 @@ class EventLink(Feature):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        self._link_since = dt_util.utcnow()
         self._link_available = self._link_ok()
         state = self.hass.states.get(self.gw_conf(KEY))
         if state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
@@ -82,14 +85,21 @@ class EventLink(Feature):
         if new.state == self._link_last:
             return  # an attribute change, or the same event back after unavailable
         self._link_last = new.state
-        if event.data.get("old_state") is None:
-            return  # the original added after the wrapper: its restored last event
+        if event.data.get("old_state") is None or self._link_old(new.state):
+            # The original added or restored after the wrapper (Home Assistant
+            # startup): its last event from before, not a press.
+            return
         event_type = new.attributes.get("event_type")
         if not event_type:
             return
         button = new.attributes.get("button")
         slot = f"{button}_{event_type}" if button else slot_of(str(event_type))
         self.hass.async_create_task(self.gw_physical({"event_type": slot}))
+
+    def _link_old(self, state: str) -> bool:
+        """The event (the state is its time) happened before the wrapper listened."""
+        when = dt_util.parse_datetime(state)
+        return when is not None and self._link_since is not None and when < self._link_since
 
     @property
     def available(self) -> bool:
