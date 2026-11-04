@@ -765,7 +765,11 @@ class Program(Feature):
         if "on" in rules:
             data["on"] = rules["on"].eq
         if not data.get("on"):
-            return {"on": False} if "on" in data else data
+            if "on" not in data:
+                return data
+            # Off keeps only its transition: the rest has no meaning off, and an
+            # untouched off request must stay equal (not taken as adjusted).
+            return {"on": False, **({"transition": data["transition"]} if "transition" in data else {})}
         if "brightness" in rules:
             given = data.get("brightness")
             current = given * 100 / 255 if given is not None else self._prog_brightness_pct()

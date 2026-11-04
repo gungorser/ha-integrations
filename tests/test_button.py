@@ -310,8 +310,27 @@ async def test_rule_limit_warns(hass: HomeAssistant, calls, freezer: FrozenDateT
     await press(hass, "1_single")
     await hass.async_block_till_done()
     ons = lamp_calls(calls, "turn_on")
-    # Clamped to the rule, then two red blinks.
+    # Turned on in the default preset: clamped to the rule, no warning.
     assert ons[0]["brightness"] == round(40 * 255 / 100)
+    assert not [d for d in ons if tuple(d.get("rgb_color") or ()) == (255, 0, 0)]
+    # Turned off: an untouched request, no warning either.
+    lamp(hass, True, round(40 * 255 / 100), rgb=(255, 255, 255))
+    await hass.async_block_till_done()
+    calls.clear()
+    await press(hass, "1_single")
+    await hass.async_block_till_done()
+    assert lamp_calls(calls, "turn_off")
+    assert not lamp_calls(calls, "turn_on")
+    # Double (dim) with a stricter rule: clamped, then two red blinks.
+    await add_entry(hass, "night", {"target": LIGHT, "light": {"brightness_pct": {"max": 5}}},
+                    timedelta(minutes=-1), timedelta(hours=2))
+    lamp(hass, False)
+    await hass.async_block_till_done()
+    calls.clear()
+    await press(hass, "1_double")
+    await hass.async_block_till_done()
+    ons = lamp_calls(calls, "turn_on")
+    assert ons[0]["brightness"] == round(5 * 255 / 100)
     reds = [d for d in ons if tuple(d.get("rgb_color") or ()) == (255, 0, 0)]
     assert len(reds) == 2
 
@@ -446,6 +465,30 @@ async def test_blink_restores(hass: HomeAssistant, calls, monkeypatch) -> None:
     await hass.services.async_call("gungors", "blink", {"entity_id": LIGHT}, blocking=True)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert lamp_calls(calls, "turn_off")
+
+
+async def test_blink_during_blink_restores_first(hass: HomeAssistant, calls, monkeypatch) -> None:
+    """A blink started during another puts back the state from before the first."""
+    monkeypatch.setattr(link_light, "BLINK_ON", 0.05)
+    monkeypatch.setattr(link_light, "BLINK_OFF", 0.05)
+    await setup_all(hass)
+    lamp(hass, True, 120, rgb=(0, 255, 0))
+    await hass.async_block_till_done()
+    calls.clear()
+    await hass.services.async_call(
+        "gungors", "blink", {"entity_id": LIGHT, "rgb_color": [255, 0, 0], "count": 2}, blocking=True
+    )
+    await hass.async_block_till_done()
+    # The lamp reports the blink colour, then a second blink starts.
+    lamp(hass, True, 255, rgb=(255, 0, 0))
+    await hass.async_block_till_done()
+    await hass.services.async_call(
+        "gungors", "blink", {"entity_id": LIGHT, "rgb_color": [255, 0, 0], "count": 2}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    last = lamp_calls(calls, "turn_on")[-1]
+    assert last["brightness"] == 120
+    assert tuple(last["hs_color"]) == tuple(color_util.color_RGB_to_hs(0, 255, 0))
 
 
 # --- presets as program defaults -----------------------------------------------------
