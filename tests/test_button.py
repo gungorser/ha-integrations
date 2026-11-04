@@ -89,6 +89,90 @@ async def test_slots_are_checked(hass: HomeAssistant, calls) -> None:
     assert hass.states.get("event.b4") is None
 
 
+def _placed(buttons, keys=None, door=None) -> dict[str, str]:
+    """{slot: function} after the location rule."""
+    entries = button_mod.place_buttons(button_mod._buttons_schema(buttons), keys, door)
+    return {f"{e['button']}_{g}": e["function"] for e in entries for g in e["gestures"]}
+
+
+def test_location_rule() -> None:
+    full = ["light", "cover", "climate", {"program": "x"}, {"custom": {"action": "switch.toggle"}}]
+    right = _placed(full, 3, "right")
+    assert {k: right[k] for k in ("3_single", "1_hold", "2_single", "2_double", "2_hold")} == {
+        "3_single": "light", "1_hold": "cover", "2_single": "climate",
+        "2_double": "program", "2_hold": "custom",
+    }
+    left = _placed(["light", "cover"], 3, "left")
+    assert left["1_single"] == "light" and left["3_single"] == "cover"
+    # Two keys: light near, cover far; the middle group needs its button.
+    assert _placed(["light", "cover"], 2, "left") == {
+        **{f"1_{g}": "light" for g in TYPES}, **{f"2_{g}": "cover" for g in TYPES},
+    }
+    assert _placed(["light", {"climate": {"button": 2}}], 2, "left")["2_single"] == "climate"
+    # One key: only near. No door: every function gives its button.
+    assert _placed(["light"], 1)["1_single"] == "light"
+    assert _placed([{"light": {"button": 1}}], 2)["1_hold"] == "light"
+    # A second light with its key and target.
+    two = button_mod.place_buttons(
+        button_mod._buttons_schema(["light", {"light": {"button": 2, "target": {"area_id": "araba"}}}]),
+        3, "right",
+    )
+    assert [(e["button"], e["args"].get("target")) for e in two] == [
+        (3, None), (2, {"area_id": ["araba"]}),
+    ]
+    # The old numbered form still reads (climate's program becomes its own function).
+    old = _placed({1: "light", 2: {"climate": {"program": "x"}}, 3: "cover"})
+    assert old["2_single"] == "climate" and old["2_double"] == "program"
+
+
+@pytest.mark.parametrize(
+    ("buttons", "keys", "door"),
+    [
+        (["climate"], 2, "left"),                  # no middle key
+        (["cover"], 1, None),                      # one key: no far
+        (["light"], 2, None),                      # no door
+        (["light"], None, "left"),                 # no keys
+        (["light", "light"], 3, "left"),           # one slot twice
+        ([{"light": {"button": 3}}], 2, "left"),   # no such key
+        ([{"climate": {"program": "x"}}], 3, "left"),  # program is its own function
+    ],
+)
+def test_location_rule_errors(buttons, keys, door) -> None:
+    import voluptuous as vol  # noqa: PLC0415
+
+    with pytest.raises(vol.Invalid):
+        button_mod.place_buttons(button_mod._buttons_schema(buttons), keys, door)
+
+
+async def test_keys_and_door(hass: HomeAssistant, calls) -> None:
+    await setup_all(hass)
+    await hass.services.async_call(
+        "gungors", "save_timeless_program",
+        {"entity_id": "calendar.program", "summary": "Bebek uyku",
+         "description": json.dumps({"target": THERMOSTAT, "climate": {"temperature": {"max": 20}}})},
+        blocking=True,
+    )
+    original(hass, None, state="2026-01-01T00:00:00.000+00:00")
+    features = [{"buttons": ["light", "climate", {"program": "Bebek uyku"}]}, {"link": EVT}]
+    bad = [{"buttons": ["climate"]}, {"link": EVT}]  # two keys: no middle for climate
+    await setup_platform(
+        hass, "event",
+        {"name": "salon_pushbutton", "keys": 3, "door": "right", "target": TARGET,
+         "features": features},
+        {"name": "bad", "keys": 2, "door": "right", "features": bad},
+    )
+    assert hass.states.get(WRAPPER) is not None
+    assert hass.states.get("event.bad") is None
+    calls.clear()
+    await press(hass, "3_single")  # near the door on the right: light (on -> off)
+    assert lamp_calls(calls, "turn_off")
+    await press(hass, "2_double")  # middle double: program
+    assert async_get_manager(hass).is_running(async_get_manager(hass).timeless_uid("Bebek uyku"))
+    calls.clear()
+    await press(hass, "1_single")  # far: nothing configured
+    assert not calls.of("light", "turn_on", LAMP) and not calls.of("light", "turn_off", LAMP)
+
+
 async def test_presses_are_mirrored(hass: HomeAssistant, calls) -> None:
     await setup_all(hass)
     await setup_button(hass, {"buttons": {3: "cover"}})

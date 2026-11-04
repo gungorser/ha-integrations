@@ -41,7 +41,7 @@ entry that breaks a rule is not created and the log says why.
 | `pid` | climate | `{kp, ki, kd, keep_alive, force_off, ...}` | Heating demand 0-100 (ScratMan's PID, vendored) |
 | `valve` | climate | `{opening, closing, min}` | Demand onto the TRV valve opening/closing degree numbers |
 | `pwm` | climate | `{entity, period, min_cycle_duration}` | Demand onto an on/off heater by pulse-width modulation |
-| `buttons` | event | `{<button>: <function>}` | Pushbutton ready functions per button: `light`, `climate`, `cover` (below) |
+| `buttons` | event | list of functions | Pushbutton ready functions `light`, `cover`, `climate`, `program`, `custom`, placed on keys by the location rule (below) |
 | `custom` | event | `{<slot>: {action, target, data}}` | Any action on a free slot of a pushbutton (`2_hold`) |
 
 Each feature module's docstring (`features/*.py`) is its full reference: behaviour, options,
@@ -95,27 +95,34 @@ event:
   - platform: gungors
     name: bebek_pushbutton
     target: {area_id: bebek}        # optional: the device's area otherwise
+    keys: 3                         # keys on the device
+    door: right                     # side of the door it is on; leave out where there is none
     features:
       - buttons:
-          1: cover
-          2:
-            climate:
-              program: "Bebek uyku"  # optional: double press starts / stops it
-          3: light
-      - custom:
-          2_hold: {action: switch.toggle, target: {entity_id: switch.x}}
+          - light                   # near the door: 3_*
+          - cover                   # far: 1_*
+          - climate                 # middle single: 2_single
+          - program: "Bebek uyku"   # middle double: 2_double
+          - custom: {action: switch.toggle, target: {entity_id: switch.x}}  # middle hold
+          - light: {button: 2, target: {area_id: araba}}   # own key and target
       - link: event.bebek_pushbutton_action
 ```
 
+- Location rule: near the door = `light` (all three gestures), farthest = `cover` (all three),
+  middle key of a three-key device = `climate` single, `program` double, `custom` hold. Moes key 1
+  is the leftmost: `door: left` makes 1 near, `right` makes the last key near. A one-key device
+  has only near; a two-key device has no middle, so climate / program / custom need a `button`;
+  without `door` every function needs one. Each function takes optional `button` (its key) and
+  `target` (else the wrapper's, else the device's area). A function the rule cannot place, a key
+  the device lacks or a slot taken twice is a config error. The old `{<button>: <function>}`
+  form still reads.
 - Slots are `<button>_<gesture>` (`single`, `double`, `hold`; a one-button model's are button
-  1's). `light` and `cover` take all three of their button, `climate` single (double only with
-  `program`). `custom` takes any free slot. A slot taken twice or one function on two buttons is
-  a config error.
+  1's). The `custom` feature (`{<slot>: {action, target, data}}`) takes any slot left free.
 - `light`: single off / on at `default`; double toggles the brightness between `dim` and
   `default`; hold toggles the colour between `night` and `default` (args `single:`, `double:`,
   `hold:` name other presets).
-- `climate`: single toggles (one blink: green on, blue off); double starts or stops the
-  timeless program (two blinks).
+- `climate`: toggles (one blink: green on, blue off). `program`: starts or stops the timeless
+  program (two blinks).
 - `cover`: single open, double close (physical: through an open window), a press while it moves stops it; hold closes the whole
   floor with a backup scene, or restores it.
 - A request a program rule limits is applied as the rule allows and the lights blink twice in red.
