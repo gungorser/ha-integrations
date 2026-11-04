@@ -7,8 +7,9 @@
   splits `2_hold` into event type `hold` and attribute `button: "2"`; both become
   the slot `2_hold` (`single` without a button is `1_single`).
 - The wrapper is available while the original is, and takes its event types.
-- The state the original has when Home Assistant starts (its last event), and
-  the same event again after the original was unavailable, are not presses.
+- The state the original has when Home Assistant starts (its last event, also
+  when the original is added after the wrapper), and the same event again after
+  the original was unavailable, are not presses.
 """
 from __future__ import annotations
 
@@ -81,6 +82,8 @@ class EventLink(Feature):
         if new.state == self._link_last:
             return  # an attribute change, or the same event back after unavailable
         self._link_last = new.state
+        if event.data.get("old_state") is None:
+            return  # the original added after the wrapper: its restored last event
         event_type = new.attributes.get("event_type")
         if not event_type:
             return
