@@ -70,6 +70,7 @@ class LightLink(Feature):
     _link_available = False
     _link_sent_at = 0.0
     _link_blink: asyncio.Task | None = None
+    _link_blink_before: list[State] | None = None
     gw_blinking = False
 
     @classmethod
@@ -170,8 +171,14 @@ class LightLink(Feature):
         """Flash the original `count` times, then put it back as it was."""
         if not self._link_available:
             return
+        running = self._link_blink is not None and not self._link_blink.done()
+        # A blink started during another keeps that one's "before": the light now
+        # shows the blink colour, which must not become the state to put back.
+        before = self._link_blink_before if running else None
         self._link_stop_blink()
-        before = [s for s in self._link_states() if s.state != STATE_UNKNOWN]
+        if before is None:
+            before = [s for s in self._link_states() if s.state != STATE_UNKNOWN]
+        self._link_blink_before = before
         self.gw_blinking = True
         self._link_blink = self.hass.async_create_background_task(
             self._link_blink_run(before, tuple(rgb_color) if rgb_color else None, count),

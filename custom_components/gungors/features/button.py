@@ -65,7 +65,8 @@ Requests go to gungors entities straight through their feature chain (so the
 pushbutton knows when a program rule changed one) and to other entities by
 their services. A request a program rule limited or refused is still applied as
 the rule allows (nearest allowed value), and the target's lights then blink twice
-in red (`warning`). Feedback colours and counts are fixed in code.
+in red (`warning`), except when a single press turns lights on (its preset is
+expected to be limited, e.g. dimmer at night). Feedback colours and counts are fixed in code.
 """
 from __future__ import annotations
 
@@ -530,7 +531,9 @@ class Buttons(_ButtonBase):
             if lit:
                 adjusted = await self._btn_lights(lights, False, {})
             else:
-                adjusted = await self._btn_lights(lights, True, self._btn_light_data({**default, **chosen}))
+                # Turned on in its preset: a rule that limits it (e.g. dimmer at
+                # night) is expected there, so no warning.
+                await self._btn_lights(lights, True, self._btn_light_data({**default, **chosen}))
         elif not lit:
             if gesture == "double":
                 # On in the default's other axes at this preset.

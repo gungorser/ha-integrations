@@ -125,7 +125,8 @@ event:
   program (two blinks).
 - `cover`: single open, double close (physical: through an open window), a press while it moves stops it; hold closes the whole
   floor with a backup scene, or restores it.
-- A request a program rule limits is applied as the rule allows and the lights blink twice in red.
+- A request a program rule limits is applied as the rule allows and the lights blink twice in red
+  (not when a single press turns lights on: its preset may be limited, e.g. dimmer at night).
 
 Tests: `pip install pytest-homeassistant-custom-component`, then `pytest`.
 
