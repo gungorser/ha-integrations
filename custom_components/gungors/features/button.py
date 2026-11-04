@@ -47,8 +47,9 @@ originals) are never targeted. A custom function's `target` is its action's.
 `climate`: toggle: one of the target on -> all off, all off -> all heat. The
 lights blink once: green on, blue off.
 
-`program` (a timeless program's name or uid, `duration:` optional): start the
-program, or stop its run. The lights blink twice: green started, blue stopped.
+`program` (a timeless program's name or uid, `max:` optional, the longest run,
+24 h when not given; `duration:` is the old name): start the program, or stop
+its run; a run ends by itself after `max`. The lights blink twice: green started, blue stopped.
 
 `cover` (as the old pushbutton blueprint):
 
@@ -148,7 +149,8 @@ _ARGS = {
     "program": vol.Schema(
         {
             vol.Required("program"): cv.string,
-            vol.Optional("duration"): cv.positive_time_period,
+            vol.Exclusive("max", "max"): cv.positive_time_period,
+            vol.Exclusive("duration", "max"): cv.positive_time_period,
             vol.Optional("button"): _BUTTON,
             vol.Optional("target"): _TARGET,
         }
@@ -566,7 +568,7 @@ class Buttons(_ButtonBase):
             await manager.async_stop(uid)
             await self._btn_blink(lights, BLUE, FEEDBACK_PROGRAM)
         else:
-            duration = args.get("duration")
+            duration = args.get("max", args.get("duration"))
             await manager.async_start(
                 uid, duration if isinstance(duration, datetime.timedelta) else None
             )

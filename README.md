@@ -102,7 +102,7 @@ event:
           - light                   # near the door: 3_*
           - cover                   # far: 1_*
           - climate                 # middle single: 2_single
-          - program: "Bebek uyku"   # middle double: 2_double
+          - program: {program: "Bebek uyku", max: "03:00:00"}  # middle double; runs at most 3 h
           - custom: {action: switch.toggle, target: {entity_id: switch.x}}  # middle hold
           - light: {button: 2, target: {area_id: araba}}   # own key and target
       - link: event.bebek_pushbutton_action
@@ -122,7 +122,7 @@ event:
   `default`; hold toggles the colour between `night` and `default` (args `single:`, `double:`,
   `hold:` name other presets).
 - `climate`: toggles (one blink: green on, blue off). `program`: starts or stops the timeless
-  program (two blinks).
+  program (two blinks); `max` is the longest run (24 h when not given), after it the run ends.
 - `cover`: single open, double close (physical: through an open window), a press while it moves stops it; hold closes the whole
   floor with a backup scene, or restores it.
 - A request a program rule limits is applied as the rule allows and the lights blink twice in red.

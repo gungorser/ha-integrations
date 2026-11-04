@@ -357,6 +357,24 @@ async def test_climate_program(hass: HomeAssistant, calls) -> None:
     assert not manager.is_running(uid)
 
 
+async def test_program_max(hass: HomeAssistant, calls) -> None:
+    await setup_all(hass)
+    await hass.services.async_call(
+        "gungors", "save_timeless_program",
+        {"entity_id": "calendar.program", "summary": "Bebek uyku",
+         "description": json.dumps({"target": THERMOSTAT, "climate": {"temperature": {"max": 20}}})},
+        blocking=True,
+    )
+    await setup_button(hass, {"buttons": [{"program": {"program": "Bebek uyku", "max": "03:00:00",
+                                                       "button": 2}}]})
+    manager = async_get_manager(hass)
+    uid = manager.timeless_uid("Bebek uyku")
+    await press(hass, "2_double")
+    run = manager._run_of(uid)
+    assert run is not None
+    assert abs((run.end - run.start) - timedelta(hours=3)) < timedelta(minutes=1)
+
+
 # --- cover -----------------------------------------------------------------------
 
 
