@@ -119,6 +119,13 @@ async def test_original_added_later_is_not_a_press(hass: HomeAssistant, calls) -
     await hass.async_block_till_done()
     assert hass.states.get(WRAPPER).state == "unknown"
     assert not calls.of("cover", "set_cover_position", "cover.salon_blind")
+    # MQTT: the original first shows unknown, then its restored last event.
+    hass.states.async_set(EVT, "unknown", {"event_types": TYPES})
+    await hass.async_block_till_done()
+    original(hass, "3_double", state="2026-01-02T00:00:00.000+00:00")
+    await hass.async_block_till_done()
+    assert hass.states.get(WRAPPER).state == "unknown"
+    assert not calls.of("cover", "set_cover_position", "cover.salon_blind")
     await press(hass, "3_double")
     assert calls.of("cover", "set_cover_position", "cover.salon_blind")
 
