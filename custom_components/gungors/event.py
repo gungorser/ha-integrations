@@ -9,13 +9,14 @@ event:
   - platform: gungors
     name: sercan_pushbutton
     target: {area_id: sercan}     # optional; the linked device's area otherwise
+    keys: 3                       # how many keys the device has
+    door: left                    # the side of the door the pushbutton is on
     features:
-      - buttons:
-          1: light
-          2: climate              # or {climate: {program: "Bebek uyku"}}
-          3: cover
-      - custom:
-          2_hold: {action: switch.toggle, target: {entity_id: switch.sercan_plug}}
+      - buttons:                  # placed by the location rule (features/button.py)
+          - light                 # near the door: 1_*
+          - cover                 # far: 3_*
+          - climate               # middle: 2_single
+          - custom: {action: switch.toggle, target: {entity_id: switch.sercan_plug}}  # 2_hold
       - link: event.sercan_pushbutton_action
 ```
 
@@ -41,6 +42,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import ExtraStoredData
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
+from .const import CONF_FEATURES
 from .core import GungorsEntity, Request
 from .platform import async_setup_features_platform, features_schema
 
@@ -58,8 +60,34 @@ TARGET_SCHEMA = vol.Schema(
     }
 )
 
-PLATFORM_SCHEMA = features_schema(
-    DOMAIN_EVENT, EVENT_PLATFORM_SCHEMA, {vol.Optional(CONF_TARGET): TARGET_SCHEMA}
+CONF_KEYS = "keys"
+CONF_DOOR = "door"
+KEY_BUTTONS = "buttons"
+
+
+def _place(config: dict) -> dict:
+    """Place the `buttons` functions on their keys (needs `keys` and `door`)."""
+    from .features.button import place_buttons  # noqa: PLC0415
+
+    features = []
+    for name, conf in config[CONF_FEATURES]:
+        if name == KEY_BUTTONS:
+            conf = place_buttons(conf, config.get(CONF_KEYS), config.get(CONF_DOOR))
+        features.append((name, conf))
+    return {**config, CONF_FEATURES: features}
+
+
+PLATFORM_SCHEMA = vol.All(
+    features_schema(
+        DOMAIN_EVENT,
+        EVENT_PLATFORM_SCHEMA,
+        {
+            vol.Optional(CONF_TARGET): TARGET_SCHEMA,
+            vol.Optional(CONF_KEYS): vol.All(vol.Coerce(int), vol.In(BUTTONS)),
+            vol.Optional(CONF_DOOR): vol.In(("left", "right")),
+        },
+    ),
+    _place,
 )
 
 
@@ -75,7 +103,7 @@ async def async_setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     await async_setup_features_platform(
-        hass, config, async_add_entities, DOMAIN_EVENT, GungorsButton, [CONF_TARGET]
+        hass, config, async_add_entities, DOMAIN_EVENT, GungorsButton, [CONF_TARGET, CONF_KEYS, CONF_DOOR]
     )
 
 

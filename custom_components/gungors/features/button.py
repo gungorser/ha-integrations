@@ -1,26 +1,36 @@
 """Pushbutton features: `buttons` (ready functions) and `custom` (any action).
 
 ```yaml
+keys: 3            # the wrapper's: how many keys the device has
+door: right        # the wrapper's: the side of the door it is on (left / right)
 features:
   - buttons:
-      1: light
-      2: {climate: {program: "Bebek uyku"}}
-      3: cover
-  - custom:
-      2_hold: {action: switch.toggle, target: {entity_id: switch.sercan_plug}}
-  - link: event.sercan_pushbutton_action
+      - light                        # near the door: 3_single / 3_double / 3_hold
+      - cover                        # far: 1_*
+      - climate                      # middle: 2_single
+      - program: "Kaan gunduz uyku"  # middle: 2_double
+      - custom: {action: switch.toggle, target: {entity_id: switch.plug}}  # middle: 2_hold
+      - light: {button: 2, target: {area_id: araba}}   # a second light, its key given
+  - link: event.bebek_pushbutton_action
 ```
 
-Slots are `<button>_<gesture>` (`2_single`, `2_double`, `2_hold`). A ready function
-takes only the slots it uses (`light` and `cover` all three, `climate` single,
-and double only with a `program`); `custom` may use any other slot. A slot taken
-twice, or one ready function on two buttons of a device, is a config error and
-the entity is not created.
+Location rule: the key nearest the door is `near`, the farthest `far`, the one
+between them on a three-key device `middle` (Moes key 1 is the leftmost). `light`
+takes `near` (all three gestures), `cover` `far` (all three), and on the middle
+key `climate` single, `program` double and `custom` hold. A function's `button`
+overrides its key. A one-key device has only `near`; a two-key device has no
+middle key, so climate, program and custom there need a `button`; without a
+`door` every function of a two- or three-key device needs one. A function the
+rule cannot place, a key the device does not have, or a slot taken twice is a
+config error and the entity is not created. The old numbered form (`{1: light,
+2: {climate: {program: ...}}}`) still reads.
 
-Targets: the wrapper's `target` (`area_id` and/or `entity_id`), or the linked
-device's area when it has none; a button may give its own (`{light: {target:
-...}}`). Each function uses its domain's entities of the target. Entities a
-gungors wrapper drives (the hidden originals) are never targeted.
+`custom` (feature): `{<slot>: {action, target, data}}` on any slot no function took.
+
+Targets: a function's `target` (`area_id` and/or `entity_id`), else the
+wrapper's, else the linked device's area. Each function uses its domain's
+entities of the target. Entities a gungors wrapper drives (the hidden
+originals) are never targeted. A custom function's `target` is its action's.
 
 `light` (presets.py: `default`, `dim`, `night`; a button may name others with
 `single:`, `double:`, `hold:`):
@@ -34,12 +44,11 @@ gungors wrapper drives (the hidden originals) are never targeted.
 - In general a press toggles the lit lights between its preset and `default`, in
   the attributes the preset carries.
 
-`climate` (`program:` a timeless program's name or uid, `duration:` optional):
+`climate`: toggle: one of the target on -> all off, all off -> all heat. The
+lights blink once: green on, blue off.
 
-- single: toggle: one of the target on -> all off, all off -> all heat. The
-  lights blink once: green on, blue off.
-- double (with `program`): start the timeless program, or stop its run. The
-  lights blink twice: green started, blue stopped.
+`program` (a timeless program's name or uid, `duration:` optional): start the
+program, or stop its run. The lights blink twice: green started, blue stopped.
 
 `cover` (as the old pushbutton blueprint):
 
@@ -57,8 +66,6 @@ pushbutton knows when a program rule changed one) and to other entities by
 their services. A request a program rule limited or refused is still applied as
 the rule allows (nearest allowed value), and the target's lights then blink twice
 in red (`warning`). Feedback colours and counts are fixed in code.
-
-`custom`: `{<slot>: {action: <domain.service>, target: {...}, data: {...}}}`.
 """
 from __future__ import annotations
 
@@ -91,8 +98,20 @@ KEY_BUTTONS = "buttons"
 KEY_CUSTOM = "custom"
 TAG = "button"
 GESTURES = ("single", "double", "hold")
-FUNCTIONS = ("light", "climate", "cover")
+FUNCTIONS = ("light", "climate", "program", "cover", "custom")
 TRANSITION = 1
+
+# Location rule: the key a function takes when it gives no `button`, and its gestures.
+NEAR, MIDDLE, FAR = "near", "middle", "far"
+POSITION = {"light": NEAR, "cover": FAR, "climate": MIDDLE, "program": MIDDLE, "custom": MIDDLE}
+GESTURES_OF = {
+    "light": GESTURES,
+    "cover": GESTURES,
+    "climate": ("single",),
+    "program": ("double",),
+    "custom": ("hold",),
+}
+DOORS = ("left", "right")
 
 # Feedback (fixed): rgb colour, blinks.
 GREEN = (0, 255, 0)
@@ -114,24 +133,44 @@ _TARGET = vol.Schema(
         vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
     }
 )
+_BUTTON = vol.All(vol.Coerce(int), vol.In((1, 2, 3)))
 _ARGS = {
     "light": vol.Schema(
         {
+            vol.Optional("button"): _BUTTON,
             vol.Optional("target"): _TARGET,
             vol.Optional("single"): cv.string,
             vol.Optional("double"): cv.string,
             vol.Optional("hold"): cv.string,
         }
     ),
-    "climate": vol.Schema(
+    "climate": vol.Schema({vol.Optional("button"): _BUTTON, vol.Optional("target"): _TARGET}),
+    "program": vol.Schema(
         {
-            vol.Optional("target"): _TARGET,
-            vol.Optional("program"): cv.string,
+            vol.Required("program"): cv.string,
             vol.Optional("duration"): cv.positive_time_period,
+            vol.Optional("button"): _BUTTON,
+            vol.Optional("target"): _TARGET,
         }
     ),
-    "cover": vol.Schema({vol.Optional("target"): _TARGET}),
+    "cover": vol.Schema({vol.Optional("button"): _BUTTON, vol.Optional("target"): _TARGET}),
+    "custom": vol.Schema(
+        {
+            vol.Required("action"): cv.service,
+            vol.Optional("target", default={}): dict,
+            vol.Optional("data", default={}): dict,
+            vol.Optional("button"): _BUTTON,
+        }
+    ),
 }
+# The old numbered form (`2: {climate: {program: ...}}`) still reads.
+_LEGACY_CLIMATE = vol.Schema(
+    {
+        vol.Optional("target"): _TARGET,
+        vol.Optional("program"): cv.string,
+        vol.Optional("duration"): cv.positive_time_period,
+    }
+)
 
 
 def _slot(value: Any) -> str:
@@ -144,8 +183,34 @@ def _slot(value: Any) -> str:
     return text
 
 
-def _button_entry(value: Any) -> tuple[str, dict[str, Any]]:
-    """`light` or `{light: {args}}` -> (function, args)."""
+def _entry(function: str, args: dict[str, Any], button: int | None = None) -> dict[str, Any]:
+    """One function of a pushbutton; `button` None until the location rule places it."""
+    args = dict(args)
+    button = args.pop("button", button)
+    return {"function": function, "args": args, "button": button, "gestures": GESTURES_OF[function]}
+
+
+def _list_entry(value: Any) -> dict[str, Any]:
+    """`light`, `{light: {args}}` or `{program: "<name>"}` -> an entry."""
+    if isinstance(value, str):
+        name, args = value, {}
+    elif isinstance(value, dict) and len(value) == 1:
+        name, args = next(iter(value.items()))
+        if name == "program" and isinstance(args, str):
+            args = {"program": args}
+        args = args or {}
+    else:
+        raise vol.Invalid(f"a function is a name or {{function: {{arguments}}}}: {value!r}")
+    if name not in FUNCTIONS:
+        raise vol.Invalid(f"unknown function '{name}' (known: {', '.join(FUNCTIONS)})")
+    try:
+        return _entry(name, _ARGS[name](args))
+    except vol.Invalid as err:
+        raise vol.Invalid(f"{name}: {err.msg}") from err
+
+
+def _legacy_entries(button: int, value: Any) -> list[dict[str, Any]]:
+    """`light` or `{climate: {program: ...}}` on a numbered button -> entries."""
     if isinstance(value, str):
         name, args = value, {}
     elif isinstance(value, dict) and len(value) == 1:
@@ -153,30 +218,90 @@ def _button_entry(value: Any) -> tuple[str, dict[str, Any]]:
         args = args or {}
     else:
         raise vol.Invalid(f"a button is a function name or {{function: {{arguments}}}}: {value!r}")
-    if name not in FUNCTIONS:
-        raise vol.Invalid(f"unknown function '{name}' (known: {', '.join(FUNCTIONS)})")
-    return name, _ARGS[name](args)
+    if name not in ("light", "climate", "cover"):
+        raise vol.Invalid(f"unknown function '{name}' (known: light, climate, cover)")
+    if name != "climate":
+        return [_entry(name, _ARGS[name](args), button)]
+    args = _LEGACY_CLIMATE(args)
+    target = {"target": args["target"]} if "target" in args else {}
+    entries = [_entry("climate", target, button)]
+    if args.get("program"):
+        program = {k: args[k] for k in ("program", "duration") if k in args}
+        entries.append(_entry("program", {**program, **target}, button))
+    return entries
 
 
-def _buttons_schema(value: Any) -> dict[int, tuple[str, dict[str, Any]]]:
+def _buttons_schema(value: Any) -> list[dict[str, Any]]:
+    """A list of functions (placed by the location rule), or the old {button: function}."""
+    if isinstance(value, list) and value:
+        result = []
+        for index, item in enumerate(value):
+            try:
+                result.append(_list_entry(item))
+            except vol.Invalid as err:
+                raise vol.Invalid(f"buttons: item {index + 1}: {err.msg}") from err
+        return result
     if not isinstance(value, dict) or not value:
-        raise vol.Invalid("buttons: a mapping of button number: function")
-    result: dict[int, tuple[str, dict[str, Any]]] = {}
-    for key, entry in value.items():
+        raise vol.Invalid("buttons: a list of functions")
+    result = []
+    for key, item in value.items():
         try:
-            button = int(key)
-        except (TypeError, ValueError) as err:
+            button = _BUTTON(key)
+        except vol.Invalid as err:
             raise vol.Invalid(f"buttons: unknown button '{key}' (1-3)") from err
-        if button not in (1, 2, 3):
-            raise vol.Invalid(f"buttons: unknown button '{key}' (1-3)")
         try:
-            result[button] = _button_entry(entry)
+            result.extend(_legacy_entries(button, item))
         except vol.Invalid as err:
             raise vol.Invalid(f"buttons: {button}: {err.msg}") from err
-    functions = [name for name, _ in result.values()]
+    functions = [e["function"] for e in result if e["function"] != "program"]
     twice = sorted({f for f in functions if functions.count(f) > 1})
     if twice:
         raise vol.Invalid(f"buttons: '{', '.join(twice)}' on two buttons of one device")
+    return result
+
+
+def key_of(position: str, keys: int, door: str | None) -> int | None:
+    """The key number of a position: `near` / `middle` / `far` from the door.
+
+    Moes key 1 is the leftmost. A one-key device has only `near`; without a door
+    (two or three keys) nothing is placed.
+    """
+    if keys == 1:
+        return 1 if position == NEAR else None
+    if door is None:
+        return None
+    if position == MIDDLE:
+        return 2 if keys == 3 else None
+    near, far = (1, keys) if door == "left" else (keys, 1)
+    return near if position == NEAR else far
+
+
+def place_buttons(entries: list[dict[str, Any]], keys: int | None, door: str | None
+                  ) -> list[dict[str, Any]]:
+    """Give every function its key (its `button`, else the location rule); check slots."""
+    result = []
+    taken: dict[str, str] = {}
+    for entry in entries:
+        function = entry["function"]
+        button = entry["button"]
+        if button is None:
+            if keys is None:
+                raise vol.Invalid(f"buttons: {function} has no button and the pushbutton no keys")
+            position = POSITION[function]
+            button = key_of(position, keys, door)
+            if button is None:
+                where = "no door" if door is None and keys > 1 else f"no {position} key"
+                raise vol.Invalid(
+                    f"buttons: {function}: the pushbutton has {where}; give the function a button"
+                )
+        if keys is not None and button > keys:
+            raise vol.Invalid(f"buttons: {function}: button {button} on a {keys}-key pushbutton")
+        for gesture in entry["gestures"]:
+            slot = f"{button}_{gesture}"
+            if slot in taken:
+                raise vol.Invalid(f"buttons: slot {slot} taken by both {taken[slot]} and {function}")
+            taken[slot] = function
+        result.append({**entry, "button": button})
     return result
 
 
@@ -199,13 +324,6 @@ def _custom_schema(value: Any) -> dict[str, dict[str, Any]]:
             raise vol.Invalid(f"custom: slot {slot} listed twice")
         result[slot] = _ACTION(action)
     return result
-
-
-def slots_of(function: str, args: dict[str, Any]) -> tuple[str, ...]:
-    """The gestures a ready function takes."""
-    if function == "climate":
-        return ("single", "double") if args.get("program") else ("single",)
-    return GESTURES
 
 
 # --- helpers ------------------------------------------------------------------
@@ -289,6 +407,17 @@ class _ButtonBase(Feature):
         await asyncio.sleep(WARN_DELAY)
         await self._btn_blink(self._btn_entities(target, "light"), RED, FEEDBACK_WARNING)
 
+    async def _btn_action(self, action: dict[str, Any]) -> None:
+        """A custom action: `{action, target, data}`."""
+        domain, service = action["action"].split(".", 1)
+        try:
+            await self.hass.services.async_call(
+                domain, service, dict(action["data"]), blocking=False,
+                target=dict(action["target"]) or None,
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("%s: %s failed", self.entity_id, action["action"])
+
 
 @register("event")
 class Buttons(_ButtonBase):
@@ -298,9 +427,10 @@ class Buttons(_ButtonBase):
     @classmethod
     def gw_claims(cls, conf: Any) -> set[str]:
         return {
-            f"{button}_{gesture}"
-            for button, (function, args) in conf.items()
-            for gesture in slots_of(function, args)
+            f"{entry['button']}_{gesture}"
+            for entry in conf
+            if entry["button"] is not None
+            for gesture in entry["gestures"]
         }
 
     async def gw_apply(self, request: Request) -> None:
@@ -309,18 +439,27 @@ class Buttons(_ButtonBase):
         if not slot or "_" not in slot:
             return
         button, gesture = slot.split("_", 1)
-        entry = self.gw_conf(KEY_BUTTONS).get(int(button)) if button.isdigit() else None
+        entry = next(
+            (
+                e for e in self.gw_conf(KEY_BUTTONS)
+                if str(e["button"]) == button and gesture in e["gestures"]
+            ),
+            None,
+        )
         if entry is None:
             return
-        function, args = entry
-        if gesture not in slots_of(function, args):
-            return
-        target = self._btn_target(args.get("target"))
+        function, args = entry["function"], entry["args"]
         try:
+            if function == "custom":
+                await self._btn_action(args)
+                return
+            target = self._btn_target(args.get("target"))
             if function == "light":
                 await self._btn_light(gesture, args, target)
             elif function == "climate":
-                await self._btn_climate(gesture, args, target)
+                await self._btn_climate(target)
+            elif function == "program":
+                await self._btn_program(args, target)
             else:
                 await self._btn_cover(gesture, target)
         except Exception:  # noqa: BLE001  (a press must never break the wrapper)
@@ -412,27 +551,29 @@ class Buttons(_ButtonBase):
 
     # --- climate -----------------------------------------------------------------
 
-    async def _btn_climate(self, gesture: str, args: dict[str, Any], target: dict[str, Any]) -> None:
-        lights = self._btn_entities(target, "light")
-        if gesture == "double":
-            from ..program import async_get_manager  # noqa: PLC0415
+    async def _btn_program(self, args: dict[str, Any], target: dict[str, Any]) -> None:
+        """Start the timeless program, or stop its run."""
+        from ..program import async_get_manager  # noqa: PLC0415
 
-            manager = async_get_manager(self.hass)
-            try:
-                uid = manager.timeless_uid(args["program"])
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("%s: %s", self.entity_id, err)
-                return
-            if manager.is_running(uid):
-                await manager.async_stop(uid)
-                await self._btn_blink(lights, BLUE, FEEDBACK_PROGRAM)
-            else:
-                duration = args.get("duration")
-                await manager.async_start(
-                    uid, duration if isinstance(duration, datetime.timedelta) else None
-                )
-                await self._btn_blink(lights, GREEN, FEEDBACK_PROGRAM)
+        lights = self._btn_entities(target, "light")
+        manager = async_get_manager(self.hass)
+        try:
+            uid = manager.timeless_uid(args["program"])
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("%s: %s", self.entity_id, err)
             return
+        if manager.is_running(uid):
+            await manager.async_stop(uid)
+            await self._btn_blink(lights, BLUE, FEEDBACK_PROGRAM)
+        else:
+            duration = args.get("duration")
+            await manager.async_start(
+                uid, duration if isinstance(duration, datetime.timedelta) else None
+            )
+            await self._btn_blink(lights, GREEN, FEEDBACK_PROGRAM)
+
+    async def _btn_climate(self, target: dict[str, Any]) -> None:
+        lights = self._btn_entities(target, "light")
         climates = self._btn_entities(target, "climate")
         if not climates:
             return
@@ -539,11 +680,4 @@ class Custom(_ButtonBase):
         action = self.gw_conf(KEY_CUSTOM).get(request.data.get("event_type") or "")
         if action is None:
             return
-        domain, service = action["action"].split(".", 1)
-        try:
-            await self.hass.services.async_call(
-                domain, service, dict(action["data"]), blocking=False,
-                target=dict(action["target"]) or None,
-            )
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("%s: %s failed", self.entity_id, action["action"])
+        await self._btn_action(action)
