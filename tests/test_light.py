@@ -138,6 +138,26 @@ async def test_group(hass: HomeAssistant, calls) -> None:
     assert calls.of("light", "turn_off", "light.bahce_lamp_1")
 
 
+
+async def test_group_shows_a_coloured_member(hass: HomeAssistant, calls) -> None:
+    """A white-only member first in the list does not hide another member's colour."""
+    hass.states.async_set(
+        "light.bahce_lamp_1", "on",
+        {"supported_color_modes": ["brightness"], "color_mode": "brightness",
+         "brightness": 200, "supported_features": 0},
+    )
+    lamp(hass, "on", "light.bahce_light_2", supported_color_modes=["hs"], color_mode="hs",
+         hs_color=(0.0, 100.0), brightness=120)
+    await setup_platform(
+        hass,
+        "light",
+        {"name": "bahce_light_1", "features": [{"link": "light.bahce_lamp_1"}]},
+        {"name": "bahce_light", "features": [{"link": ["light.bahce_light_1", "light.bahce_light_2"]}]},
+    )
+    state = hass.states.get("light.bahce_light")
+    assert state.attributes["color_mode"] == "hs"
+    assert tuple(state.attributes["hs_color"]) == (0.0, 100.0)
+
 def entity(hass: HomeAssistant, entity_id: str = WRAPPER):
     return hass.data["gungors"]["entities"][entity_id]
 
