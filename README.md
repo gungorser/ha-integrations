@@ -116,7 +116,7 @@ event:
   `hold:` name other presets).
 - `climate`: single toggles (one blink: green on, blue off); double starts or stops the
   timeless program (two blinks).
-- `cover`: single open, double close (physical: through an open window); hold closes the whole
+- `cover`: single open, double close (physical: through an open window), a press while it moves stops it; hold closes the whole
   floor with a backup scene, or restores it.
 - A request a program rule limits is applied as the rule allows and the lights blink twice in red.
 

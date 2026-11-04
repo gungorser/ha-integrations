@@ -262,6 +262,25 @@ async def test_cover_single_double(hass: HomeAssistant, calls) -> None:
     assert calls.of("cover", "set_cover_position", "cover.salon_blind")[-1]["position"] == 0
 
 
+async def test_cover_press_while_moving_stops(hass: HomeAssistant, calls) -> None:
+    await setup_all(hass)
+    hass.services.async_register("cover", "stop_cover", lambda call: None)
+    hass.states.async_set("cover.plain", "opening", {"supported_features": 15})
+    await setup_button(hass, {"buttons": {3: "cover"}},
+                       target={"entity_id": ["cover.plain", "cover.salon_cover"]})
+    calls.clear()
+    await press(hass, "3_single")
+    assert calls.of("cover", "stop_cover", "cover.plain")
+    assert not calls.of("cover", "open_cover", "cover.plain")
+    # A gungors cover shown as moving: the stop goes through its link.
+    state = hass.states.get("cover.salon_cover")
+    hass.states.async_set("cover.salon_cover", "closing", state.attributes)
+    calls.clear()
+    await press(hass, "3_double")
+    assert calls.of("cover", "stop_cover", "cover.salon_blind")
+    assert not calls.of("cover", "set_cover_position", "cover.salon_blind")
+
+
 async def test_cover_hold_floor(hass: HomeAssistant, calls) -> None:
     await setup_all(hass)
     hass.services.async_register("scene", "create", lambda call: None)
