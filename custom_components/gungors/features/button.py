@@ -489,6 +489,24 @@ class Buttons(_ButtonBase):
             data["color_temp_kelvin"] = int(values["color_temp"])
         return data
 
+    def _btn_shown(self, entity_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        """The preset's attributes this light can show (by its supported colour modes)."""
+        state = self.hass.states.get(entity_id)
+        modes = set((state.attributes.get("supported_color_modes") or []) if state else [])
+        colour = bool(modes & {"hs", "xy", "rgb", "rgbw", "rgbww"})
+        result = {}
+        for key, value in values.items():
+            if value is None:
+                continue
+            if key == "color" and not colour:
+                continue
+            if key == "color_temp" and not (colour or "color_temp" in modes):
+                continue
+            if key == "brightness" and modes <= {"onoff"}:
+                continue
+            result[key] = value
+        return result
+
     def _btn_at(self, entity_id: str, values: dict[str, Any]) -> bool:
         """Whether a lit light shows every attribute of a preset."""
         state = self.hass.states.get(entity_id)
@@ -543,7 +561,11 @@ class Buttons(_ButtonBase):
             else:
                 return
         else:
-            back = all(self._btn_at(e, chosen) for e in lit)
+            # Judged only on what each light can show (a white-only light never
+            # shows `night`'s colour); no light can show it -> to the preset.
+            shown = {e: self._btn_shown(e, chosen) for e in lit}
+            judged = [e for e in lit if shown[e]]
+            back = bool(judged) and all(self._btn_at(e, shown[e]) for e in judged)
             values = {k: default[k] for k in chosen if k in default} if back else chosen
             data = self._btn_light_data(values)
             if not data:

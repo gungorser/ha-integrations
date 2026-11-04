@@ -92,7 +92,10 @@ class LightLink(Feature):
         if not states:
             return None
         on = [s for s in states if s.state == STATE_ON]
-        source = on[0] if on else states[0]
+        # A group shows the first lit member in colour (a white-only member first
+        # in the list would hide the others' colour), else the first lit one.
+        coloured = [s for s in on if s.attributes.get("color_mode") not in (None, *_SIMPLE_MODES)]
+        source = (coloured or on or states)[0]
         data: dict[str, Any] = {"on": bool(on)}
         if source.domain == "light":
             data.update(source.attributes)

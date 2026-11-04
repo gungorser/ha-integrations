@@ -502,3 +502,21 @@ async def test_default_preset_is_program_default(hass: HomeAssistant, calls) -> 
     await setup_all(hass)
     defaults = hass.states.get("calendar.program").attributes["defaults"]
     assert defaults["light"]["rgb_color"] == [255, 200, 150]
+
+
+async def test_light_hold_back_with_a_white_only_light(hass: HomeAssistant, calls) -> None:
+    """A brightness-only light in the target does not keep the colour from going back."""
+    plain = "light.salon_plain"
+    await setup_all(hass)
+    await setup_button(hass, {"buttons": {1: "light"}}, target={"entity_id": [LIGHT, plain]})
+    lamp(hass, True, 100, rgb=(255, 255, 255))
+    hass.states.async_set(plain, "on", {"supported_color_modes": ["brightness"],
+                                        "color_mode": "brightness", "brightness": 100})
+    await hass.async_block_till_done()
+    calls.clear()
+    await press(hass, "1_hold")  # -> night
+    assert tuple(lamp_calls(calls, "turn_on")[-1]["rgb_color"]) == (255, 0, 0)
+    lamp(hass, True, 100, rgb=(255, 0, 0))
+    await hass.async_block_till_done()
+    await press(hass, "1_hold")  # the colour light is at night -> back
+    assert tuple(lamp_calls(calls, "turn_on")[-1]["rgb_color"]) == (255, 255, 255)
