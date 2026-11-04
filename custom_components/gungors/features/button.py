@@ -43,7 +43,8 @@ gungors wrapper drives (the hidden originals) are never targeted.
 
 `cover` (as the old pushbutton blueprint):
 
-- single / double: the target's covers open / close. A physical request:
+- single / double: the target's covers open / close; a cover that is moving
+  stops instead. A physical request:
   gungors covers with `window` move even with the window open; groups are
   expanded to their members.
 - hold: every cover on the target's floor (the area alone without a floor): if
@@ -69,6 +70,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.components.climate import HVACMode
+from homeassistant.components.cover import CoverState
 from homeassistant.const import ATTR_AREA_ID, ATTR_ENTITY_ID, STATE_ON, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import (
@@ -474,6 +476,13 @@ class Buttons(_ButtonBase):
         service = ("cover", "open_cover" if position else "close_cover")
         adjusted = False
         for entity_id in self._btn_expand(self._btn_entities(target, "cover")):
+            state = self.hass.states.get(entity_id)
+            if state is not None and state.state in (CoverState.OPENING, CoverState.CLOSING):
+                # A press while it moves stops it (as the wall buttons always did).
+                await self._btn_send(
+                    entity_id, {"stop": True}, ("cover", "stop_cover"), {}, physical=True
+                )
+                continue
             adjusted |= await self._btn_send(
                 entity_id, {"position": position}, service, {}, physical=True
             )
