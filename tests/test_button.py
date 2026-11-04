@@ -108,6 +108,21 @@ async def test_presses_are_mirrored(hass: HomeAssistant, calls) -> None:
     assert hass.states.get(WRAPPER).state == before
 
 
+async def test_original_added_later_is_not_a_press(hass: HomeAssistant, calls) -> None:
+    await setup_all(hass)
+    # The wrapper starts before the original exists (Home Assistant startup).
+    await setup_platform(hass, "event", {"name": "salon_pushbutton",
+                                         "features": [{"buttons": {3: "cover"}}, {"link": EVT}],
+                                         "target": TARGET})
+    calls.clear()
+    original(hass, "3_double", state="2026-01-01T00:00:00.000+00:00")  # restored last event
+    await hass.async_block_till_done()
+    assert hass.states.get(WRAPPER).state == "unknown"
+    assert not calls.of("cover", "set_cover_position", "cover.salon_blind")
+    await press(hass, "3_double")
+    assert calls.of("cover", "set_cover_position", "cover.salon_blind")
+
+
 async def test_one_button_model(hass: HomeAssistant, calls) -> None:
     await setup_all(hass)
     await setup_button(hass, {"custom": {"single": {"action": "switch.toggle",
