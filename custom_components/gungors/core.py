@@ -53,7 +53,8 @@ SOURCE_INTERNAL = "internal"  # a feature replaying or enforcing a request
 # Extra restore data key of the base class's own data.
 BASE_KEY = "base"
 
-# hass.data[DOMAIN][CLAIMS] = {claimed entity id: owning wrapper name}
+# hass.data[DOMAIN][CLAIMS] = {claimed entity id: owning wrapper, "<domain>.<name>"}
+# (wrappers of different domains may share a name: light.sercan, climate.sercan)
 CLAIMS = "claims"
 # hass.data[DOMAIN][ENTITIES] = {entity id: gungors entity}, for the feature services
 ENTITIES = "entities"
@@ -183,7 +184,7 @@ def build_entity_class(
             )
 
     class_name = f"{base.__name__}_" + "_".join(names)
-    return type(class_name, (*classes, base), {})
+    return type(class_name, (*classes, base), {"gw_domain": domain})
 
 
 def entity_claims(domain: str, features: list[tuple[str, Any]]) -> set[str]:
@@ -193,6 +194,11 @@ def entity_claims(domain: str, features: list[tuple[str, Any]]) -> set[str]:
     for name, conf in features:
         claims |= {c for c in known[name].gw_claims(conf) if "." in c}
     return claims
+
+
+def claim_owner(domain: str, name: str) -> str:
+    """Key of a wrapper in the claims registry."""
+    return f"{domain}.{name}"
 
 
 def reserve_claims(hass: HomeAssistant, wrapper: str, claims: set[str]) -> None:
@@ -230,12 +236,14 @@ class GungorsEntity(RestoreEntity):
 
     _attr_should_poll = False
     _gw_renaming = False
+    gw_domain: str = ""
 
     def __init__(self, name: str, unique_id: str, features: list[tuple[str, Any]],
                  options: dict[str, Any]) -> None:
         self._attr_name = name
         self._attr_unique_id = unique_id
         self.gw_wrapper = name
+        self.gw_owner = claim_owner(self.gw_domain, name)
         self.gw_features = features
         self.gw_options = options
         self._gw_conf = dict(features)
@@ -263,7 +271,7 @@ class GungorsEntity(RestoreEntity):
             and not entry.disabled
         )
         if not self._gw_renaming:
-            release_claims(self.hass, self.gw_wrapper)
+            release_claims(self.hass, self.gw_owner)
         self.hass.data.get(DOMAIN, {}).get(ENTITIES, {}).pop(self.entity_id, None)
         await super().async_will_remove_from_hass()
 
