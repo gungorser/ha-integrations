@@ -106,6 +106,7 @@ class Relay(_ButtonBase):
     schema = staticmethod(_relay_schema)
 
     _relay_unsub: list[CALLBACK_TYPE] | None = None
+    _relay_start_unsub: CALLBACK_TYPE | None = None
     _relay_timer: CALLBACK_TYPE | None = None
     _relay_on: dict[int, bool | None] | None = None
 
@@ -198,14 +199,16 @@ class Relay(_ButtonBase):
 
             self.async_on_remove(async_get_manager(self.hass).add_listener(self._relay_schedule))
         if not self.hass.is_running:
-            # Watched again once every wrapper (their claims) and target is set up.
-            self.async_on_remove(
-                self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, self._relay_started)
+            # Watched again once every wrapper (their claims) and target is set up. Not
+            # through async_on_remove: removing a listener that already fired is an error.
+            self._relay_start_unsub = self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED, self._relay_started
             )
         self._relay_watch()
 
     @callback
     def _relay_started(self, _event: Event) -> None:
+        self._relay_start_unsub = None
         self._relay_watch()
 
     @callback
@@ -224,6 +227,9 @@ class Relay(_ButtonBase):
 
     @callback
     def _relay_stop(self) -> None:
+        if self._relay_start_unsub is not None:
+            self._relay_start_unsub()
+            self._relay_start_unsub = None
         for unsub in self._relay_unsub or []:
             unsub()
         self._relay_unsub = None

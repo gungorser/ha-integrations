@@ -220,3 +220,18 @@ async def test_relay_claimed_twice(hass: HomeAssistant, calls) -> None:
             {"link": EVT}]},
     )
     assert hass.states.get(WRAPPER) is None
+
+
+async def test_relay_removed_after_start(hass: HomeAssistant, calls, freezer, caplog) -> None:
+    """Set up before HA started, removed after (gungors.reload): no listener error."""
+    from homeassistant.core import CoreState  # noqa: PLC0415
+
+    hass.set_state(CoreState.not_running)
+    await setup_relay(hass, {1: RELAY})
+    await hass.async_start()
+    await settle(hass, freezer)
+    assert hass.states.get(RELAY).state == "on"
+    entity = hass.data["gungors"]["entities"][WRAPPER]
+    await entity.async_remove()
+    await hass.async_block_till_done()
+    assert "Unable to remove unknown job listener" not in caplog.text
