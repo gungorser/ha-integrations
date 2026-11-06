@@ -43,6 +43,7 @@ entry that breaks a rule is not created and the log says why.
 | `pwm` | climate | `{entity, period, min_cycle_duration}` | Demand onto an on/off heater by pulse-width modulation |
 | `buttons` | event | list of functions | Pushbutton ready functions `light`, `cover`, `climate`, `program`, `custom`, placed on keys by the location rule (below) |
 | `custom` | event | `{<slot>: {action, target, data}}` | Any action on a free slot of a pushbutton (`2_hold`) |
+| `relay` | event | `{<key>: switch or light}` | A key's LED relay follows the key's function: on while one of its targets is on (below) |
 
 Each feature module's docstring (`features/*.py`) is its full reference: behaviour, options,
 attributes. Base classes: `cover.py`, `climate.py`, `light.py`.
@@ -127,6 +128,13 @@ event:
   floor with a backup scene, or restores it.
 - A request a program rule limits is applied as the rule allows and the lights blink twice in red
   (not when a single press turns lights on: its preset may be limited, e.g. dimmer at night).
+- `relay: {1: switch.yemek_1}` (wall switches whose key LEDs are wired to relays without a load):
+  the relay is on while the key's function is on (`light` a target light on, `climate` not off,
+  `cover` not closed, `program` running, `custom` a target `on`). It is written only when it
+  differs (a press does not switch it; a relay switched by hand goes back), synced at startup and
+  reload, left alone while the targets or the relay are unavailable, and waits while a target
+  light blinks. The relay is claimed. Attribute `relays`: `{key: {entity_id, on}}`. A key the
+  device lacks or a key without a function is a config error.
 
 Tests: `pip install pytest-homeassistant-custom-component`, then `pytest`.
 

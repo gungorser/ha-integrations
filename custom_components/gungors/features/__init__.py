@@ -11,6 +11,7 @@ from . import (  # noqa: F401
     pid,
     program,
     pwm,
+    relay,
     temperature,
     travel_time,
     valve,
