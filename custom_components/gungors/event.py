@@ -17,6 +17,7 @@ event:
           - cover                 # far: 3_*
           - climate               # middle: 2_single
           - custom: {action: switch.toggle, target: {entity_id: switch.sercan_plug}}  # 2_hold
+      - relay: {1: switch.sercan_led}   # optional: key 1's LED relay follows its light
       - link: event.sercan_pushbutton_action
 ```
 
@@ -66,14 +67,16 @@ KEY_BUTTONS = "buttons"
 
 
 def _place(config: dict) -> dict:
-    """Place the `buttons` functions on their keys (needs `keys` and `door`)."""
+    """Place the `buttons` functions on their keys (needs `keys` and `door`); check `relay`."""
     from .features.button import place_buttons  # noqa: PLC0415
+    from .features.relay import check_relay  # noqa: PLC0415
 
     features = []
     for name, conf in config[CONF_FEATURES]:
         if name == KEY_BUTTONS:
             conf = place_buttons(conf, config.get(CONF_KEYS), config.get(CONF_DOOR))
         features.append((name, conf))
+    check_relay(features, config.get(CONF_KEYS))
     return {**config, CONF_FEATURES: features}
 
 
