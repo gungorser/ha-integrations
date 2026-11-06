@@ -4,6 +4,8 @@ Custom integration `gungors` (Python). No agent: the main session works here its
 
 ## This repository
 
+- Entity naming (wrappers `light.salon`, physical `light.phys_salon_light`, Turkish friendly
+  names, permanent `unique_id`): README "Naming". Follow it for every new or renamed entity.
 - Each wrapper drives an original entity that is hidden in HA; keep that contract. Options,
   services and attributes are documented in the README: ha-configs and the floor card depend on it.
 - Home Assistant conventions: async only, no blocking I/O in the event loop, entity platforms,

@@ -247,6 +247,31 @@ never the original (`cover.sercan_blind`, `climate.<room>_climate`). The wrapper
 pairs are the `link` values in ha-configs `gungors/packages/cover.yaml`, `gungors/packages/climate.yaml` and
 `gungors/packages/light.yaml`.
 
+## Naming
+
+Wrappers and the physical devices they drive follow one convention, in every repository
+(ha-configs packages, dashboards, cards, Blender page ids map to these entity ids):
+
+| Kind | Entity id | YAML `name` | Example |
+|---|---|---|---|
+| Wrapper | `<domain>.<room>[_<role>]` | `<room>[_<role>]` | `light.salon`, `climate.salon`, `cover.yatak_window`, `event.yemek` |
+| Physical | `<domain>.phys_<room>[<role>]_<domain>` | (named in Zigbee2MQTT) | `light.phys_salon_light`, `cover.phys_yatakwindow_cover` |
+
+- A wrapper's id never repeats its domain: `light.araba`, not `light.araba_light`. Wrappers have
+  no device, so `light.sercan`, `cover.sercan`, `climate.sercan` and `event.sercan` do not clash.
+  Pushbuttons are `event.<room>` whatever the hardware (Moes, ESPHome switchbutton); the device
+  type shows on the physical side.
+- A physical id keeps the domain suffix: a room's lamp and TRV are two Zigbee devices, and
+  device names must differ. Rename physical devices in Zigbee2MQTT, never only in Home Assistant
+  (ha-configs README, "Naming physical devices").
+- A wrapper's friendly name is set in the Home Assistant entity registry, readable Turkish
+  (`Salon ışığı`, `Yatak kapı perdesi`, `Salon termostatı`, `Yemek butonu`), not in YAML.
+- `unique_id` is permanent: keep it when a wrapper is renamed (older ones still carry the old
+  name, e.g. `unique_id: araba_light`). Rename the entity id in the registry
+  (`ha_set_entity(new_entity_id=..., name=...)`), then change the YAML `name` and every
+  reference in ha-configs in the same change. Since 1.16.2 a registry rename keeps the
+  wrapper's state and claims; claims are keyed by `<domain>.<name>`.
+
 ## Related repositories
 
 - **ha-configs**: the YAML that configures these platforms (`gungors/packages/<domain>.yaml`).
