@@ -629,3 +629,24 @@ async def test_toggle_group_stops_moving_members(hass: HomeAssistant, calls) -> 
     await hass.async_block_till_done()
     assert calls.of("cover", "stop_cover") == [{"entity_id": ["cover.a", "cover.b"]}]
     assert not calls.of("cover", "set_cover_position", "cover.a")
+
+
+async def test_same_direction_command_stops(hass: HomeAssistant, calls) -> None:
+    """Open while opening / close while closing stops, as IKEA blinds do."""
+    hass.states.async_set(WINDOW, "off")
+    raw(hass, 100)
+    await setup_guarded(hass)
+    await cover(hass, "close_cover")
+    await report(hass, 97)
+    assert hass.states.get(WRAPPER).state == "closing"
+    calls.clear()
+    await cover(hass, "close_cover")
+    assert calls.of("cover", "stop_cover", RAW)
+    assert not calls.of("cover", "set_cover_position", RAW)
+
+    # The other direction reverses (no stop).
+    await report(hass, 95)
+    calls.clear()
+    await cover(hass, "open_cover")
+    assert not calls.of("cover", "stop_cover", RAW)
+    assert calls.of("cover", "set_cover_position", RAW)[-1]["position"] == 100
