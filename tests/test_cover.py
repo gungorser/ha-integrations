@@ -579,3 +579,53 @@ async def test_buttons_event_filtering(hass: HomeAssistant, calls) -> None:
     await hass.async_block_till_done()
     assert calls.of("cover", "set_cover_position", RAW)[-1]["position"] == 0
 
+
+
+# --- toggle (one tap) ------------------------------------------------------------
+
+
+async def test_toggle_direction(hass: HomeAssistant, calls) -> None:
+    """Moving -> stop, closed -> open, anything else -> close (no last-direction memory)."""
+    hass.states.async_set(WINDOW, "off")
+    raw(hass, 100)
+    await setup_guarded(hass)
+
+    await cover(hass, "toggle")  # open -> close
+    assert calls.of("cover", "set_cover_position", RAW)[-1]["position"] == 0
+    await report(hass, 97)
+    assert hass.states.get(WRAPPER).state == "closing"
+
+    await cover(hass, "toggle")  # moving -> stop
+    assert calls.of("cover", "stop_cover", RAW)
+    await report(hass, 95)
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=5))
+    await hass.async_block_till_done()
+    assert hass.states.get(WRAPPER).state == "open"
+    assert pos(hass) == 95
+
+    calls.clear()
+    await cover(hass, "toggle")  # partly open -> close, although it was closing before
+    assert calls.of("cover", "set_cover_position", RAW)[-1]["position"] == 0
+    await travel(hass, 95, 0)
+    assert hass.states.get(WRAPPER).state == "closed"
+
+    calls.clear()
+    await cover(hass, "toggle")  # closed -> open
+    assert calls.of("cover", "set_cover_position", RAW)[-1]["position"] == 100
+
+
+async def test_toggle_group_stops_moving_members(hass: HomeAssistant, calls) -> None:
+    """A link-only group is moving while one of its covers is."""
+    for e in ("cover.a", "cover.b"):
+        hass.states.async_set(e, "open", {"current_position": 100, "supported_features": 15})
+    await setup_platform(hass, "cover", {"name": "ab_cover", "features": [{"link": ["cover.a", "cover.b"]}]})
+    assert hass.states.get("cover.ab_cover").state == "open"
+
+    hass.states.async_set("cover.a", "closing", {"current_position": 90, "supported_features": 15})
+    await hass.async_block_till_done()
+    assert hass.states.get("cover.ab_cover").state == "closing"
+
+    await hass.services.async_call("cover", "toggle", {"entity_id": "cover.ab_cover"}, blocking=True)
+    await hass.async_block_till_done()
+    assert calls.of("cover", "stop_cover") == [{"entity_id": ["cover.a", "cover.b"]}]
+    assert not calls.of("cover", "set_cover_position", "cover.a")

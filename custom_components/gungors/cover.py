@@ -5,6 +5,10 @@ services into requests that travel down the feature chain:
 
 - open / close / set_position -> Request({"position": p})
 - stop -> Request({"stop": True})
+- toggle (one tap, the same on every cover): moving -> stop, closed -> open,
+  anything else -> close. Unlike HA's toggle it does not depend on the last
+  move's direction; "moving" is what the movement feature (`direction`,
+  `travel_time`) or the linked covers report.
 
 Its position is the device's (room frame): it changes only with requests from
 the device (``from_device``), i.e. what the link reports. With only `link` the
@@ -91,6 +95,14 @@ class GungorsCover(GungorsEntity, CoverEntity):
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         await self.gw_request(Request({"stop": True}))
+
+    async def async_toggle(self, **kwargs: Any) -> None:
+        if self.is_opening or self.is_closing:
+            await self.async_stop_cover()
+        elif self.is_closed:
+            await self.async_open_cover()
+        else:
+            await self.async_close_cover()
 
     # --- chain ends --------------------------------------------------------
 

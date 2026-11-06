@@ -22,7 +22,7 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components.cover import ATTR_CURRENT_POSITION
+from homeassistant.components.cover import ATTR_CURRENT_POSITION, CoverState
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     STATE_UNAVAILABLE,
@@ -220,6 +220,23 @@ class CoverLink(Feature):
     @property
     def available(self) -> bool:
         return self._link_available
+
+    def _link_moving(self, state: str) -> bool:
+        return any(
+            (s := self.hass.states.get(e)) is not None and s.state == state
+            for e in self._link_entities
+            if e.startswith("cover.")
+        )
+
+    # Moving is the original's (a group: one of its members moving); a movement
+    # feature (`direction`, `travel_time`) placed before the link knows better.
+    @property
+    def is_opening(self) -> bool:
+        return self._link_moving(CoverState.OPENING)
+
+    @property
+    def is_closing(self) -> bool:
+        return self._link_moving(CoverState.CLOSING)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
