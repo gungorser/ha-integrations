@@ -477,3 +477,17 @@ async def test_toggle_stops_while_moving(
     await hass.services.async_call("cover", "toggle", {"entity_id": WRAPPER}, blocking=True)
     await hass.async_block_till_done()
     assert calls.of("cover", "open_cover", RAW)  # partly open -> close (= motor open)
+
+
+async def test_same_direction_command_stops(
+    hass: HomeAssistant, mqtt_mock, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    """Tuya motors ignore a second close; the wrapper stops them like an IKEA blind."""
+    await setup_curtain(hass, device_position=0)
+    await hass.services.async_call("cover", "close_cover", {"entity_id": WRAPPER}, blocking=True)
+    await advance(hass, freezer, 3)
+    calls.clear()
+    await hass.services.async_call("cover", "close_cover", {"entity_id": WRAPPER}, blocking=True)
+    await hass.async_block_till_done()
+    assert calls.of("cover", "stop_cover", RAW)
+    assert not calls.of("cover", "open_cover", RAW)

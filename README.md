@@ -60,7 +60,8 @@ Attributes other repositories read: cover `actual_position`, `pending_position`,
 Cover `toggle` is one tap, the same on every gungors cover: moving -> stop, closed -> open,
 anything else -> close (HA's own toggle depends on the last move's direction). "Moving" comes
 from `direction` / `travel_time`, or from the linked covers (a link-only group is moving while
-one of its members is). Dashboards tap covers with `cover.toggle`.
+one of its members is). Dashboards tap covers with `cover.toggle`. Open while opening and close
+while closing stop the cover too (IKEA blinds do this themselves, Tuya motors ignore it).
 
 Services: `gungors.set_pid_gain`, `gungors.set_pid_mode`,
 `gungors.clear_integral`, `gungors.blink` (lights: `rgb_color`, `count`; flashes the original

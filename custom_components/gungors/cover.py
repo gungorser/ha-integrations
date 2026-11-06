@@ -3,7 +3,8 @@
 `GungorsCover` knows only Home Assistant's cover contract. It turns the cover
 services into requests that travel down the feature chain:
 
-- open / close / set_position -> Request({"position": p})
+- open / close / set_position -> Request({"position": p}); open while opening and
+  close while closing stop instead (as IKEA blinds do; Tuya motors ignore it)
 - stop -> Request({"stop": True})
 - toggle (one tap, the same on every cover): moving -> stop, closed -> open,
   anything else -> close. Unlike HA's toggle it does not depend on the last
@@ -84,9 +85,15 @@ class GungorsCover(GungorsEntity, CoverEntity):
     # --- HA cover API -> requests ------------------------------------------
 
     async def async_open_cover(self, **kwargs: Any) -> None:
+        if self.is_opening:
+            await self.async_stop_cover()
+            return
         await self.gw_request(Request({"position": 100}))
 
     async def async_close_cover(self, **kwargs: Any) -> None:
+        if self.is_closing:
+            await self.async_stop_cover()
+            return
         await self.gw_request(Request({"position": 0}))
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
