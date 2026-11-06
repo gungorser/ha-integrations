@@ -14,7 +14,7 @@ A gungors entity is a domain base class plus an ordered list of features:
 ```yaml
 cover:
   - platform: gungors
-    name: sercan_cover
+    name: sercan
     device_class: blind
     features:
       - program
@@ -100,7 +100,7 @@ on its presses (`event.py`, `features/button.py` are the full reference):
 ```yaml
 event:
   - platform: gungors
-    name: bebek_pushbutton
+    name: bebek
     target: {area_id: bebek}        # optional: the device's area otherwise
     keys: 3                         # keys on the device
     door: right                     # side of the door it is on; leave out where there is none
@@ -151,7 +151,7 @@ Each entry is a time window (it may repeat) whose description is the program, in
 rules grouped by domain:
 
 ```yaml
-target: [Salon, light.melike_light]
+target: [Salon, light.melike]
 light:
   state: "on"
   brightness_pct: {min: 50, set: true}
@@ -242,7 +242,7 @@ climate:
 ## Wrappers drive hidden originals
 
 Every gungors entity drives an original device entity, which is hidden in Home Assistant:
-dashboards and automations use the wrapper (`cover.sercan_cover`, `climate.<room>_thermostat`),
+dashboards and automations use the wrapper (`cover.sercan`, `climate.<room>`),
 never the original (`cover.sercan_blind`, `climate.<room>_climate`). The wrapper-to-original
 pairs are the `link` values in ha-configs `gungors/packages/cover.yaml`, `gungors/packages/climate.yaml` and
 `gungors/packages/light.yaml`.

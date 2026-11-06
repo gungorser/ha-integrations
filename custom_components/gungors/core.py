@@ -229,6 +229,7 @@ class GungorsEntity(RestoreEntity):
     """
 
     _attr_should_poll = False
+    _gw_renaming = False
 
     def __init__(self, name: str, unique_id: str, features: list[tuple[str, Any]],
                  options: dict[str, Any]) -> None:
@@ -245,14 +246,24 @@ class GungorsEntity(RestoreEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        last = await self.async_get_last_state()
-        extra_data = await self.async_get_last_extra_data()
-        extra = extra_data.as_dict() if extra_data is not None else {}
-        self.gw_restore(last, extra)
+        if not self._gw_renaming:
+            last = await self.async_get_last_state()
+            extra_data = await self.async_get_last_extra_data()
+            extra = extra_data.as_dict() if extra_data is not None else {}
+            self.gw_restore(last, extra)
+        # Added again under a new entity id (registry rename): the same object keeps
+        # its state and claims; the new id has no restore data of its own.
+        self._gw_renaming = False
         self.hass.data.setdefault(DOMAIN, {}).setdefault(ENTITIES, {})[self.entity_id] = self
 
     async def async_will_remove_from_hass(self) -> None:
-        release_claims(self.hass, self.gw_wrapper)
+        entry = self.registry_entry
+        self._gw_renaming = (
+            entry is not None and entry.entity_id != self.entity_id
+            and not entry.disabled
+        )
+        if not self._gw_renaming:
+            release_claims(self.hass, self.gw_wrapper)
         self.hass.data.get(DOMAIN, {}).get(ENTITIES, {}).pop(self.entity_id, None)
         await super().async_will_remove_from_hass()
 
