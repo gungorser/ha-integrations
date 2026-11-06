@@ -453,3 +453,27 @@ async def test_remove_mid_move_cancels_timers(
     assert RAW not in hass.data["gungors"]["claims"]
     await advance(hass, freezer, 30)  # no tick or deadline on the removed entity
     assert hass.states.get(WRAPPER).attributes.get("restored") is True
+
+
+async def test_toggle_stops_while_moving(
+    hass: HomeAssistant, mqtt_mock, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    """Tuya curtains stop on a tap while moving, like the IKEA blinds."""
+    await setup_curtain(hass, device_position=0)
+    await hass.services.async_call("cover", "toggle", {"entity_id": WRAPPER}, blocking=True)
+    await hass.async_block_till_done()
+    assert calls.of("cover", "open_cover", RAW)  # open -> close (motor inverted)
+    await advance(hass, freezer, 3)
+    assert state(hass).state == "closing"
+
+    await hass.services.async_call("cover", "toggle", {"entity_id": WRAPPER}, blocking=True)
+    await hass.async_block_till_done()
+    assert calls.of("cover", "stop_cover", RAW)
+    await mqtt_report(hass, 30)
+    assert state(hass).state == "open"
+    assert state(hass).attributes["current_position"] == 70
+
+    calls.clear()
+    await hass.services.async_call("cover", "toggle", {"entity_id": WRAPPER}, blocking=True)
+    await hass.async_block_till_done()
+    assert calls.of("cover", "open_cover", RAW)  # partly open -> close (= motor open)
