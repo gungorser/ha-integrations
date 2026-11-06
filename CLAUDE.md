@@ -13,7 +13,7 @@ Custom integration `gungors` (Python). No agent: the main session works here its
 - Release: bump `manifest.json` version, commit, GitHub release `vX.Y.Z`, update in HACS
   (`ha_manage_hacs`), restart only with Sercan's approval, then check `ha_get_logs` and the
   wrapper entities.
-- A YAML-only change needs no release: change ha-configs `gungors/packages/covers.yaml` / `heating.yaml`,
+- A YAML-only change needs no release: change ha-configs `gungors/packages/<domain>.yaml` (`cover.yaml`, `climate.yaml`, ...),
   then `gungors.reload`.
 
 ## Rules (all Gungor HA repositories)
