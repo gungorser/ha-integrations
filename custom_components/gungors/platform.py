@@ -16,6 +16,7 @@ from . import PLATFORMS, features as _features  # noqa: F401  (registers feature
 from .const import CONF_FEATURES, DOMAIN
 from .core import (
     build_entity_class,
+    claim_owner,
     entity_claims,
     feature_list_validator,
     reserve_claims,
@@ -50,7 +51,7 @@ async def async_setup_features_platform(
     features = config[CONF_FEATURES]
     try:
         cls = build_entity_class(domain, base, features, name)
-        reserve_claims(hass, name, entity_claims(domain, features))
+        reserve_claims(hass, claim_owner(domain, name), entity_claims(domain, features))
     except vol.Invalid as err:
         _LOGGER.error("%s.%s not created: %s", domain, name, err)
         return

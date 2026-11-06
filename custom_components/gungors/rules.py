@@ -2,7 +2,7 @@
 
 An entry's description holds the program as YAML, the rules grouped by domain::
 
-    target: [Salon, light.melike_light]   # area ids/names and entity ids
+    target: [Salon, light.melike]   # area ids/names and entity ids
     light:
       state: "on"              # a plain value is `eq`
       brightness_pct: {min: 50, set: true}

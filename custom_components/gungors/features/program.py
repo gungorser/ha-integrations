@@ -604,7 +604,8 @@ class Program(Feature):
         if person is None or not self.hass.services.has_service("browser_mod", "popup"):
             _LOGGER.info("%s: no browser to tell user %s: %s", self.entity_id, user_id, text)
             return
-        name = self.name or self.entity_id
+        state = self.hass.states.get(self.entity_id)
+        name = (state.attributes.get("friendly_name") if state else None) or self.entity_id
         programs = ", ".join(p["summary"] for p in self._prog_active if p["summary"]) or "program"
         data: dict[str, Any] = {
             "user_id": [person],
