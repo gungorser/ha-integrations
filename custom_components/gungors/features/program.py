@@ -820,7 +820,11 @@ class Program(Feature):
         self, data: dict[str, Any], rules: dict[str, Constraint]
     ) -> dict[str, Any] | None:
         if "hvac_mode" in rules and ("hvac_mode" in data or "temperature" in data):
-            data["hvac_mode"] = HVACMode(rules["hvac_mode"].eq)
+            wanted = HVACMode(rules["hvac_mode"].eq)
+            # Only when the mode would change: an added mode equal to the current
+            # one reads as an adjusted request (popup) though nothing changed.
+            if data.get("hvac_mode", self.hvac_mode) != wanted:
+                data["hvac_mode"] = wanted
         mode = data.get("hvac_mode", self.hvac_mode)
         if mode == HVACMode.OFF:
             data.pop("temperature", None)
