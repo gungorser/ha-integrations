@@ -584,6 +584,44 @@ async def test_climate_lock(hass: HomeAssistant, calls, freezer: FrozenDateTimeF
     assert hass.states.get(THERMOSTAT).state == "off"
 
 
+@pytest.mark.parametrize("set_rule", [True, False])
+async def test_climate_allowed_temperature_no_popup(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user, set_rule: bool
+) -> None:
+    """23 satisfies a 21 floor: passed on unchanged, no popup."""
+    from homeassistant.core import Context  # noqa: PLC0415
+
+    await setup_all(hass)
+    trv(hass, "heat", 21)
+    await hass.async_block_till_done()
+    popups = []
+    hass.services.async_register("browser_mod", "popup", lambda call: popups.append(call.data))
+    hass.states.async_set("person.sercan", "home", {"user_id": hass_admin_user.id})
+    await add_entry(
+        hass, "isitma",
+        {"target": THERMOSTAT, "climate": {"temperature": {"min": 21, "set": set_rule}}},
+        timedelta(seconds=-1), timedelta(hours=1),
+    )
+    await tick(hass, freezer, timedelta(seconds=11))
+    calls.clear()
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": THERMOSTAT, "temperature": 23},
+        blocking=True, context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 23
+    assert hass.states.get(THERMOSTAT).attributes["temperature"] == 23
+    assert popups == []
+    # Below the floor: brought to 21, with a popup.
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": THERMOSTAT, "temperature": 19},
+        blocking=True, context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(THERMOSTAT).attributes["temperature"] == 21
+    assert len(popups) == 1
+
+
 # --- cover ------------------------------------------------------------------------
 
 
