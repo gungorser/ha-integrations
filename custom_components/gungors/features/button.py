@@ -49,6 +49,8 @@ lights blink once: green on, blue off.
 
 `program` (a timeless program's name or uid, `duration:` optional): start the
 program, or stop its run. The lights blink twice: green started, blue stopped.
+The name matches ignoring case and accents ("Kaan gündüz uyku" finds "kaan gunduz
+uyku"); a name that matches no timeless program blinks the warning.
 
 `cover` (as the old pushbutton blueprint):
 
@@ -586,6 +588,7 @@ class Buttons(_ButtonBase):
             uid = manager.timeless_uid(args["program"])
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("%s: %s", self.entity_id, err)
+            await self._btn_warn(target)  # the press did nothing: say so
             return
         if manager.is_running(uid):
             await manager.async_stop(uid)

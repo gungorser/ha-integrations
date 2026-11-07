@@ -52,6 +52,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import datetime
 import logging
+import unicodedata
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -134,6 +135,12 @@ class Instance:
 
     def overlaps(self, other: Instance) -> bool:
         return self.start < other.end and other.start < self.end
+
+
+def name_key(name: str) -> str:
+    """A program name for matching: case and Turkish/other accents ignored."""
+    folded = unicodedata.normalize("NFKD", name.strip().casefold().replace("ı", "i"))
+    return "".join(c for c in folded if not unicodedata.combining(c))
 
 
 def _as_datetime(value: datetime.date | datetime.datetime) -> datetime.datetime:
@@ -481,9 +488,9 @@ class ProgramManager:
         """The uid of a timeless program given by uid or name."""
         if ref in self.timeless:
             return ref
-        name = ref.strip().casefold()
+        name = name_key(ref)
         for uid, item in self.timeless.items():
-            if item["summary"].strip().casefold() == name:
+            if name_key(item["summary"]) == name:
                 return uid
         raise HomeAssistantError(f"No timeless program '{ref}'")
 
@@ -507,8 +514,8 @@ class ProgramManager:
             raise HomeAssistantError(f"No timeless program '{uid}'")
         program = self._parse_timeless(summary, description)
         uid = uid or uuid.uuid4().hex
-        others = {v["summary"].strip().casefold() for k, v in self.timeless.items() if k != uid}
-        if summary.strip().casefold() in others:
+        others = {name_key(v["summary"]) for k, v in self.timeless.items() if k != uid}
+        if name_key(summary) in others:
             raise HomeAssistantError(f"A timeless program named '{summary}' exists already")
         self.timeless[uid] = {"summary": summary.strip(), "description": dump_program(program)}
         run = self._run_of(uid)

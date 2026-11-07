@@ -520,3 +520,30 @@ async def test_light_hold_back_with_a_white_only_light(hass: HomeAssistant, call
     await hass.async_block_till_done()
     await press(hass, "1_hold")  # the colour light is at night -> back
     assert tuple(lamp_calls(calls, "turn_on")[-1]["rgb_color"]) == (255, 255, 255)
+
+
+async def test_program_name_ignores_accents(hass: HomeAssistant, calls) -> None:
+    """`Kaan gündüz uyku` on the button starts the stored `kaan gunduz uyku`."""
+    await setup_all(hass)
+    await hass.services.async_call(
+        "gungors", "save_timeless_program",
+        {"entity_id": "calendar.program", "summary": "kaan gunduz uyku",
+         "description": json.dumps({"target": THERMOSTAT, "climate": {"temperature": {"max": 20}}})},
+        blocking=True,
+    )
+    await setup_button(hass, {"buttons": [
+        {"program": {"program": "Kaan Gündüz Uyku", "button": 1}},
+        {"program": {"program": "Yok böyle", "button": 2}},
+    ]})
+    manager = async_get_manager(hass)
+    uid = manager.timeless_uid("KAAN GÜNDÜZ UYKU")
+    await press(hass, "1_double")
+    assert manager.is_running(uid)
+    # A name that matches nothing: the lights warn (two red blinks), nothing starts.
+    lamp(hass, True, 255, rgb=(255, 255, 255))
+    await hass.async_block_till_done()
+    calls.clear()
+    await press(hass, "2_double")
+    await hass.async_block_till_done()
+    reds = [d for d in lamp_calls(calls, "turn_on") if tuple(d.get("rgb_color") or ()) == (255, 0, 0)]
+    assert len(reds) == 2
