@@ -149,3 +149,5 @@ blink:
         number: {min: 1, max: 5}
 
 reload:
+
+immich_run: {}
