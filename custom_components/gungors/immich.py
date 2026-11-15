@@ -39,6 +39,9 @@ A run every `scan_interval` (10 min) and on `gungors.immich_run`:
   found, not a favourite, not archived and in no album of their own -> the user's
   `faceless.album`; in `Albüm + çöp` mode those outside trips go to the trash
   (recoverable for 30 days) instead. Videos are never touched.
+- `share_albums: true`: every album a user owns (also ones made by hand or by the
+  phone app) is shared with the other users as editors; the faceless albums stay
+  private.
 - An asset is added to an album once: one removed by hand is not added again.
 """
 from __future__ import annotations
@@ -126,6 +129,7 @@ IMMICH_SCHEMA = vol.Schema(
         vol.Optional("owner"): cv.string,
         vol.Optional("scan_interval", default=600): vol.All(vol.Coerce(int), vol.Range(min=60)),
         vol.Optional("people", default={}): {cv.string: cv.string},
+        vol.Optional("share_albums", default=False): cv.boolean,
         vol.Optional("trips", default={}): vol.Schema(
             {
                 vol.Optional("distance_km", default=50): vol.Coerce(float),
@@ -393,6 +397,13 @@ class ImmichApi:
             body["albumUsers"] = [{"userId": uid, "role": "editor"} for uid in user_ids]
         return await self.request("POST", "/albums", json=body)
 
+    async def share_album(self, album_id: str, user_ids: list[str]) -> None:
+        await self.request(
+            "PUT",
+            f"/albums/{album_id}/users",
+            json={"albumUsers": [{"userId": uid, "role": "editor"} for uid in user_ids]},
+        )
+
     async def rename_album(self, album_id: str, name: str) -> None:
         await self.request("PATCH", f"/albums/{album_id}", json={"albumName": name})
 
@@ -529,6 +540,8 @@ class ImmichManager:
             summary["people"] = await self._run_people()
             trips, summary["trips"] = await self._run_trips()
             summary["faceless"] = await self._run_faceless(now, trips)
+            if self.config["share_albums"]:
+                summary["shared"] = await self._run_share()
             if self.writing:
                 await self._store.async_save(self._state)
             self.status = "tamam"
@@ -681,6 +694,26 @@ class ImmichManager:
                 return
             await self._apis[self.owner].rename_album(album_id, name)
         record["name"], record["base"] = name, base
+
+    async def _run_share(self) -> list[str]:
+        """Share every album a user owns with the other users (editors), except faceless ones."""
+        faceless = {aid for key, aid in self._state["albums"].items() if key.startswith("faceless:")}
+        lines: list[str] = []
+        for user, api in self._apis.items():
+            me = self._user_ids[user]
+            for album in await api.albums():
+                members = [u.get("user", {}).get("id") for u in album.get("albumUsers") or []]
+                if not members or members[0] != me or album["id"] in faceless:
+                    continue
+                if album.get("albumName") == self.config["faceless"]["album"]:
+                    continue
+                missing = [uid for uid in self._user_ids.values() if uid not in members]
+                if not missing:
+                    continue
+                if self.writing:
+                    await api.share_album(album["id"], missing)
+                lines.append(album.get("albumName") or album["id"])
+        return lines
 
     # faceless
 

@@ -175,6 +175,7 @@ class FakeApi:
                 continue
             if assetId is not None and assetId not in alb["_assets"]:
                 continue
+            alb["albumUsers"] = [{"user": {"id": uid}} for uid in alb["_users"]]
             out.append(alb)
         return out
 
@@ -187,9 +188,12 @@ class FakeApi:
         self.s.albums[aid] = {
             "id": aid, "albumName": name, "_assets": set(),
             "_users": [f"id-{self.user}", *user_ids],
-            "albumUsers": [{"user": {"id": f"id-{self.user}"}, "role": "owner"}],
         }
         return self.s.albums[aid]
+
+    async def share_album(self, album_id, user_ids):
+        self.s.writes += 1
+        self.s.albums[album_id]["_users"].extend(user_ids)
 
     async def rename_album(self, album_id, name):
         self.s.writes += 1
@@ -352,3 +356,27 @@ async def test_setup_from_yaml(hass: HomeAssistant, monkeypatch) -> None:
     )
     await hass.async_block_till_done()
     assert hass.states.get("sensor.immich").attributes["mode"] == MODE_ALBUM
+
+
+async def test_share_albums(setup) -> None:
+    manager, server = setup
+    manager.config = {**manager.config, "share_albums": True}
+    api = manager._apis["melike"]
+    manager.mode = MODE_DRY
+    await manager.async_run()
+    holiday = await api.create_album("tatil_elle", [])
+    await api.create_album("check_before_delete", [])
+    shared = await manager._apis["sercan"].create_album("ortak", ["id-melike"])
+    writes = server.writes
+
+    await manager.async_run()
+    assert manager.summary["shared"] == ["tatil_elle"]
+    assert server.writes == writes  # dry run
+
+    manager.mode = MODE_ALBUM
+    await manager.async_run()
+    assert holiday["_users"] == ["id-melike", "id-sercan"]
+    assert album_named(server, "check_before_delete")["_users"] == ["id-melike"]
+    assert shared["_users"] == ["id-sercan", "id-melike"]
+    await manager.async_run()
+    assert manager.summary["shared"] == []
