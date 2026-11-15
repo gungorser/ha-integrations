@@ -567,7 +567,7 @@ class ImmichManager:
             body: dict[str, Any] = {"withExif": True}
             if not full and self._last_scan is not None:
                 body["updatedAfter"] = (self._last_scan - INCREMENTAL_MARGIN).isoformat()
-            assets = await api.search(body)
+            assets = self._own(user, await api.search(body))
             index = {} if full else self._index.setdefault(user, {})
             for asset in assets:
                 if asset.get("isTrashed"):
@@ -580,6 +580,11 @@ class ImmichManager:
         if full:
             self._last_full = now
         self._last_scan = now
+
+    def _own(self, user: str, assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Only the user's own assets: a search also returns a partner's shared ones."""
+        me = self._user_ids[user]
+        return [a for a in assets if a.get("ownerId") in (None, me)]
 
     # albums
 
@@ -630,7 +635,8 @@ class ImmichManager:
                 ]
                 assets: set[str] = set()
                 for person_id in ids:
-                    assets |= {a["id"] for a in await api.search({"personIds": [person_id]})}
+                    found = await api.search({"personIds": [person_id]})
+                    assets |= {a["id"] for a in self._own(user, found)}
                 new += await self._add(album_id, user, assets)
             result[album_name] = new
         return result
@@ -730,7 +736,9 @@ class ImmichManager:
             }
             to_album: set[str] = set()
             to_trash: list[str] = []
-            assets = await api.search({"type": "IMAGE", "createdAfter": self._state["since"]})
+            assets = self._own(
+                user, await api.search({"type": "IMAGE", "createdAfter": self._state["since"]})
+            )
             for asset in assets:
                 aid = asset["id"]
                 if aid in decided:
