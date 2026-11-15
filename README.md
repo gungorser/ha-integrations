@@ -239,6 +239,33 @@ climate:
 `rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`
 (enforcement) are the full reference.
 
+## Immich albums
+
+`gungors: immich:` (ha-configs `gungors/packages/gungors.yaml`, `immich.py`) fills Immich albums
+through the Immich API, with one API key per Immich user (faces and photos are per user):
+
+- People: every photo or video with a named person (`people: {Kaan: Kaan}`, the name as given in
+  Immich, in each user's library) goes to that person's album, owned by `owner` and shared with
+  the other users as editors.
+- Trips: per user, a trip starts at the first photo farther than `distance_km` from `zone.home`
+  and ends at the next photo taken at home; days without photos in between do not matter.
+  Camera photos without GPS taken during it belong to it. Trips of two users overlapping before
+  the first is home again are one trip. Album name: the most frequent place + the start year,
+  ascii lowercase: the `detail` field (state or city) for the countries listed there (Turkey: il,
+  Netherlands: city), else the country's Turkish name (`ispanya_2025`, built in, `names:` over
+  it); `_2` on a clash. A trip's album opens with its first photo and is renamed once at its end
+  if the most frequent place changed and nobody renamed it.
+- Faceless: images uploaded after the first run, `wait_hours` after upload, with Immich's face
+  detection queue empty and no face found, not a favourite, not archived and in no album of their
+  own go to the user's `faceless.album` (`check_before_delete`). In `Albüm + çöp` mode the ones
+  outside trips go to the Immich trash instead (restorable for 30 days). Videos are never touched.
+- `select.immich` is the mode (restored): `Kapalı`, `Deneme` (plans only; nothing written),
+  `Albüm`, `Albüm + çöp`. `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
+  per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.
+  A run every `scan_interval` (600 s), on a mode change and on `gungors.immich_run`.
+- Each asset is added to an album once (`.storage/gungors.immich`): one removed by hand stays out;
+  a faceless decision is final.
+
 ## Wrappers drive hidden originals
 
 Every gungors entity drives an original device entity, which is hidden in Home Assistant:
