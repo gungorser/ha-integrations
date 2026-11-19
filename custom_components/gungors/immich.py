@@ -36,8 +36,8 @@ A run every `scan_interval` (10 min) and on `gungors.immich_run`:
   `ispanya_fransa_2023`; `_2` on a clash). The place is the `detail` field (state
   or city) for the countries listed there, else the country's Turkish name; a trip
   in more than one country (`home_country` not counted) is named by its countries.
-  A place or country with less than `name_min_share` (10 %) of the photos (a
-  stopover) is left out of the name.
+  A place or country with less than `name_min_share` (10 %) of the photos or
+  fewer than `name_min_photos` (2) photos (a stopover) is left out of the name.
   An open trip's album is renamed once it closes if the
   name changed and nobody renamed it meanwhile.
 - Faceless: images uploaded after the first run (never the existing library),
@@ -149,6 +149,9 @@ IMMICH_SCHEMA = vol.Schema(
                 vol.Optional("max_gap_days", default=10): vol.Coerce(float),
                 vol.Optional("name_min_share", default=0.1): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=1)
+                ),
+                vol.Optional("name_min_photos", default=2): vol.All(
+                    vol.Coerce(int), vol.Range(min=1)
                 ),
                 vol.Optional("min_assets", default=3): vol.All(vol.Coerce(int), vol.Range(min=1)),
                 vol.Optional("home_country", default="netherlands"): vol.All(cv.string, country_key),
@@ -337,20 +340,21 @@ def trip_base_name(
     names: dict[str, str] | None = None,
     home_country: str | None = None,
     min_share: float = 0.0,
+    min_photos: int = 1,
 ) -> str:
     """Every place in visit order + start year (`ankara_samsun_2024`).
 
     A trip in more than one country (the home country not counted) is named by
     its countries instead (`ispanya_fransa_almanya_2023`); `gezi` when no place
     is known. A place or country with less than `min_share` of the trip's photos
-    (a stopover) is left out of the name.
+    or fewer than `min_photos` photos (a stopover) is left out of the name.
     """
     names = names or {}
 
     def kept(keys: list[str]) -> list[str]:
         counts = Counter(keys)
         order = list(dict.fromkeys(keys))
-        big = [k for k in order if counts[k] >= min_share * len(keys)]
+        big = [k for k in order if counts[k] >= max(min_photos, min_share * len(keys))]
         return big or [counts.most_common(1)[0][0]] if order else []
 
     countries = kept([c for _, _, c in trip.stops if c and c != home_country])
@@ -757,7 +761,11 @@ class ImmichManager:
                 None,
             )
             base = trip_base_name(
-                trip, conf["names"], conf["home_country"], conf["name_min_share"]
+                trip,
+                conf["names"],
+                conf["home_country"],
+                conf["name_min_share"],
+                conf["name_min_photos"],
             )
             if record is None:
                 name = unique_name(base, taken)
