@@ -164,6 +164,7 @@ def _warn_yaml(hass: HomeAssistant, yaml_conf: dict[str, Any]) -> None:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Presets and Immich from the entry's options (Configure)."""
     await _async_apply_entry(hass, entry)
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     return True
 
@@ -180,6 +181,7 @@ async def _async_apply_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     async_get_manager(hass).async_presets_changed()
     immich = options.get("immich")
     await _async_setup_immich(hass, IMMICH_SCHEMA(dict(immich)) if immich else None)
+    await _async_setup_budget_thuis(hass, options.get("budget_thuis"))
     yaml_conf = (hass.data.get(DOMAIN, {}).get(DATA_HASS_CONFIG) or {}).get(DOMAIN) or {}
     _warn_yaml(hass, yaml_conf)
 
@@ -188,7 +190,33 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Back to the built-in presets; Immich stops."""
     async_set_presets(hass, {})
     await _async_setup_immich(hass, None)
-    return True
+    await _async_setup_budget_thuis(hass, None)
+    return await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR])
+
+
+async def _async_setup_budget_thuis(hass: HomeAssistant, conf: dict[str, Any] | None) -> None:
+    """Start, reconfigure or stop the Budget Thuis reads."""
+    from homeassistant.helpers.dispatcher import async_dispatcher_send  # noqa: PLC0415
+
+    from .budget_thuis import (  # noqa: PLC0415
+        DATA_BUDGET_THUIS,
+        SIGNAL_UPDATE as BT_UPDATE,
+        BudgetThuisManager,
+    )
+
+    data = hass.data.setdefault(DOMAIN, {})
+    manager: BudgetThuisManager | None = data.get(DATA_BUDGET_THUIS)
+    if not conf:
+        if manager is not None:
+            manager.async_stop()
+            data.pop(DATA_BUDGET_THUIS)
+            async_dispatcher_send(hass, BT_UPDATE)  # the sensors go unavailable
+        return
+    if manager is not None:
+        await manager.async_reconfigure(dict(conf))
+        return
+    manager = data[DATA_BUDGET_THUIS] = BudgetThuisManager(hass, dict(conf))
+    await manager.async_start()
 
 
 async def _async_setup_immich(hass: HomeAssistant, immich: dict[str, Any] | None) -> None:

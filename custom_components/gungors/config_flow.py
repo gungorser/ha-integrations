@@ -36,6 +36,7 @@ from .presets import BUILTIN
 from .rules import NAMES, defaults_json, parse_defaults
 
 TITLE = "Gungor Customizations"
+DEFAULT_BT_INTERVAL = 3600  # Budget Thuis: hourly
 
 # The presets the UI edits: (domain, name). Nothing else uses other names.
 PRESETS: tuple[tuple[str, str], ...] = (
@@ -369,7 +370,51 @@ class GungorsOptionsFlow(OptionsFlow):
     async def async_step_services(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="services", menu_options=["immich"])
+        return self.async_show_menu(step_id="services", menu_options=["immich", "budget_thuis"])
+
+    async def async_step_budget_thuis(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        options = self._options()
+        old = options.get("budget_thuis") or {}
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            username = (user_input.get("username") or "").strip()
+            password = user_input.get("password") or old.get("password") or ""
+            if not username:
+                options.pop("budget_thuis", None)
+                return self.async_create_entry(data=options)
+            if not password:
+                errors["password"] = "required"
+            else:
+                options["budget_thuis"] = {
+                    "username": username,
+                    "password": password,
+                    "scan_interval": int(user_input.get("scan_interval", DEFAULT_BT_INTERVAL)),
+                }
+                return self.async_create_entry(data=options)
+        schema = vol.Schema(
+            {
+                vol.Optional("username"): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.EMAIL)
+                ),
+                vol.Optional("password"): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                ),
+                vol.Optional("scan_interval", default=DEFAULT_BT_INTERVAL): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=300, max=86400, step=60, unit_of_measurement="s",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+            }
+        )
+        suggested = {k: old[k] for k in ("username", "scan_interval") if k in old}
+        return self.async_show_form(
+            step_id="budget_thuis",
+            data_schema=self.add_suggested_values_to_schema(schema, user_input or suggested),
+            errors=errors,
+        )
 
     async def async_step_presets(
         self, user_input: dict[str, Any] | None = None

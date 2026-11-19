@@ -143,13 +143,24 @@
       "services": {
         "title": "Servisler",
         "menu_options": {
-          "immich": "Immich"
+          "immich": "Immich",
+          "budget_thuis": "Budget Thuis"
+        }
+      },
+      "budget_thuis": {
+        "title": "Budget Thuis",
+        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak (Energy panosu). Budget Thuis uygulamasının e-posta ve şifresi. Şifre boş görünür: boş bırakırsan kayıtlı şifre kalır. E-posta boş: Budget Thuis kapalı.",
+        "data": {
+          "username": "E-posta",
+          "password": "Şifre",
+          "scan_interval": "Tarama aralığı"
         }
       }
     },
     "error": {
       "invalid_preset": "Geçersiz değer",
-      "invalid_immich": "Geçersiz Immich ayarı"
+      "invalid_immich": "Geçersiz Immich ayarı",
+      "required": "Gerekli"
     }
   },
   "selector": {

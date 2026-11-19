@@ -143,13 +143,24 @@
       "services": {
         "title": "Services",
         "menu_options": {
-          "immich": "Immich"
+          "immich": "Immich",
+          "budget_thuis": "Budget Thuis"
+        }
+      },
+      "budget_thuis": {
+        "title": "Budget Thuis",
+        "description": "Electricity, gas and return delivery: the month so far as sensors (Energy dashboard). E-mail and password of the Budget Thuis app. The password shows empty: leave it empty to keep it. Empty e-mail: Budget Thuis off.",
+        "data": {
+          "username": "E-mail",
+          "password": "Password",
+          "scan_interval": "Scan interval"
         }
       }
     },
     "error": {
       "invalid_preset": "Invalid value",
-      "invalid_immich": "Invalid Immich settings"
+      "invalid_immich": "Invalid Immich settings",
+      "required": "Required"
     }
   },
   "selector": {
