@@ -36,6 +36,8 @@ A run every `scan_interval` (10 min) and on `gungors.immich_run`:
   `ispanya_fransa_2023`; `_2` on a clash). The place is the `detail` field (state
   or city) for the countries listed there, else the country's Turkish name; a trip
   in more than one country (`home_country` not counted) is named by its countries.
+  A place or country with less than `name_min_share` (10 %) of the photos (a
+  stopover) is left out of the name.
   An open trip's album is renamed once it closes if the
   name changed and nobody renamed it meanwhile.
 - Faceless: images uploaded after the first run (never the existing library),
@@ -145,6 +147,9 @@ IMMICH_SCHEMA = vol.Schema(
             {
                 vol.Optional("distance_km", default=50): vol.Coerce(float),
                 vol.Optional("max_gap_days", default=10): vol.Coerce(float),
+                vol.Optional("name_min_share", default=0.1): vol.All(
+                    vol.Coerce(float), vol.Range(min=0, max=1)
+                ),
                 vol.Optional("min_assets", default=3): vol.All(vol.Coerce(int), vol.Range(min=1)),
                 vol.Optional("home_country", default="netherlands"): vol.All(cv.string, country_key),
                 vol.Optional("detail", default={}): vol.All(
@@ -249,7 +254,10 @@ def find_trips(
     is not a trip (day trips inside the home country). A trip with fewer than
     `min_assets` assets is not a trip either.
     """
-    max_gap = datetime.timedelta(days=max_gap_days)
+
+    def apart(a: datetime.datetime, b: datetime.datetime) -> bool:
+        """More than `max_gap_days` calendar days from `a` to `b`."""
+        return (b.date() - a.date()).days > max_gap_days
     by_user: dict[str, list[Point]] = {}
     for point in points:
         by_user.setdefault(point.user, []).append(point)
@@ -264,7 +272,7 @@ def find_trips(
                 continue
             away = distance_km(home[0], home[1], point.lat, point.lon) > away_km
             if away and current is not None:
-                if point.time - current.end > max_gap:
+                if apart(current.end, point.time):
                     current.closed = True
                     current = None
             if away:
@@ -301,7 +309,7 @@ def find_trips(
         # came home in between (a day apart at most always merges).
         if last is not None and (
             trip.start <= last.end + datetime.timedelta(days=1)
-            or (trip.start <= last.end + max_gap and not last.home & set(trip.assets))
+            or (not apart(last.end, trip.start) and not last.home & set(trip.assets))
         ):
             last.end = max(last.end, trip.end)
             last.closed = last.closed and trip.closed
@@ -325,23 +333,32 @@ def find_trips(
 
 
 def trip_base_name(
-    trip: Trip, names: dict[str, str] | None = None, home_country: str | None = None
+    trip: Trip,
+    names: dict[str, str] | None = None,
+    home_country: str | None = None,
+    min_share: float = 0.0,
 ) -> str:
     """Every place in visit order + start year (`ankara_samsun_2024`).
 
     A trip in more than one country (the home country not counted) is named by
     its countries instead (`ispanya_fransa_almanya_2023`); `gezi` when no place
-    is known.
+    is known. A place or country with less than `min_share` of the trip's photos
+    (a stopover) is left out of the name.
     """
     names = names or {}
-    countries = list(dict.fromkeys(c for _, _, c in trip.stops if c and c != home_country))
+
+    def kept(keys: list[str]) -> list[str]:
+        counts = Counter(keys)
+        order = list(dict.fromkeys(keys))
+        big = [k for k in order if counts[k] >= min_share * len(keys)]
+        return big or [counts.most_common(1)[0][0]] if order else []
+
+    countries = kept([c for _, _, c in trip.stops if c and c != home_country])
     if len(countries) > 1:
         parts = [slug(names.get(c) or COUNTRY_NAMES.get(c) or c) for c in countries]
     else:
-        parts = list(
-            dict.fromkeys(
-                p for _, p, c in trip.stops if not countries or c is None or c == countries[0]
-            )
+        parts = kept(
+            [p for _, p, c in trip.stops if not countries or c is None or c == countries[0]]
         )
     return f"{'_'.join(parts) or 'gezi'}_{trip.year}"
 
@@ -739,7 +756,9 @@ class ImmichManager:
                 ),
                 None,
             )
-            base = trip_base_name(trip, conf["names"], conf["home_country"])
+            base = trip_base_name(
+                trip, conf["names"], conf["home_country"], conf["name_min_share"]
+            )
             if record is None:
                 name = unique_name(base, taken)
                 taken.add(name)

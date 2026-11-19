@@ -249,7 +249,7 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   the other users as editors.
 - Trips: per user, a trip starts at the first photo farther than `distance_km` from `zone.home`
   and ends at the next photo taken at home; days without photos in between do not matter, up
-  to `max_gap_days` (10; few photos at home carry GPS).
+  to `max_gap_days` (10 calendar days; few photos at home carry GPS).
   Camera photos without GPS taken during it belong to it. Trips less than `max_gap_days` apart
   are one trip (also of different users), unless a user of the later one came home in between.
   A trip with fewer than `min_assets` (3) photos is no trip. Countries match by name
@@ -258,7 +258,8 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   listed there (Turkey: il, Netherlands: city), else the country's Turkish name (built in,
   `names:` over it): `ankara_samsun_2024`, `ispanya_2025`. A trip in more than one country
   (`home_country`, default `netherlands`, not counted) is named by its countries
-  (`ispanya_fransa_almanya_2023`); `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly
+  (`ispanya_fransa_almanya_2023`); a place or country with less than `name_min_share` (0.1) of
+  the photos (a stopover) is left out of the name; `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly
   in that country that spans fewer calendar days is not a trip. A trip's album opens with its
   first photo and is renamed once at its end if the name changed and nobody renamed it.
 - Faceless: images uploaded after the first run, `wait_hours` after upload, with Immich's face

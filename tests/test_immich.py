@@ -486,3 +486,26 @@ def test_min_assets() -> None:
     points = [p("v1", t(1), VALENCIA, country="Spain"), p("v2", t(2), VALENCIA, country="Spain")]
     assert find_trips(points, HOME, 50, DETAIL, {}, min_assets=3) == []
     assert len(find_trips(points, HOME, 50, DETAIL, {}, min_assets=2)) == 1
+
+
+def test_gap_counts_calendar_days() -> None:
+    ankara = (39.93, 32.85)
+    points = [
+        p("a1", t(31, 12, 2024, hour=9), ankara, country="Turkey", state="Ankara"),
+        p("a2", t(10, 1, 2025, hour=20), ankara, country="Turkey", state="Ankara"),
+        p("a3", t(22, 1, 2025), ankara, country="Turkey", state="Ankara"),
+    ]
+    trips = find_trips(points, HOME, 50, DETAIL, {})
+    assert [sorted(x.all_assets()) for x in trips] == [["a1", "a2"], ["a3"]]
+
+
+def test_stopovers_are_left_out_of_the_name() -> None:
+    frankfurt, samsun, istanbul = (50.11, 8.68), (41.29, 36.33), (41.01, 28.98)
+    points = [p("f1", t(4, 10), frankfurt, country="Germany")]
+    points += [p("i1", t(4, 10, hour=18), istanbul, country="Turkey", state="Istanbul")]
+    points += [
+        p(f"s{n}", t(5 + n, 10), samsun, country="Turkey", state="Samsun") for n in range(18)
+    ]
+    trip = find_trips(points, HOME, 50, DETAIL, {})[0]
+    assert trip_base_name(trip, {}, "netherlands", 0.1) == "samsun_2025"
+    assert trip_base_name(trip, {}, "netherlands") == "almanya_turkiye_2025"
