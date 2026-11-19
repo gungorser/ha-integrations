@@ -454,6 +454,8 @@ def test_trips_days_apart_merge_with_every_city_and_the_start_year() -> None:
     trips = find_trips(points, HOME, 50, DETAIL, {})
     assert len(trips) == 1
     assert trip_base_name(trips[0]) == "ankara_samsun_2024"
+    # A single-photo city stays in the name; only stopover countries go.
+    assert trip_base_name(trips[0], {}, "netherlands", 0.1, 2) == "ankara_samsun_2024"
 
 
 def test_coming_home_ends_the_trip_of_that_user() -> None:

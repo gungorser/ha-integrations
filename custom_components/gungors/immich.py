@@ -37,7 +37,7 @@ A run every `scan_interval` (10 min) and on `gungors.immich_run`:
   or city) for the countries listed there, else the country's Turkish name; a trip
   in more than one country (`home_country` not counted) is named by its countries.
   A place or country with less than `name_min_share` (10 %) of the photos or
-  fewer than `name_min_photos` (2) photos (a stopover) is left out of the name.
+  a country with fewer than `name_min_photos` (2) photos (a stopover) is left out of the name.
   An open trip's album is renamed once it closes if the
   name changed and nobody renamed it meanwhile.
 - Faceless: images uploaded after the first run (never the existing library),
@@ -347,17 +347,18 @@ def trip_base_name(
     A trip in more than one country (the home country not counted) is named by
     its countries instead (`ispanya_fransa_almanya_2023`); `gezi` when no place
     is known. A place or country with less than `min_share` of the trip's photos
-    or fewer than `min_photos` photos (a stopover) is left out of the name.
+    (a stopover) is left out of the name, and so is a country with fewer than
+    `min_photos` photos; every city of the trip's one country stays.
     """
     names = names or {}
 
-    def kept(keys: list[str]) -> list[str]:
+    def kept(keys: list[str], least: int = 1) -> list[str]:
         counts = Counter(keys)
         order = list(dict.fromkeys(keys))
-        big = [k for k in order if counts[k] >= max(min_photos, min_share * len(keys))]
+        big = [k for k in order if counts[k] >= max(least, min_share * len(keys))]
         return big or [counts.most_common(1)[0][0]] if order else []
 
-    countries = kept([c for _, _, c in trip.stops if c and c != home_country])
+    countries = kept([c for _, _, c in trip.stops if c and c != home_country], min_photos)
     if len(countries) > 1:
         parts = [slug(names.get(c) or COUNTRY_NAMES.get(c) or c) for c in countries]
     else:
