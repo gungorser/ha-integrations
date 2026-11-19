@@ -259,7 +259,7 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   `names:` over it): `ankara_samsun_2024`, `ispanya_2025`. A trip in more than one country
   (`home_country`, default `netherlands`, not counted) is named by its countries
   (`ispanya_fransa_almanya_2023`); a place or country with less than `name_min_share` (0.1) of
-  the photos (a stopover) is left out of the name; `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly
+  the photos or fewer than `name_min_photos` (2) photos (a stopover) is left out of the name; `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly
   in that country that spans fewer calendar days is not a trip. A trip's album opens with its
   first photo and is renamed once at its end if the name changed and nobody renamed it.
 - Faceless: images uploaded after the first run, `wait_hours` after upload, with Immich's face

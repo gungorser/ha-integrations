@@ -285,7 +285,7 @@ async def test_trip_album_renamed_when_closed(setup) -> None:
     server.asset("h", "sercan", t(7), HOME)
     await manager.async_run()
     assert album_named(server, "antalya_2025") is None
-    assert album_named(server, "turkiye_ispanya_2025")["_assets"] == {"a1", "v2", "v3", "v4", "v5"}
+    assert album_named(server, "ispanya_2025")["_assets"] == {"a1", "v2", "v3", "v4", "v5"}
 
 
 async def test_faceless_new_uploads(setup) -> None:
@@ -509,3 +509,18 @@ def test_stopovers_are_left_out_of_the_name() -> None:
     trip = find_trips(points, HOME, 50, DETAIL, {})[0]
     assert trip_base_name(trip, {}, "netherlands", 0.1) == "samsun_2025"
     assert trip_base_name(trip, {}, "netherlands") == "almanya_turkiye_2025"
+
+
+def test_single_photo_places_are_left_out_of_the_name() -> None:
+    frankfurt, ankara = (50.11, 8.68), (39.93, 32.85)
+    points = [
+        p("f1", t(30, 10), frankfurt, country="Germany"),
+        p("a1", t(31, 10), ankara, country="Turkey", state="Ankara"),
+        p("a2", t(1, 11), ankara, country="Turkey", state="Ankara"),
+    ]
+    trip = find_trips(points, HOME, 50, DETAIL, {})[0]
+    assert trip_base_name(trip, {}, "netherlands", 0.1) == "almanya_turkiye_2025"
+    assert trip_base_name(trip, {}, "netherlands", 0.1, 2) == "ankara_2025"
+    # Only single-photo places: the first most common one still names it.
+    lone = find_trips(points[:1], HOME, 50, DETAIL, {})[0]
+    assert trip_base_name(lone, {}, "netherlands", 0.1, 2) == "almanya_2025"
