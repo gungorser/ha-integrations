@@ -14,71 +14,75 @@
     "step": {
       "init": {
         "title": "Gungor Customizations",
-        "description": "Bir bölümün başlığına bas: açılır, tekrar bas: kapanır. Boş bırakılan preset alanı uygulanmaz. Anahtar ve şifre alanları boş görünür: boş bırakırsan kayıtlı değer kalır. Immich adresi boş: Immich kapalı.{error}",
+        "menu_options": {
+          "presets": "Presets",
+          "services": "Services"
+        }
+      },
+      "presets": {
+        "title": "Presets",
+        "description": "Bir bölümün başlığına bas: açılır, tekrar bas: kapanır. Boş bırakılan alan uygulanmaz.{error}",
         "sections": {
-          "light_default": {
-            "name": "Işık · default (tek basış, program sonu)",
+          "light": {
+            "name": "Light",
             "data": {
-              "state": "Durum",
-              "brightness_pct": "Parlaklık",
-              "rgb_color": "Renk",
-              "color_temp_kelvin": "Renk sıcaklığı",
-              "templates": "Şablonlar (özellik: şablon)"
+              "default_state": "Default · Durum",
+              "default_brightness_pct": "Default · Parlaklık",
+              "default_rgb_color": "Default · Renk",
+              "default_color_temp_kelvin": "Default · Renk sıcaklığı",
+              "default_templates": "Default · Şablonlar (özellik: şablon)",
+              "dim_state": "Dim · Durum",
+              "dim_brightness_pct": "Dim · Parlaklık",
+              "dim_rgb_color": "Dim · Renk",
+              "dim_color_temp_kelvin": "Dim · Renk sıcaklığı",
+              "dim_templates": "Dim · Şablonlar (özellik: şablon)",
+              "night_state": "Night · Durum",
+              "night_brightness_pct": "Night · Parlaklık",
+              "night_rgb_color": "Night · Renk",
+              "night_color_temp_kelvin": "Night · Renk sıcaklığı",
+              "night_templates": "Night · Şablonlar (özellik: şablon)"
             },
             "data_description": {
-              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+              "default_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
+              "dim_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
+              "night_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
             },
-            "description": "Tek basış bunu yakar; program bitince buna dönülür."
+            "description": "- default (tek basış, program sonu): Tek basış bunu yakar; program bitince buna dönülür.\n- dim (çift basış): Çift basış: sadece parlaklığı taşır.\n- night (basılı tutma): Basılı tutma: sadece rengi taşır."
           },
-          "light_dim": {
-            "name": "Işık · dim (çift basış)",
+          "climate": {
+            "name": "Climate",
             "data": {
-              "state": "Durum",
-              "brightness_pct": "Parlaklık",
-              "rgb_color": "Renk",
-              "color_temp_kelvin": "Renk sıcaklığı",
-              "templates": "Şablonlar (özellik: şablon)"
+              "default_state": "Default · Durum",
+              "default_temperature": "Default · Sıcaklık",
+              "default_templates": "Default · Şablonlar (özellik: şablon)"
             },
             "data_description": {
-              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+              "default_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
             },
-            "description": "Çift basış: sadece parlaklığı taşır."
+            "description": "- default (program sonu): Program bitince buna dönülür."
           },
-          "light_night": {
-            "name": "Işık · night (basılı tutma)",
+          "cover": {
+            "name": "Cover",
             "data": {
-              "state": "Durum",
-              "brightness_pct": "Parlaklık",
-              "rgb_color": "Renk",
-              "color_temp_kelvin": "Renk sıcaklığı",
-              "templates": "Şablonlar (özellik: şablon)"
+              "default_current_position": "Default · Pozisyon (sayı veya şablon)"
             },
-            "data_description": {
-              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "Basılı tutma: sadece rengi taşır."
-          },
-          "climate_default": {
-            "name": "Klima · default (program sonu)",
-            "data": {
-              "state": "Durum",
-              "temperature": "Sıcaklık",
-              "templates": "Şablonlar (özellik: şablon)"
-            },
-            "data_description": {
-              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "Program bitince buna dönülür."
-          },
-          "cover_default": {
-            "name": "Perde · default (gün doğumu, batımı, program sonu)",
-            "data": {
-              "current_position": "Pozisyon (sayı veya şablon)"
-            },
-            "description": "Gün doğumu, batımı ve program bitince uygulanır."
-          },
-          "immich_general": {
-            "name": "Immich · Genel",
+            "description": "- default (gün doğumu, batımı, program sonu): Gün doğumu, batımı ve program bitince uygulanır."
+          }
+        }
+      },
+      "services": {
+        "title": "Services",
+        "menu_options": {
+          "immich": "Immich",
+          "budget_thuis": "Budget Thuis"
+        }
+      },
+      "immich": {
+        "title": "Immich",
+        "description": "Bir bölümün başlığına bas: açılır, tekrar bas: kapanır. Anahtar ve şifre alanları boş görünür: boş bırakırsan kayıtlı değer kalır. Adres boş: Immich kapalı.{error}",
+        "sections": {
+          "general": {
+            "name": "Genel",
             "data": {
               "url": "Adres",
               "scan_interval": "Tarama aralığı (0 = sadece senkron butonu)",
@@ -86,8 +90,8 @@
               "share_albums": "Albümleri herkesle paylaş"
             }
           },
-          "immich_users": {
-            "name": "Immich · Kullanıcılar ve API anahtarları",
+          "users": {
+            "name": "Kullanıcılar ve API anahtarları",
             "data": {
               "users": "Kullanıcılar"
             },
@@ -95,21 +99,21 @@
               "users": "Ekle / sil: her Immich kullanıcısı için ad ve API anahtarı (Hesap ayarları > API anahtarları). Kayıtlı anahtar boş görünür; boş bırakırsan kalır."
             }
           },
-          "immich_people": {
-            "name": "Immich · Kişiler → albüm",
+          "people": {
+            "name": "Kişiler → albüm",
             "data": {
               "people": "Immich'teki kişi: albüm"
             }
           },
-          "immich_trips": {
-            "name": "Immich · Seyahat",
+          "trips": {
+            "name": "Seyahat",
             "data": {
               "distance_km": "Evden uzaklık",
               "advanced": "Diğer (detail, names, min_days, ...)"
             }
           },
-          "immich_faceless": {
-            "name": "Immich · Yüzsüz fotoğraflar",
+          "faceless": {
+            "name": "Yüzsüz fotoğraflar",
             "data": {
               "album": "Albüm adı",
               "wait_hours": "Bekleme",
@@ -121,23 +125,23 @@
               "trip": "Yüz bulunmayan yeni fotoğraf, bir gezide çekildiyse"
             }
           },
-          "immich_partou": {
-            "name": "Immich · Partou",
+          "partou": {
+            "name": "Partou",
             "data": {
               "username": "E-posta (boş: Partou kapalı)",
               "password": "Şifre",
               "after": "Günlük saat"
             }
-          },
-          "budget_thuis": {
-            "name": "Budget Thuis",
-            "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak. Durum: {budget_thuis}. Şifre yok: yeni girişte e-postana link gönderilir, sonraki sayfada yapıştırırsın. E-posta boş: kapalı.",
-            "data": {
-              "username": "E-posta",
-              "new_login": "Yeniden giriş yap (yeni link iste)",
-              "scan_interval": "Tarama aralığı"
-            }
           }
+        }
+      },
+      "budget_thuis": {
+        "title": "Budget Thuis",
+        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak. Durum: {budget_thuis}. Şifre yok: yeni girişte e-postana link gönderilir, sonraki sayfada yapıştırırsın. E-posta boş: kapalı.{error}",
+        "data": {
+          "username": "E-posta",
+          "new_login": "Yeniden giriş yap (yeni link iste)",
+          "scan_interval": "Tarama aralığı"
         }
       },
       "budget_thuis_link": {

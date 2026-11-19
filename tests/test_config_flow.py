@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import pytest
+import voluptuous_serialize
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import config_validation as cv, issue_registry as ir
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -94,32 +95,68 @@ async def test_user_step_single_instance(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.ABORT
 
 
-def _builtin_input() -> dict:
-    """The presets form as shown (the built-in presets), section by section."""
+GROUPS = {"light": ("default", "dim", "night"), "climate": ("default",), "cover": ("default",)}
+
+
+def _form(parts: dict) -> dict:
+    """{"light_dim": {...}} -> the presets form (a section per domain, prefixed fields)."""
     return {
+        group: {
+            f"{name}_{k}": v for name in names for k, v in parts.get(f"{group}_{name}", {}).items()
+        }
+        for group, names in GROUPS.items()
+    }
+
+
+def _builtin_input() -> dict:
+    """The presets form as shown (the built-in presets)."""
+    return _form({
         "light_default": {"state": "off", "rgb_color": [255, 255, 255], "brightness_pct": 100},
         "light_dim": {"brightness_pct": 10},
         "light_night": {"rgb_color": [255, 0, 0]},
         "climate_default": {"state": "off"},
         "cover_default": {"current_position": SUN},
-        **{f"immich_{k}": {} for k in ("general", "users", "people", "trips", "faceless", "partou")},
-        "budget_thuis": {},
-    }
+    })
 
 
-async def _open(hass: HomeAssistant, entry: MockConfigEntry) -> dict:
-    """Configure is one form (closed sections), no menus."""
+def _with(**parts) -> dict:
+    """The built-in presets form with some presets changed."""
+    form = _builtin_input()
+    for key, values in parts.items():
+        domain, name = key.split("_", 1)
+        form[domain] = {
+            **{k: v for k, v in form[domain].items() if not k.startswith(f"{name}_")},
+            **{f"{name}_{k}": v for k, v in values.items()},
+        }
+    return form
+
+
+async def _open(hass: HomeAssistant, entry: MockConfigEntry, *path: str) -> dict:
+    """Configure: menu Presets / Services, Services: menu Immich / Budget Thuis."""
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] is FlowResultType.FORM and result["step_id"] == "init"
+    assert result["type"] is FlowResultType.MENU
+    assert result["menu_options"] == ["presets", "services"]
+    for step in path:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": step}
+        )
+    assert result["type"] is FlowResultType.FORM and result["step_id"] == path[-1]
+    if path[-1] == "presets":
+        assert list(result["data_schema"].schema) == list(GROUPS)
+        shown = voluptuous_serialize.convert(
+            result["data_schema"], custom_serializer=cv.custom_serializer
+        )
+        assert [(f["name"], f["type"], f["expanded"]) for f in shown] == [
+            (g, "expandable", False) for g in GROUPS
+        ]
     return result
 
 
 async def test_light_preset_form_applies_without_restart(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}})
-    result = await _open(hass, entry)
-    assert result["type"] is FlowResultType.FORM
+    result = await _open(hass, entry, "presets")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**_builtin_input(), "light_night": {"rgb_color": [255, 120, 0]}}
+        result["flow_id"], _with(light_night={"rgb_color": [255, 120, 0]})
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
@@ -129,17 +166,16 @@ async def test_light_preset_form_applies_without_restart(hass: HomeAssistant) ->
 
 async def test_light_preset_template_and_bad_template(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}})
-    result = await _open(hass, entry)
+    result = await _open(hass, entry, "presets")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {**_builtin_input(), "light_dim": {"templates": {"brightness_pct": "{{ 5 + "}}},
+        _with(light_dim={"templates": {"brightness_pct": "{{ 5 + "}}),
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid"}
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {**_builtin_input(),
-         "light_dim": {"brightness_pct": 50, "templates": {"brightness_pct": "{{ 5 + 5 }}"}}},
+        _with(light_dim={"brightness_pct": 50, "templates": {"brightness_pct": "{{ 5 + 5 }}"}}),
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["presets"]["light"]["dim"] == {"brightness_pct": "{{ 5 + 5 }}"}
@@ -147,9 +183,9 @@ async def test_light_preset_template_and_bad_template(hass: HomeAssistant) -> No
 
 async def test_cover_preset_number_or_template(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {"cover": {"default": {"current_position": SUN}}}})
-    result = await _open(hass, entry)
+    result = await _open(hass, entry, "presets")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {**_builtin_input(), "cover_default": {"current_position": "40"}}
+        result["flow_id"], _with(cover_default={"current_position": "40"})
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["presets"]["cover"]["default"] == {"current_position": 40}
@@ -170,12 +206,12 @@ def _immich_input(**changes) -> dict:
     }
     for key, value in changes.items():
         data[key] = {**data[key], **value}
-    return {**_builtin_input(), **{f"immich_{k}": v for k, v in data.items()}}
+    return data
 
 
 async def test_immich_form_keeps_secrets_and_adds_a_user(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry)
+    result = await _open(hass, entry, "services", "immich")
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -195,14 +231,14 @@ async def test_immich_form_keeps_secrets_and_adds_a_user(hass: HomeAssistant) ->
 
 async def test_immich_form_removes_a_user_and_turns_off(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry)
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(users={"users": [{"name": "sercan"}]})
     )
     assert entry.options["immich"]["users"] == {"sercan": "k1"}
     await hass.async_block_till_done()
 
-    result = await _open(hass, entry)
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(general={"url": ""})
     )
@@ -212,7 +248,7 @@ async def test_immich_form_removes_a_user_and_turns_off(hass: HomeAssistant) -> 
 
 async def test_immich_form_bad_advanced(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry)
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(trips={"advanced": {"detail": {"turkey": "street"}}})
     )
@@ -222,7 +258,7 @@ async def test_immich_form_bad_advanced(hass: HomeAssistant) -> None:
 
 async def test_immich_form_new_user_needs_a_key(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry)
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(users={"users": [{"name": "kaan", "key": ""}]})
     )

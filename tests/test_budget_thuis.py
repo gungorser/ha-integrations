@@ -249,20 +249,19 @@ async def test_refused_token_refreshes_then_asks_for_login(
 
 
 async def _bt_form(hass: HomeAssistant, entry: MockConfigEntry) -> dict:
-    return await hass.config_entries.options.async_init(entry.entry_id)
+    """Configure > Services > Budget Thuis."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    for step in ("services", "budget_thuis"):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": step}
+        )
+    assert result["step_id"] == "budget_thuis"
+    return result
 
 
 def _bt(**values) -> dict:
-    """The whole Configure form: presets left as shown, Budget Thuis as given."""
-    return {
-        "light_default": {"state": "off", "rgb_color": [255, 255, 255], "brightness_pct": 100},
-        "light_dim": {"brightness_pct": 10},
-        "light_night": {"rgb_color": [255, 0, 0]},
-        "climate_default": {"state": "off"},
-        "cover_default": {"current_position": "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"},
-        **{f"immich_{k}": {} for k in ("general", "users", "people", "trips", "faceless", "partou")},
-        "budget_thuis": values,
-    }
+    """The Budget Thuis form."""
+    return values
 
 
 async def test_login_by_link_in_configure(hass: HomeAssistant, fake_api: FakeApi) -> None:

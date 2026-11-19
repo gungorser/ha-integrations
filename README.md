@@ -72,17 +72,20 @@ still need a restart).
 ## Configure (UI)
 
 Since 1.20.0 gungors has one config entry (Settings > Devices & services > Gungor
-Customizations, `config_flow.py`, logo in `brand/`). Configure is one form (1.23.0) of closed
-sections that their header opens and closes:
+Customizations, `config_flow.py`, logo in `brand/`). Configure (1.24.0) opens a menu Presets /
+Services; Services is a menu Immich / Budget Thuis. Forms use closed sections that their header
+opens and closes (Home Assistant does not nest sections, so the menus give the upper level).
+Each form saves on submit:
 
-- the five presets (light default/dim/night, climate default, cover default); an empty field
+- Presets: sections Light, Climate, Cover holding the five presets (light default/dim/night,
+  climate default, cover default) as prefixed fields (`dim_brightness_pct`); an empty field
   is not applied. Light and climate take an optional `templates` mapping (attribute: template)
   over the typed fields; the cover position is a template field (a number works too).
-- Immich: general, users, people, trips, faceless photos, Partou. Users are a list (add /
+- Services > Immich: sections general, users, people, trips, faceless photos, Partou. Users are a list (add /
   remove, name + API key; HA's list editor also edits it as YAML); a stored key shows empty and
   stays when left empty. People and the trip details are YAML fields. An empty address turns
   Immich off.
-- Budget Thuis: e-mail and scan interval (default 3600 s); Budget Thuis has no password, so a
+- Services > Budget Thuis: e-mail and scan interval (default 3600 s); Budget Thuis has no password, so a
   new login mails a link: copy it (do not click) into the page that follows. Empty e-mail: off.
 
 Saving applies at once (no restart, no `gungors.reload`). The entry options keep the YAML

@@ -14,71 +14,75 @@
     "step": {
       "init": {
         "title": "Gungor Customizations",
-        "description": "Press a section's header to open it, again to close it. An empty preset field is not applied. Key and password fields show empty: leave them empty to keep the stored value. Empty Immich address: Immich off.{error}",
+        "menu_options": {
+          "presets": "Presets",
+          "services": "Services"
+        }
+      },
+      "presets": {
+        "title": "Presets",
+        "description": "Press a section title to open it, again to close it. An empty field is not applied.{error}",
         "sections": {
-          "light_default": {
-            "name": "Light · default (single press, program end)",
+          "light": {
+            "name": "Light",
             "data": {
-              "state": "State",
-              "brightness_pct": "Brightness",
-              "rgb_color": "Colour",
-              "color_temp_kelvin": "Colour temperature",
-              "templates": "Templates (attribute: template)"
+              "default_state": "Default · State",
+              "default_brightness_pct": "Default · Brightness",
+              "default_rgb_color": "Default · Colour",
+              "default_color_temp_kelvin": "Default · Colour temperature",
+              "default_templates": "Default · Templates (attribute: template)",
+              "dim_state": "Dim · State",
+              "dim_brightness_pct": "Dim · Brightness",
+              "dim_rgb_color": "Dim · Colour",
+              "dim_color_temp_kelvin": "Dim · Colour temperature",
+              "dim_templates": "Dim · Templates (attribute: template)",
+              "night_state": "Night · State",
+              "night_brightness_pct": "Night · Brightness",
+              "night_rgb_color": "Night · Colour",
+              "night_color_temp_kelvin": "Night · Colour temperature",
+              "night_templates": "Night · Templates (attribute: template)"
             },
             "data_description": {
-              "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+              "default_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
+              "dim_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
+              "night_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
             },
-            "description": "A single press turns this on; a program's set rule returns to it."
+            "description": "- default (single press, program end): A single press turns this on; a program's set rule returns to it.\n- dim (double press): Double press: carries only the brightness.\n- night (hold): Hold: carries only the colour."
           },
-          "light_dim": {
-            "name": "Light · dim (double press)",
+          "climate": {
+            "name": "Climate",
             "data": {
-              "state": "State",
-              "brightness_pct": "Brightness",
-              "rgb_color": "Colour",
-              "color_temp_kelvin": "Colour temperature",
-              "templates": "Templates (attribute: template)"
+              "default_state": "Default · State",
+              "default_temperature": "Default · Temperature",
+              "default_templates": "Default · Templates (attribute: template)"
             },
             "data_description": {
-              "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+              "default_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
             },
-            "description": "Double press: carries only the brightness."
+            "description": "- default (program end): A program's set rule returns to this."
           },
-          "light_night": {
-            "name": "Light · night (hold)",
+          "cover": {
+            "name": "Cover",
             "data": {
-              "state": "State",
-              "brightness_pct": "Brightness",
-              "rgb_color": "Colour",
-              "color_temp_kelvin": "Colour temperature",
-              "templates": "Templates (attribute: template)"
+              "default_current_position": "Default · Position (number or template)"
             },
-            "data_description": {
-              "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "Hold: carries only the colour."
-          },
-          "climate_default": {
-            "name": "Climate · default (program end)",
-            "data": {
-              "state": "State",
-              "temperature": "Temperature",
-              "templates": "Templates (attribute: template)"
-            },
-            "data_description": {
-              "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "A program's set rule returns to this."
-          },
-          "cover_default": {
-            "name": "Cover · default (sunrise, sunset, program end)",
-            "data": {
-              "current_position": "Position (number or template)"
-            },
-            "description": "Applied at sunrise, sunset and when a program ends."
-          },
-          "immich_general": {
-            "name": "Immich · General",
+            "description": "- default (sunrise, sunset, program end): Applied at sunrise, sunset and when a program ends."
+          }
+        }
+      },
+      "services": {
+        "title": "Services",
+        "menu_options": {
+          "immich": "Immich",
+          "budget_thuis": "Budget Thuis"
+        }
+      },
+      "immich": {
+        "title": "Immich",
+        "description": "Press a section title to open it, again to close it. Key and password fields show empty: leaving them empty keeps the stored value. Empty address: Immich off.{error}",
+        "sections": {
+          "general": {
+            "name": "General",
             "data": {
               "url": "Address",
               "scan_interval": "Scan interval (0 = only the sync button)",
@@ -86,8 +90,8 @@
               "share_albums": "Share every album with the others"
             }
           },
-          "immich_users": {
-            "name": "Immich · Users and API keys",
+          "users": {
+            "name": "Users and API keys",
             "data": {
               "users": "Users"
             },
@@ -95,21 +99,21 @@
               "users": "Add / remove: name and API key per Immich user (Account settings > API keys). A stored key shows empty; leave it empty to keep it."
             }
           },
-          "immich_people": {
-            "name": "Immich · People → album",
+          "people": {
+            "name": "People → album",
             "data": {
               "people": "Person in Immich: album"
             }
           },
-          "immich_trips": {
-            "name": "Immich · Trips",
+          "trips": {
+            "name": "Trips",
             "data": {
               "distance_km": "Distance from home",
               "advanced": "More (detail, names, min_days, ...)"
             }
           },
-          "immich_faceless": {
-            "name": "Immich · Photos without faces",
+          "faceless": {
+            "name": "Photos without faces",
             "data": {
               "album": "Album name",
               "wait_hours": "Wait",
@@ -121,23 +125,23 @@
               "trip": "A new photo without faces, taken on a trip"
             }
           },
-          "immich_partou": {
-            "name": "Immich · Partou",
+          "partou": {
+            "name": "Partou",
             "data": {
               "username": "E-mail (empty: Partou off)",
               "password": "Password",
               "after": "Daily from"
             }
-          },
-          "budget_thuis": {
-            "name": "Budget Thuis",
-            "description": "Electricity, gas and return delivery: the month so far as sensors. Status: {budget_thuis}. No password: a new login mails you a link to paste on the next page. Empty e-mail: off.",
-            "data": {
-              "username": "E-mail",
-              "new_login": "Log in again (mail a new link)",
-              "scan_interval": "Scan interval"
-            }
           }
+        }
+      },
+      "budget_thuis": {
+        "title": "Budget Thuis",
+        "description": "Electricity, gas and return delivery: the month so far as sensors. Status: {budget_thuis}. No password: a new login mails you a link to paste on the next page. Empty e-mail: off.{error}",
+        "data": {
+          "username": "E-mail",
+          "new_login": "Log in again (mail a new link)",
+          "scan_interval": "Scan interval"
         }
       },
       "budget_thuis_link": {
