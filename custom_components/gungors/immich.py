@@ -28,7 +28,8 @@ A run every `scan_interval` (10 min) and on `gungors.immich_run`:
   the person's album.
 - Trips: per user, a trip starts at the first photo farther than `distance_km`
   from home and ends at the next photo taken at home; days without photos in
-  between do not matter. Photos without GPS between its first and last away photo
+  between do not matter, up to `max_gap_days` (10) without photos, or 2 days when
+  the next photo is in another country. Photos without GPS between its first and last away photo
   (with a camera make: no screenshots) belong to it too. Overlapping trips of
   different users (one started before the other was home again) are one trip. Album name: the most frequent place + start year,
   ascii lowercase (`antalya_2025`, `ispanya_2025`; `_2` on a clash). The place is
@@ -91,22 +92,19 @@ INCREMENTAL_MARGIN = datetime.timedelta(hours=1)
 COUNTRY_NAMES = {
     "albania": "arnavutluk", "austria": "avusturya", "belgium": "belcika",
     "bosnia_and_herzegovina": "bosna_hersek", "bulgaria": "bulgaristan",
-    "croatia": "hirvatistan", "cyprus": "kibris", "czechia": "cekya",
-    "czech_republic": "cekya", "denmark": "danimarka", "egypt": "misir",
+    "croatia": "hirvatistan", "cyprus": "kibris", "czechia": "cekya", "denmark": "danimarka", "egypt": "misir",
     "finland": "finlandiya", "france": "fransa", "georgia": "gurcistan",
     "germany": "almanya", "greece": "yunanistan", "hungary": "macaristan",
     "iceland": "izlanda", "ireland": "irlanda", "italy": "italya", "japan": "japonya",
     "luxembourg": "luksemburg", "malta": "malta", "montenegro": "karadag",
-    "morocco": "fas", "netherlands": "hollanda", "the_netherlands": "hollanda",
+    "morocco": "fas", "netherlands": "hollanda",
     "norway": "norvec", "poland": "polonya", "portugal": "portekiz",
     "romania": "romanya", "serbia": "sirbistan", "slovenia": "slovenya",
     "slovakia": "slovakya", "spain": "ispanya", "sweden": "isvec",
-    "switzerland": "isvicre", "thailand": "tayland", "turkey": "turkiye",
-    "turkiye": "turkiye", "united_arab_emirates": "bae", "united_kingdom": "ingiltere",
-    "united_states": "abd", "united_states_of_america": "abd",
+    "switzerland": "isvicre", "thailand": "tayland", "turkey": "turkiye", "united_arab_emirates": "bae", "united_kingdom": "ingiltere",
+    "united_states": "abd",
 }
-DEFAULT_DETAIL = {"turkey": "state", "turkiye": "state", "netherlands": "city",
-                  "the_netherlands": "city"}
+DEFAULT_DETAIL = {"turkey": "state", "netherlands": "city"}
 
 TURKISH = str.maketrans({"ı": "i", "İ": "i", "ş": "s", "Ş": "s", "ğ": "g", "Ğ": "g",
                          "ç": "c", "Ç": "c", "ö": "o", "Ö": "o", "ü": "u", "Ü": "u"})
@@ -119,8 +117,18 @@ def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
 
 
+COUNTRY_ALIASES = {"turkiye": "turkey", "republic_of_turkiye": "turkey",
+                   "czech_republic": "czechia", "united_states_of_america": "united_states"}
+
+
+def country_key(name: str) -> str:
+    """One key per country: `The Netherlands` -> `netherlands`, `Türkiye` -> `turkey`."""
+    key = slug(name).removeprefix("the_")
+    return COUNTRY_ALIASES.get(key, key)
+
+
 def _slug_keys(value: Any) -> dict[str, str]:
-    return {slug(str(k)): str(v) for k, v in (value or {}).items()}
+    return {country_key(str(k)): str(v) for k, v in (value or {}).items()}
 
 
 IMMICH_SCHEMA = vol.Schema(
@@ -134,13 +142,14 @@ IMMICH_SCHEMA = vol.Schema(
         vol.Optional("trips", default={}): vol.Schema(
             {
                 vol.Optional("distance_km", default=50): vol.Coerce(float),
+                vol.Optional("max_gap_days", default=10): vol.Coerce(float),
                 vol.Optional("detail", default={}): vol.All(
                     {cv.string: vol.In(["city", "state"])}, _slug_keys
                 ),
                 vol.Optional("names", default={}): vol.All({cv.string: cv.string}, _slug_keys),
                 vol.Optional("min_days", default={}): vol.All(
                     {cv.string: vol.All(vol.Coerce(int), vol.Range(min=1))},
-                    lambda v: {slug(str(k)): n for k, n in v.items()},
+                    lambda v: {country_key(str(k)): n for k, n in v.items()},
                 ),
             }
         ),
@@ -189,10 +198,10 @@ class Trip:
     end: datetime.datetime  # last away photo
     closed: bool
     year: int
-    until: datetime.datetime | None = None  # first photo at home again (None: still away)
     assets: dict[str, set[str]] = field(default_factory=dict)  # user -> asset ids
     places: Counter = field(default_factory=Counter)
     countries: Counter = field(default_factory=Counter)
+    last_country: str | None = None
 
     @property
     def days(self) -> int:
@@ -207,7 +216,7 @@ def place_of(point: Point, detail: dict[str, str], names: dict[str, str]) -> str
     """`state`/`city` for the countries in `detail`, else the country's (Turkish) name."""
     if not point.country:
         return None
-    country = slug(point.country)
+    country = country_key(point.country)
     field_name = detail.get(country)
     if field_name:
         value = getattr(point, field_name) or point.city or point.state
@@ -223,8 +232,13 @@ def find_trips(
     detail: dict[str, str],
     names: dict[str, str],
     min_days: dict[str, int] | None = None,
+    max_gap_days: float = 10,
 ) -> list[Trip]:
     """Trips per user, then overlapping trips of different users merged.
+
+    A user's trip also ends (before a photo at home) when the next away photo comes
+    more than `max_gap_days` later, or more than 2 days later in another country:
+    few photos at home carry GPS, so two trips months apart would join otherwise.
 
     `min_days` {country slug: days}: a trip mostly in that country that is shorter
     is not a trip (day trips inside the home country).
@@ -242,6 +256,17 @@ def find_trips(
             if point.lat is None or point.lon is None:
                 continue
             away = distance_km(home[0], home[1], point.lat, point.lon) > away_km
+            if away and current is not None:
+                gap = point.time - current.end
+                country = country_key(point.country) if point.country else None
+                if gap > datetime.timedelta(days=max_gap_days) or (
+                    gap > datetime.timedelta(days=2)
+                    and country
+                    and current.last_country
+                    and country != current.last_country
+                ):
+                    current.closed = True
+                    current = None
             if away:
                 if current is None:
                     current = Trip(point.time, point.time, False, point.year)
@@ -252,10 +277,10 @@ def find_trips(
                 if place:
                     current.places[place] += 1
                 if point.country:
-                    current.countries[slug(point.country)] += 1
+                    current.countries[country_key(point.country)] += 1
+                    current.last_country = country_key(point.country)
             elif current is not None:
                 current.closed = True
-                current.until = point.time
                 current = None
         # Photos without GPS taken during a trip (camera photos only).
         for point in user_points:
@@ -271,13 +296,10 @@ def find_trips(
     merged: list[Trip] = []
     for trip in trips:
         last = merged[-1] if merged else None
-        # Overlap until the user was home again: one of them may take no photos for days.
-        if last is not None and (last.until is None or trip.start <= last.until):
+        # Away at the same time (a day apart at most): the same trip.
+        if last is not None and trip.start <= last.end + datetime.timedelta(days=1):
             last.end = max(last.end, trip.end)
             last.closed = last.closed and trip.closed
-            last.until = (
-                None if last.until is None or trip.until is None else max(last.until, trip.until)
-            )
             for user, ids in trip.assets.items():
                 last.assets.setdefault(user, set()).update(ids)
             last.places.update(trip.places)
@@ -677,6 +699,7 @@ class ImmichManager:
             detail,
             conf["names"],
             conf["min_days"],
+            conf["max_gap_days"],
         )
         stored: list[dict[str, Any]] = self._state["trips"]
         taken = {t["name"] for t in stored}

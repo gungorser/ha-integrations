@@ -410,3 +410,34 @@ def test_min_days_drops_day_trips_in_the_home_country() -> None:
     ]
     trips = find_trips(points, HOME, 50, DETAIL, {}, {"netherlands": 2})
     assert [trip_base_name(x) for x in trips] == ["rotterdam_2025", "belcika_2025"]
+
+
+def test_country_key() -> None:
+    from custom_components.gungors.immich import country_key  # noqa: PLC0415
+
+    assert country_key("The Netherlands") == "netherlands"
+    assert country_key("Türkiye") == "turkey"
+    assert place_of(p("a", t(1), ANTALYA, country="Türkiye", state="Antalya"), DETAIL, {}) == "antalya"
+
+
+def test_min_days_with_the_netherlands_name() -> None:
+    points = [
+        p("r1", t(5), (51.92, 4.48), country="The Netherlands", city="Rotterdam"),
+        p("h", t(5, hour=20), HOME),
+    ]
+    assert find_trips(points, HOME, 50, DETAIL, {}, {"netherlands": 2}) == []
+
+
+def test_long_gap_or_new_country_starts_a_new_trip() -> None:
+    croatia, belgium = (45.81, 15.98), (50.85, 4.35)
+    points = [
+        p("c1", t(22, 6), croatia, country="Croatia"),
+        p("c2", t(1, 7), croatia, country="Croatia"),  # 9 days later: same trip
+        p("b1", t(13, 7), belgium, country="Belgium"),  # 12 days later: new trip
+        p("b2", t(14, 7), belgium, country="Belgium"),
+        p("c3", t(20, 7), croatia, country="Croatia"),  # other country, 6 days: new trip
+        p("c4", t(21, 7), croatia, country="Croatia"),
+    ]
+    trips = find_trips(points, HOME, 50, DETAIL, {})
+    assert [sorted(x.all_assets()) for x in trips] == [["c1", "c2"], ["b1", "b2"], ["c3", "c4"]]
+    assert [x.closed for x in trips] == [True, True, False]
