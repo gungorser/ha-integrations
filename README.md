@@ -275,6 +275,14 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   shared with the other users as editors; the faceless albums stay private.
 - Each asset is added to an album once (`.storage/gungors.immich`): one removed by hand stays out;
   a faceless decision is final.
+- Partou (`partou:` with `username`, `password`, optional `albums: {Kaan: kaan_partou}`, `after:
+  "18:00"`, `partou.py`): once a day after `after` (local) and on `gungors.immich_run` /
+  `button.immich_sync`, the photos and videos of each child's album in the Partou parent portal
+  (full size, 2400 px) are uploaded to the `owner`'s library, each Partou item once
+  (`.storage`), with the EXIF capture time (videos: the portal's day at noon) and into monthly
+  albums `kaan_partou_mart_2026`. This writes in every mode but `Kapalı`, also in `Deneme`.
+  The uploads stay out of the person, trip and faceless rules. `sensor.immich` `partou`: per
+  child `toplam`, `yeni`, `albümler`, or `hata`.
 
 ## Wrappers drive hidden originals
 
