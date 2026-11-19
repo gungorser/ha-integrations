@@ -7,8 +7,9 @@ One config entry ("Gungor Customizations"). Its options hold what used to be
     {"presets": {"light": {"default": {"state": "off", ...}, ...}, ...},
      "immich": {"url": ..., "users": {...}, ...}}          # no "immich": Immich off
 
-Configure opens a menu: Presetler (the five built-in presets, no add or delete)
-and Immich (one form in sections). Wrappers, features and the program calendar
+Configure opens a menu: Presets (one form, a closed section each for Light, Climate
+and Cover: the five built-in presets, no add or delete) and Services (a menu: Immich,
+one form in closed sections; Budget Thuis). Wrappers, features and the program calendar
 stay in YAML. The entry is created from the YAML on the first start (import step),
 so an existing setup keeps working.
 """
@@ -382,8 +383,6 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     return conf
 
 
-IMMICH_SECTIONS = ("general", "users", "people", "trips", "faceless", "partou")
-
 
 def _budget_thuis_section() -> vol.Schema:
     return vol.Schema(
@@ -403,105 +402,166 @@ def _budget_thuis_section() -> vol.Schema:
 
 
 class GungorsOptionsFlow(OptionsFlow):
-    """Configure: one form, a closed section per preset, per Immich part and Budget Thuis.
+    """Configure: a menu Presets / Services; Services is a menu Immich / Budget Thuis.
 
-    A new Budget Thuis login (first time, another e-mail or "Yeniden giriş yap") mails a
-    link and asks for it on a second page.
+    Presets is one form with a closed section per domain (Light, Climate, Cover; Home
+    Assistant does not nest sections, so a section holds its presets as prefixed fields,
+    "dim_brightness_pct"). Immich is one form with a closed section per part. A new
+    Budget Thuis login (first time, another e-mail or "new login") mails a link and asks
+    for it on the next page. Each form saves the whole options on submit.
     """
 
     def _options(self) -> dict[str, Any]:
         return copy.deepcopy(dict(self.config_entry.options))
 
-    def _schema(self, options: dict[str, Any]) -> tuple[vol.Schema, dict[str, Any]]:
-        fields: dict[Any, Any] = {}
-        suggested: dict[str, Any] = {}
-        closed = {"collapsed": True}
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        return self.async_show_menu(step_id="init", menu_options=["presets", "services"])
+
+    async def async_step_services(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self.async_show_menu(step_id="services", menu_options=["immich", "budget_thuis"])
+
+    # --- presets
+
+    def _preset_groups(self, options: dict[str, Any]) -> dict[str, list[tuple[str, vol.Schema, dict]]]:
+        """{"light": [(preset name, schema, stored form values), ...], ...}."""
         builtin = builtin_presets()
         stored_presets = options.get("presets") or {}
+        groups: dict[str, list[tuple[str, vol.Schema, dict]]] = {}
         for domain, name in PRESETS:
-            key = f"{domain}_{name}"
-            fields[vol.Required(key)] = section(_preset_schema(domain), closed)
             stored = (stored_presets.get(domain) or {}).get(name)
             if stored is None:
                 stored = builtin.get(domain, {}).get(name, {})
-            suggested[key] = _preset_form_values(domain, stored)
-        immich = options.get("immich") or {}
-        immich_schema = _immich_schema(immich).schema
-        immich_values = _immich_form_values(immich)
-        for marker, sec in immich_schema.items():
-            fields[vol.Required(f"immich_{marker.schema}")] = sec
-            suggested[f"immich_{marker.schema}"] = immich_values.get(marker.schema, {})
-        fields[vol.Required("budget_thuis")] = section(_budget_thuis_section(), closed)
-        bt = options.get("budget_thuis") or {}
-        suggested["budget_thuis"] = {k: bt[k] for k in ("username", "scan_interval") if k in bt}
+            groups.setdefault(domain, []).append(
+                (name, _preset_schema(domain), _preset_form_values(domain, stored))
+            )
+        return groups
+
+    def _presets_schema(self, options: dict[str, Any]) -> tuple[vol.Schema, dict[str, Any]]:
+        fields: dict[Any, Any] = {}
+        suggested: dict[str, Any] = {}
+        for domain, parts in self._preset_groups(options).items():
+            flat: dict[Any, Any] = {}
+            values: dict[str, Any] = {}
+            for name, schema, stored in parts:
+                for marker, sel in schema.schema.items():
+                    new = type(marker)(f"{name}_{marker.schema}")
+                    new.default = marker.default
+                    flat[new] = sel
+                values.update({f"{name}_{k}": v for k, v in stored.items()})
+            fields[vol.Required(domain)] = section(vol.Schema(flat), {"collapsed": True})
+            suggested[domain] = values
         return vol.Schema(fields), suggested
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        from .budget_thuis import BudgetThuisApi, BudgetThuisError  # noqa: PLC0415
-
+    async def async_step_presets(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         options = self._options()
         errors: dict[str, str] = {}
-        old_bt = options.get("budget_thuis") or {}
-        placeholders = {
-            "error": "",
-            "budget_thuis": "bağlı" if old_bt.get("refresh_token") else "bağlı değil",
-        }
+        placeholders = {"error": ""}
         if user_input is not None:
+            presets = {d: dict(v) for d, v in (options.get("presets") or {}).items()}
             try:
-                presets = {d: dict(v) for d, v in (options.get("presets") or {}).items()}
-                for domain, name in PRESETS:
-                    key = f"{domain}_{name}"
-                    try:
-                        presets.setdefault(domain, {})[name] = _preset_from_form(
-                            domain, user_input.get(key) or {}
-                        )
-                    except vol.Invalid as err:
-                        raise vol.Invalid(f"{key}: {err.msg}") from err
-                try:
-                    immich = _immich_from_form(
-                        options.get("immich") or {},
-                        {s: user_input.get(f"immich_{s}") or {} for s in IMMICH_SECTIONS},
-                    )
-                except vol.Invalid as err:
-                    raise vol.Invalid(f"immich: {err.msg}") from err
+                for domain, parts in self._preset_groups(options).items():
+                    flat = user_input.get(domain) or {}
+                    for name, schema, _ in parts:
+                        values = {
+                            m.schema: flat[f"{name}_{m.schema}"]
+                            for m in schema.schema
+                            if f"{name}_{m.schema}" in flat
+                        }
+                        try:
+                            presets.setdefault(domain, {})[name] = _preset_from_form(domain, values)
+                        except vol.Invalid as err:
+                            raise vol.Invalid(f"{domain} {name}: {err.msg}") from err
             except vol.Invalid as err:
                 errors["base"] = "invalid"
                 placeholders["error"] = str(err.msg)
             else:
                 options["presets"] = presets
-                if immich is None:
+                return self.async_create_entry(data=options)
+        schema, suggested = self._presets_schema(options)
+        return self.async_show_form(
+            step_id="presets",
+            data_schema=self.add_suggested_values_to_schema(
+                schema, user_input if user_input is not None else suggested
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    # --- services
+
+    async def async_step_immich(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        options = self._options()
+        immich = options.get("immich") or {}
+        errors: dict[str, str] = {}
+        placeholders = {"error": ""}
+        if user_input is not None:
+            try:
+                conf = _immich_from_form(immich, user_input)
+            except vol.Invalid as err:
+                errors["base"] = "invalid"
+                placeholders["error"] = str(err.msg)
+            else:
+                if conf is None:
                     options.pop("immich", None)
                 else:
-                    options["immich"] = immich
-                bt_in = user_input.get("budget_thuis") or {}
-                email = (bt_in.get("username") or "").strip()
-                interval = int(bt_in.get("scan_interval", DEFAULT_BT_INTERVAL))
-                if not email:
-                    options.pop("budget_thuis", None)
-                    return self.async_create_entry(data=options)
-                if not (
-                    bt_in.get("new_login")
-                    or not old_bt.get("refresh_token")
-                    or email != old_bt.get("username")
-                ):
-                    options["budget_thuis"] = {**old_bt, "scan_interval": interval}
-                    return self.async_create_entry(data=options)
-                api = BudgetThuisApi(async_get_clientsession(self.hass))
-                try:
-                    self._bt_verifier = await api.request_link(email)
-                except BudgetThuisError as err:
-                    errors["base"] = "budget_thuis"
-                    placeholders["error"] = str(err)
-                else:
-                    self._pending = options
-                    self._bt_login = {"username": email, "scan_interval": interval}
-                    return await self.async_step_budget_thuis_link()
-        schema, suggested = self._schema(options)
-        schema = self.add_suggested_values_to_schema(
-            schema, user_input if user_input is not None else suggested
-        )
+                    options["immich"] = conf
+                return self.async_create_entry(data=options)
         return self.async_show_form(
-            step_id="init", data_schema=schema, errors=errors,
+            step_id="immich",
+            data_schema=self.add_suggested_values_to_schema(
+                _immich_schema(immich),
+                user_input if user_input is not None else _immich_form_values(immich),
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_budget_thuis(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        from .budget_thuis import BudgetThuisApi, BudgetThuisError  # noqa: PLC0415
+
+        options = self._options()
+        old_bt = options.get("budget_thuis") or {}
+        errors: dict[str, str] = {}
+        placeholders = {
+            "error": "",
+            "budget_thuis": "bağlı" if old_bt.get("refresh_token") else "bağlı değil",
+        }
+        if user_input is not None:
+            email = (user_input.get("username") or "").strip()
+            interval = int(user_input.get("scan_interval", DEFAULT_BT_INTERVAL))
+            if not email:
+                options.pop("budget_thuis", None)
+                return self.async_create_entry(data=options)
+            if not (
+                user_input.get("new_login")
+                or not old_bt.get("refresh_token")
+                or email != old_bt.get("username")
+            ):
+                options["budget_thuis"] = {**old_bt, "scan_interval": interval}
+                return self.async_create_entry(data=options)
+            api = BudgetThuisApi(async_get_clientsession(self.hass))
+            try:
+                self._bt_verifier = await api.request_link(email)
+            except BudgetThuisError as err:
+                errors["base"] = "budget_thuis"
+                placeholders["error"] = str(err)
+            else:
+                self._pending = options
+                self._bt_login = {"username": email, "scan_interval": interval}
+                return await self.async_step_budget_thuis_link()
+        suggested = {k: old_bt[k] for k in ("username", "scan_interval") if k in old_bt}
+        return self.async_show_form(
+            step_id="budget_thuis",
+            data_schema=self.add_suggested_values_to_schema(
+                _budget_thuis_section(), user_input if user_input is not None else suggested
+            ),
+            errors=errors,
             description_placeholders=placeholders,
         )
 
