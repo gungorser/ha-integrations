@@ -13,7 +13,7 @@ Custom integration `gungors` (Python). No agent: the main session works here its
 - Test before a release: unit tests with `pytest-homeassistant-custom-component` where possible.
   Run `pytest` (cloud sessions: the SessionStart hook installs `.venv` from `requirements_test.txt`).
 - Release: bump `manifest.json` version, commit, GitHub release `vX.Y.Z`, update in HACS
-  (`ha_manage_hacs`), restart only with Sercan's approval, then check `ha_get_logs` and the
+  (`ha_manage_hacs`), restart HA, then check `ha_get_logs` and the
   wrapper entities.
 - A YAML-only change needs no release: change ha-configs `gungors/packages/<domain>.yaml` (`cover.yaml`, `climate.yaml`, ...),
   then `gungors.reload`.
@@ -21,6 +21,10 @@ Custom integration `gungors` (Python). No agent: the main session works here its
 ## Rules (all Gungor HA repositories)
 
 - Reply to Sercan in Turkish. Commit messages, code comments and repo docs in English.
+- Approval (Sercan, 2026-11-19): a change Sercan asked for is his approval for its deploy, HACS install,
+  reload and restart; do them without asking. Ask first only for steps that cannot be undone: deleting
+  data or entities, Immich trash mode, `force` deploys, secrets, anything outside the house. A short
+  "onaylıyorum" is enough; never ask for an exact sentence.
 - Work on a branch, open a PR to the default branch and merge it yourself when it is green and
   conflict-free; no PRs stacked on unmerged branches. Live changes (HA, renders) follow the repo's rules.
 - Blender only through the Blender MCP (Sercan's live Blender). Home Assistant only through the
