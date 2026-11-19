@@ -22,7 +22,8 @@ gungors:
 The mode is `select.immich` (restored): `Kapalı` does nothing, `Deneme` plans
 without writing (the plan is on `sensor.immich`), `Albüm` writes albums, `Albüm +
 çöp` also moves faceless new photos that are not trip photos to the Immich trash.
-A run every `scan_interval` (10 min) and on `gungors.immich_run`:
+A run every `scan_interval` seconds (600; 0 = no timer) and on `button.immich_sync`
+or `gungors.immich_run`:
 
 - People: every asset with the named person (in each user's own library) goes to
   the person's album.
@@ -140,7 +141,9 @@ IMMICH_SCHEMA = vol.Schema(
         vol.Required("url"): cv.url,
         vol.Required("users"): vol.All({cv.string: cv.string}, vol.Length(min=1)),
         vol.Optional("owner"): cv.string,
-        vol.Optional("scan_interval", default=600): vol.All(vol.Coerce(int), vol.Range(min=60)),
+        vol.Optional("scan_interval", default=600): vol.All(
+            vol.Coerce(int), vol.Any(0, vol.Range(min=60))
+        ),
         vol.Optional("people", default={}): {cv.string: cv.string},
         vol.Optional("share_albums", default=False): cv.boolean,
         vol.Optional("trips", default={}): vol.Schema(
@@ -579,6 +582,9 @@ class ImmichManager:
         self._last_full = None
         if self._unsub:
             self._unsub()
+            self._unsub = None
+        if not self.config["scan_interval"]:
+            return
         self._unsub = async_track_time_interval(
             self.hass,
             self._async_tick,

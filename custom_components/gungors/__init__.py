@@ -13,7 +13,7 @@ features/link_light.py). Feature services (`gungors.set_pid_gain`,
 the feature's method on each targeted entity.
 
 `gungors: immich:` (immich.py) adds the Immich album rules with `select.immich`,
-`sensor.immich` and `gungors.immich_run`; `gungors.reload` applies a change.
+`sensor.immich`, `button.immich_sync` and `gungors.immich_run`; `gungors.reload` applies a change.
 """
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ async def _async_setup_immich(
         await manager.async_run()
 
     hass.services.async_register(DOMAIN, "immich_run", run)
-    for platform in (Platform.SELECT, Platform.SENSOR):
+    for platform in (Platform.BUTTON, Platform.SELECT, Platform.SENSOR):
         hass.async_create_task(
             discovery.async_load_platform(hass, platform, DOMAIN, {}, config),
             f"gungors immich {platform}",

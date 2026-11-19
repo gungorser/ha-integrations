@@ -5,6 +5,7 @@ import datetime
 from typing import Any
 
 import pytest
+import voluptuous as vol
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
@@ -357,6 +358,23 @@ async def test_setup_from_yaml(hass: HomeAssistant, monkeypatch) -> None:
     )
     await hass.async_block_till_done()
     assert hass.states.get("sensor.immich").attributes["mode"] == MODE_ALBUM
+
+    before = hass.states.get("sensor.immich").attributes["last_run"]
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.immich_sync"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.immich").attributes["last_run"] != before
+
+
+async def test_scan_interval_zero_means_no_timer(hass: HomeAssistant) -> None:
+    base = {"url": "http://immich", "users": {"sercan": "k1"}}
+    assert IMMICH_SCHEMA({**base, "scan_interval": 0})["scan_interval"] == 0
+    with pytest.raises(vol.Invalid):
+        IMMICH_SCHEMA({**base, "scan_interval": 30})
+    manager = ImmichManager(hass, IMMICH_SCHEMA({**base, "scan_interval": 0}))
+    manager._apply_config()
+    assert manager._unsub is None
 
 
 async def test_share_albums(setup) -> None:
