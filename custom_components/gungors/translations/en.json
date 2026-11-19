@@ -1,0 +1,175 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Gungor Customizations",
+        "description": "Adds the presets and Immich settings to Configure. Wrappers stay in YAML."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Gungor Customizations",
+        "menu_options": {
+          "presets": "Presets",
+          "services": "Services"
+        }
+      },
+      "presets": {
+        "title": "Presets",
+        "menu_options": {
+          "light_default": "Light · default (single press, program end)",
+          "light_dim": "Light · dim (double press)",
+          "light_night": "Light · night (hold)",
+          "climate_default": "Climate · default (program end)",
+          "cover_default": "Cover · default (sunrise, sunset, program end)"
+        }
+      },
+      "light_default": {
+        "title": "Light · default",
+        "description": "A single press turns this on; a program's set rule returns to it. An empty field is not applied.{error}",
+        "data": {
+          "state": "State",
+          "brightness_pct": "Brightness",
+          "rgb_color": "Colour",
+          "color_temp_kelvin": "Colour temperature",
+          "templates": "Templates (attribute: template)"
+        },
+        "data_description": {
+          "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "light_dim": {
+        "title": "Light · dim",
+        "description": "Double press: carries only the brightness. An empty field is not applied.{error}",
+        "data": {
+          "state": "State",
+          "brightness_pct": "Brightness",
+          "rgb_color": "Colour",
+          "color_temp_kelvin": "Colour temperature",
+          "templates": "Templates (attribute: template)"
+        },
+        "data_description": {
+          "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "light_night": {
+        "title": "Light · night",
+        "description": "Hold: carries only the colour. An empty field is not applied.{error}",
+        "data": {
+          "state": "State",
+          "brightness_pct": "Brightness",
+          "rgb_color": "Colour",
+          "color_temp_kelvin": "Colour temperature",
+          "templates": "Templates (attribute: template)"
+        },
+        "data_description": {
+          "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "climate_default": {
+        "title": "Climate · default",
+        "description": "A program's set rule returns to this. An empty field is not applied.{error}",
+        "data": {
+          "state": "State",
+          "temperature": "Temperature",
+          "templates": "Templates (attribute: template)"
+        },
+        "data_description": {
+          "templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "cover_default": {
+        "title": "Cover · default",
+        "description": "Applied at sunrise, sunset and when a program ends. An empty field is not applied.{error}",
+        "data": {
+          "current_position": "Position (number or template)"
+        }
+      },
+      "immich": {
+        "title": "Immich",
+        "description": "Empty address: Immich off. Key and password fields stay empty: leave them empty to keep the stored value, type a new one to replace it, '-' removes a user.{error}",
+        "sections": {
+          "general": {
+            "name": "General",
+            "data": {
+              "url": "Address",
+              "scan_interval": "Scan interval (0 = only the sync button)",
+              "owner": "Owner of the shared albums",
+              "share_albums": "Share every album with the others"
+            }
+          },
+          "users": {
+            "name": "Users and API keys",
+            "data": {
+              "new_user": "New user",
+              "new_user_key": "New user's API key"
+            }
+          },
+          "people": {
+            "name": "People → album",
+            "data": {
+              "people": "Person in Immich: album"
+            }
+          },
+          "trips": {
+            "name": "Trips",
+            "data": {
+              "distance_km": "Distance from home",
+              "advanced": "More (detail, names, min_days, ...)"
+            }
+          },
+          "faceless": {
+            "name": "Photos without faces",
+            "data": {
+              "album": "Album",
+              "wait_hours": "Wait"
+            }
+          },
+          "partou": {
+            "name": "Partou",
+            "data": {
+              "username": "E-mail (empty: Partou off)",
+              "password": "Password",
+              "after": "Daily from"
+            }
+          }
+        }
+      },
+      "services": {
+        "title": "Services",
+        "menu_options": {
+          "immich": "Immich"
+        }
+      }
+    },
+    "error": {
+      "invalid_preset": "Invalid value",
+      "invalid_immich": "Invalid Immich settings"
+    }
+  },
+  "selector": {
+    "light_state": {
+      "options": {
+        "on": "On",
+        "off": "Off"
+      }
+    },
+    "climate_state": {
+      "options": {
+        "heat": "Heat",
+        "off": "Off"
+      }
+    }
+  },
+  "issues": {
+    "yaml_ignored": {
+      "title": "gungors: presets/Immich in YAML are ignored",
+      "description": "They are set under Settings > Devices & services > gungors > Configure now. Remove {keys} from YAML."
+    }
+  }
+}

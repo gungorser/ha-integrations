@@ -21,10 +21,15 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, Platform
 from homeassistant.core import Event, HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import config_validation as cv, discovery
+from homeassistant.helpers import (
+    config_validation as cv,
+    discovery,
+    issue_registry as ir,
+)
 from homeassistant.helpers.reload import async_integration_yaml_config
 from homeassistant.helpers.typing import ConfigType
 
@@ -59,6 +64,8 @@ BLINK_SCHEMA = {
     vol.Optional("count", default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
 }
 
+DATA_HASS_CONFIG = "hass_config"
+
 __all__ = ["DOMAIN", "PLATFORMS"]
 
 
@@ -67,18 +74,33 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     from . import features  # noqa: F401, PLC0415  (registers every feature)
     from .core import ENTITIES, FEATURES  # noqa: PLC0415
 
-    async_set_presets(hass, (config.get(DOMAIN) or {}).get(CONF_PRESETS, {}))
-    await _async_setup_immich(hass, (config.get(DOMAIN) or {}).get(CONF_IMMICH), config)
+    data = hass.data.setdefault(DOMAIN, {})
+    data[DATA_HASS_CONFIG] = config
+    yaml_conf = config.get(DOMAIN) or {}
+    if hass.config_entries.async_entries(DOMAIN):
+        _warn_yaml(hass, yaml_conf)
+    else:
+        # No entry yet: run on the YAML as before, and import it into an entry.
+        async_set_presets(hass, yaml_conf.get(CONF_PRESETS, {}))
+        await _async_setup_immich(hass, yaml_conf.get(CONF_IMMICH))
+        hass.async_create_task(
+            hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": SOURCE_IMPORT}, data=_import_data(yaml_conf)
+            ),
+            "gungors import",
+        )
 
     async def presets_reloaded(_event: Event) -> None:
         from .program import async_get_manager  # noqa: PLC0415
 
+        if hass.config_entries.async_entries(DOMAIN):
+            return  # presets and Immich come from the entry (options flow)
         conf = await async_integration_yaml_config(hass, DOMAIN)
         if conf is None:
             return
         async_set_presets(hass, (conf.get(DOMAIN) or {}).get(CONF_PRESETS, {}))
         async_get_manager(hass).async_presets_changed()
-        await _async_setup_immich(hass, (conf.get(DOMAIN) or {}).get(CONF_IMMICH), conf)
+        await _async_setup_immich(hass, (conf.get(DOMAIN) or {}).get(CONF_IMMICH))
 
     hass.bus.async_listen(f"event_{DOMAIN}_reloaded", presets_reloaded)
 
@@ -112,9 +134,64 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-async def _async_setup_immich(
-    hass: HomeAssistant, immich: dict[str, Any] | None, config: ConfigType
-) -> None:
+def _import_data(yaml_conf: dict[str, Any]) -> dict[str, Any]:
+    """The YAML presets and immich in the entry's stored shape."""
+    from .config_flow import immich_options, presets_options  # noqa: PLC0415
+
+    result: dict[str, Any] = {"presets": presets_options(yaml_conf.get(CONF_PRESETS) or {})}
+    if yaml_conf.get(CONF_IMMICH):
+        result["immich"] = immich_options(yaml_conf[CONF_IMMICH])
+    return result
+
+
+def _warn_yaml(hass: HomeAssistant, yaml_conf: dict[str, Any]) -> None:
+    """YAML presets/immich next to an entry are ignored: say so (Repairs)."""
+    keys = [k for k in (CONF_PRESETS, CONF_IMMICH) if yaml_conf.get(k)]
+    if not keys:
+        ir.async_delete_issue(hass, DOMAIN, "yaml_ignored")
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "yaml_ignored",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="yaml_ignored",
+        translation_placeholders={"keys": ", ".join(f"gungors: {k}:" for k in keys)},
+    )
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Presets and Immich from the entry's options (Configure)."""
+    await _async_apply_entry(hass, entry)
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
+    return True
+
+
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await _async_apply_entry(hass, entry)
+
+
+async def _async_apply_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    from .program import async_get_manager  # noqa: PLC0415
+
+    options = entry.options
+    async_set_presets(hass, presets_schema(options.get("presets") or {}))
+    async_get_manager(hass).async_presets_changed()
+    immich = options.get("immich")
+    await _async_setup_immich(hass, IMMICH_SCHEMA(dict(immich)) if immich else None)
+    yaml_conf = (hass.data.get(DOMAIN, {}).get(DATA_HASS_CONFIG) or {}).get(DOMAIN) or {}
+    _warn_yaml(hass, yaml_conf)
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Back to the built-in presets; Immich stops."""
+    async_set_presets(hass, {})
+    await _async_setup_immich(hass, None)
+    return True
+
+
+async def _async_setup_immich(hass: HomeAssistant, immich: dict[str, Any] | None) -> None:
     """Start the Immich album rules, or apply a changed config (stop when removed)."""
     data = hass.data.setdefault(DOMAIN, {})
     manager: ImmichManager | None = data.get(DATA_IMMICH)
@@ -135,6 +212,8 @@ async def _async_setup_immich(
     hass.services.async_register(DOMAIN, "immich_run", run)
     for platform in (Platform.BUTTON, Platform.SELECT, Platform.SENSOR):
         hass.async_create_task(
-            discovery.async_load_platform(hass, platform, DOMAIN, {}, config),
+            discovery.async_load_platform(
+                hass, platform, DOMAIN, {}, data.get(DATA_HASS_CONFIG) or {}
+            ),
             f"gungors immich {platform}",
         )
