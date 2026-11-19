@@ -155,18 +155,26 @@
       },
       "budget_thuis": {
         "title": "Budget Thuis",
-        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak (Energy panosu). Budget Thuis uygulamasının e-posta ve şifresi. Şifre boş görünür: boş bırakırsan kayıtlı şifre kalır. E-posta boş: Budget Thuis kapalı.",
+        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak (Energy panosu). Durum: {status}. Budget Thuis'te şifre yok: e-postana bir giriş linki gönderilir. E-posta boş: Budget Thuis kapalı.{error}",
         "data": {
           "username": "E-posta",
-          "password": "Şifre",
+          "new_login": "Yeniden giriş yap (yeni link iste)",
           "scan_interval": "Tarama aralığı"
+        }
+      },
+      "budget_thuis_link": {
+        "title": "Budget Thuis: giriş linki",
+        "description": "{email} adresine bir mail gönderildi. Maildeki giriş linkine TIKLAMA: sağ tıklayıp linki kopyala ve buraya yapıştır. (Tıkladıysan ve tarayıcı budgetthuis://login_success?code=... adresinde kaldıysa onu da yapıştırabilirsin.){error}",
+        "data": {
+          "link": "Giriş linki"
         }
       }
     },
     "error": {
       "invalid_preset": "Geçersiz değer",
       "invalid_immich": "Geçersiz Immich ayarı",
-      "required": "Gerekli"
+      "required": "Gerekli",
+      "budget_thuis": "Budget Thuis girişi olmadı"
     }
   },
   "selector": {

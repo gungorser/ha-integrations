@@ -155,18 +155,26 @@
       },
       "budget_thuis": {
         "title": "Budget Thuis",
-        "description": "Electricity, gas and return delivery: the month so far as sensors (Energy dashboard). E-mail and password of the Budget Thuis app. The password shows empty: leave it empty to keep it. Empty e-mail: Budget Thuis off.",
+        "description": "Electricity, gas and return delivery: the month so far as sensors (Energy dashboard). Status: {status}. Budget Thuis has no password: a login link is mailed to you. Empty e-mail: Budget Thuis off.{error}",
         "data": {
           "username": "E-mail",
-          "password": "Password",
+          "new_login": "Log in again (mail a new link)",
           "scan_interval": "Scan interval"
+        }
+      },
+      "budget_thuis_link": {
+        "title": "Budget Thuis: login link",
+        "description": "A mail was sent to {email}. Do NOT click the login link: right-click it, copy the link and paste it here. (If you clicked it and the browser stopped at budgetthuis://login_success?code=..., paste that.){error}",
+        "data": {
+          "link": "Login link"
         }
       }
     },
     "error": {
       "invalid_preset": "Invalid value",
       "invalid_immich": "Invalid Immich settings",
-      "required": "Required"
+      "required": "Required",
+      "budget_thuis": "Budget Thuis login failed"
     }
   },
   "selector": {

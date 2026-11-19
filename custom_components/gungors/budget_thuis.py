@@ -1,12 +1,14 @@
 """Budget Thuis (Budget Energie): electricity, gas and return delivery as sensors.
 
-Configure > Servisler > Budget Thuis holds the login (e-mail and password of the
-Budget Thuis app) and the scan interval (default hourly). Each run reads the daily
+Configure > Servisler > Budget Thuis logs in (Budget Thuis has no password login: it
+mails a link; paste that link, not clicked, into the second step) and sets the scan
+interval (default hourly). The login's refresh token is kept; a refused one asks for a
+new login (status `hata`, error "yeniden giriş gerekli"). Each run reads the daily
 usage of the current month from the API the Budget Thuis app uses (unofficial):
 
-- login: OAuth2 authorization code + PKCE through the accounts site's login form
-  (client `mobile`), then refresh tokens (kept in `.storage/gungors.budget_thuis`,
-  so a run does not log in again);
+- login: OAuth2 authorization code + PKCE (client `mobile`, no secret): authorize ->
+  /inloglink-aanvragen (e-mail) -> the mailed link -> budgetthuis://login_success?code=
+  -> /connect/token; then refresh tokens (kept in `.storage/gungors.budget_thuis`);
 - contracts: `/home/v1/contactPerson` -> relation ids -> `/energy/v2/customer/productPicker`;
 - usage: `/energy/v1/contract/<id>/usagecosts/details?PeriodDuration=Day`, summed
   over every contract: per day `usage*` blocks with `rawUsage` (electricity
@@ -27,7 +29,8 @@ import re
 import secrets
 import time
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlparse
+from html import unescape
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import aiohttp
 
@@ -53,12 +56,15 @@ REDIRECT_URI = "budgetthuis://login_success"
 SCOPE = "mobileApi webApi offline_access openid email idsServiceExternal"
 LABEL = "BudgetEnergie"
 USER_AGENT = "Budget Thuis/3.1.0 (nl.budgetthuis.app; build:2940; iOS 26.6.0) Alamofire/5.10.2"
-_TOKEN_RE = re.compile(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"')
+_FORM_RE = re.compile(r'<form[^>]*action="([^"]*)"', re.IGNORECASE)
+_INPUT_RE = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+_ATTR_RE = re.compile(r'([\w-]+)\s*=\s*"([^"]*)"')
 _REDIRECTS = (301, 302, 303, 307, 308)
 _TIMEOUT = aiohttp.ClientTimeout(total=60)
 _PERIOD_FMT = "%Y-%m-%dT%H:%M:%S.000"
 
 KINDS = ("elektrik", "gaz", "teruglevering")
+RELOGIN = "yeniden giriş gerekli: Yapılandır > Servisler > Budget Thuis"
 
 
 class BudgetThuisError(Exception):
@@ -108,6 +114,21 @@ def usage_days(payload: dict[str, Any]) -> dict[datetime.date, dict[str, float]]
     return days
 
 
+def _inputs(html: str) -> list[dict[str, str]]:
+    """Every <input> tag's attributes (any attribute order)."""
+    return [
+        {k.lower(): unescape(v) for k, v in _ATTR_RE.findall(tag)}
+        for tag in _INPUT_RE.findall(html)
+    ]
+
+
+def _input_value(html: str, name: str) -> str | None:
+    for attrs in _inputs(html):
+        if attrs.get("name") == name:
+            return attrs.get("value", "")
+    return None
+
+
 def _pkce() -> tuple[str, str]:
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
@@ -134,54 +155,99 @@ class BudgetThuisApi:
         self._accounts = accounts_url.rstrip("/")
         self._api = api_url.rstrip("/")
 
-    async def login(self, username: str, password: str) -> dict[str, Any]:
-        """The app's login: authorize -> login form -> code -> tokens."""
+    def _login_session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            cookie_jar=aiohttp.CookieJar(unsafe=True), headers={"User-Agent": USER_AGENT},
+            timeout=_TIMEOUT,
+        )
+
+    async def request_link(self, email: str) -> str:
+        """Ask Budget Thuis to mail a login link (there is no password login).
+
+        Starts the app's authorize request (PKCE); returns the code verifier that
+        `login_with_link` needs once the link from the mail is pasted.
+        """
         verifier, challenge = _pkce()
         try:
-            async with aiohttp.ClientSession(
-                cookie_jar=aiohttp.CookieJar(unsafe=True), headers={"User-Agent": USER_AGENT},
-                timeout=_TIMEOUT,
-            ) as s:
-                async with s.get(
-                    f"{self._accounts}/connect/authorize",
-                    params={
-                        "client_id": CLIENT_ID, "response_type": "code",
-                        "redirect_uri": REDIRECT_URI, "scope": SCOPE, "label": LABEL,
-                        "code_challenge": challenge, "code_challenge_method": "S256",
-                    },
-                    allow_redirects=False,
-                ) as resp:
-                    login_url = _location(resp, "authorize")
-                return_url = _query(login_url, "ReturnUrl")
-                if not return_url:
-                    raise BudgetThuisError("authorize: no ReturnUrl")
-                async with s.get(urljoin(self._accounts, login_url), allow_redirects=False) as resp:
-                    match = _TOKEN_RE.search(await resp.text())
-                if not match:
-                    raise BudgetThuisError("login page: no verification token")
+            async with self._login_session() as s:
+                url = f"{self._accounts}/connect/authorize?" + urlencode({
+                    "client_id": CLIENT_ID, "response_type": "code",
+                    "redirect_uri": REDIRECT_URI, "scope": SCOPE, "label": LABEL,
+                    "code_challenge": challenge, "code_challenge_method": "S256",
+                })
+                html = ""
+                for _hop in range(6):  # authorize -> /inloggen -> /inloglink-aanvragen
+                    async with s.get(url, allow_redirects=False) as resp:
+                        if resp.status in _REDIRECTS:
+                            url = urljoin(url, _location(resp, "authorize"))
+                            continue
+                        html = await resp.text()
+                        break
+                token = _input_value(html, "__RequestVerificationToken")
+                return_url = _input_value(html, "ReturnUrl")
+                if not token or return_url is None:
+                    raise BudgetThuisError("login page: no form")
                 async with s.post(
-                    f"{self._accounts}/inloggen",
+                    f"{self._accounts}/inloglink-aanvragen",
                     data={
-                        "Username": username, "Password": password, "ReturnUrl": return_url,
-                        "Label": LABEL, "__RequestVerificationToken": match.group(1),
-                        "button": "login",
+                        "EmailAddress": email, "ReturnUrl": return_url,
+                        "Label": _input_value(html, "Label") or LABEL,
+                        "__RequestVerificationToken": token,
                     },
                     allow_redirects=False,
                 ) as resp:
-                    if resp.status not in _REDIRECTS:
-                        raise BudgetThuisAuthError("e-posta veya şifre yanlış")
-                    callback_url = _location(resp, "login")
-                async with s.get(urljoin(self._accounts, callback_url), allow_redirects=False) as resp:
-                    code = _query(_location(resp, "callback"), "code")
+                    if resp.status >= 400:
+                        raise BudgetThuisError(f"inloglink-aanvragen: {resp.status}")
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise BudgetThuisError(f"login link: {err}") from err
+        return verifier
+
+    async def login_with_link(self, link: str, verifier: str) -> dict[str, Any]:
+        """The link from the mail (or the budgetthuis://login_success?code=... it ends at) -> tokens."""
+        link = link.strip()
+        try:
+            async with self._login_session() as s:
+                url = link
+                for _hop in range(12):
+                    if url.startswith(REDIRECT_URI):
+                        break
+                    async with s.get(url, allow_redirects=False) as resp:
+                        if resp.status in _REDIRECTS:
+                            url = urljoin(url, _location(resp, "login link"))
+                            continue
+                        html = await resp.text()
+                    # A page that posts itself (a confirm button or an auto-submit form).
+                    form = _FORM_RE.search(html)
+                    if resp.status != 200 or form is None:
+                        raise BudgetThuisAuthError(
+                            f"giriş linki geçersiz veya süresi dolmuş ({resp.status})"
+                        )
+                    fields = {
+                        a["name"]: a.get("value", "")
+                        for a in _inputs(html)
+                        if a.get("name") and a.get("type", "text").lower() in ("hidden", "submit")
+                    }
+                    async with s.post(
+                        urljoin(url, unescape(form.group(1)) or url), data=fields,
+                        allow_redirects=False,
+                    ) as post:
+                        if post.status not in _REDIRECTS:
+                            raise BudgetThuisAuthError(
+                                f"giriş linki geçersiz veya süresi dolmuş ({post.status})"
+                            )
+                        url = urljoin(url, _location(post, "login link"))
+                else:
+                    raise BudgetThuisError("login link: too many redirects")
+                code = _query(url, "code")
                 if not code:
-                    raise BudgetThuisAuthError("login: no authorization code")
+                    raise BudgetThuisAuthError("login link: no authorization code")
                 return await self._token(s, {
                     "grant_type": "authorization_code", "code": code,
                     "code_verifier": verifier, "redirect_uri": REDIRECT_URI,
                     "client_id": CLIENT_ID,
                 })
         except (TimeoutError, aiohttp.ClientError) as err:
-            raise BudgetThuisError(f"login: {err}") from err
+            raise BudgetThuisError(f"login link: {err}") from err
 
     async def refresh(self, refresh_token: str) -> dict[str, Any]:
         try:
@@ -285,16 +351,16 @@ class BudgetThuisManager:
 
     async def async_start(self) -> None:
         stored = await self._store.async_load() or {}
-        if stored.get("username") == self.config["username"]:
+        if stored.get("login_at") == self.config.get("login_at"):
             self._tokens = stored.get("tokens") or {}
+        else:  # a new login from Configure: its refresh token
+            self._tokens = {"refresh_token": self.config.get("refresh_token")}
         self._schedule()
         self.hass.async_create_task(self.async_run(), "gungors budget thuis")
 
     async def async_reconfigure(self, config: dict[str, Any]) -> None:
-        if (config["username"], config["password"]) != (
-            self.config["username"], self.config["password"]
-        ):
-            self._tokens = {}
+        if config.get("login_at") != self.config.get("login_at"):
+            self._tokens = {"refresh_token": config.get("refresh_token")}
         self.config = config
         self._schedule()
         self.hass.async_create_task(self.async_run(), "gungors budget thuis")
@@ -320,16 +386,14 @@ class BudgetThuisManager:
     async def _token(self) -> str:
         if self._tokens.get("access_token") and self._tokens.get("expires_at", 0) > time.time() + 60:
             return self._tokens["access_token"]
-        tokens = None
-        if self._tokens.get("refresh_token"):
-            try:
-                tokens = await self.api.refresh(self._tokens["refresh_token"])
-            except BudgetThuisAuthError:
-                tokens = None
-        if tokens is None:
-            tokens = await self.api.login(self.config["username"], self.config["password"])
+        if not self._tokens.get("refresh_token"):
+            raise BudgetThuisAuthError(RELOGIN)
+        try:
+            tokens = await self.api.refresh(self._tokens["refresh_token"])
+        except BudgetThuisAuthError as err:
+            raise BudgetThuisAuthError(RELOGIN) from err
         self._tokens = tokens
-        await self._store.async_save({"username": self.config["username"], "tokens": tokens})
+        await self._store.async_save({"login_at": self.config.get("login_at"), "tokens": tokens})
         return tokens["access_token"]
 
     async def async_run(self) -> None:
@@ -339,8 +403,10 @@ class BudgetThuisManager:
         try:
             try:
                 days = await self._read(await self._token(), start, end)
-            except BudgetThuisAuthError:
-                self._tokens = {}  # a refused token: log in again once
+            except BudgetThuisAuthError as err:
+                if str(err) == RELOGIN:
+                    raise
+                self._tokens.pop("access_token", None)  # refused: refresh once
                 days = await self._read(await self._token(), start, end)
         except BudgetThuisError as err:
             self.status, self.error = "hata", str(err)

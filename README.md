@@ -82,8 +82,9 @@ Customizations, `config_flow.py`, logo in `brand/`). Configure opens a menu:
   empty: left empty they keep the stored value, a new value replaces it, `-` removes a user.
   An empty address turns Immich off.
 
-- Servisler > Budget Thuis: e-mail and password of the Budget Thuis app and the scan interval
-  (default 3600 s); see Budget Thuis below. Empty e-mail: off.
+- Servisler > Budget Thuis: e-mail and scan interval (default 3600 s); Budget Thuis has no
+  password, so a new login mails a link: copy it (do not click) into the second step. See Budget
+  Thuis below. Empty e-mail: off.
 
 Saving applies at once (no restart, no `gungors.reload`). The entry options keep the YAML
 shape (`{"presets": {...}, "immich": {...}}`). Wrappers, features and the program calendar stay
@@ -314,8 +315,11 @@ through the Immich API, with one API key per Immich user (faces and photos are p
 ## Budget Thuis
 
 `budget_thuis.py` reads the daily usage of the current month from the (unofficial) API of the
-Budget Thuis app: login with the app's OAuth2 PKCE flow (client `mobile`, the accounts site's
-login form), refresh tokens kept in `.storage/gungors.budget_thuis`, contracts via
+Budget Thuis app: login with the app's OAuth2 PKCE flow (client `mobile`, no secret): authorize
+-> `/inloglink-aanvragen` mails a link -> the pasted link is followed (also a self-posting
+confirm page) to `budgetthuis://login_success?code=` -> `/connect/token`. Only the refresh token
+is kept (entry options at login, then `.storage/gungors.budget_thuis` as it rotates); a refused
+one sets `status: hata`, `error: yeniden giriş gerekli`, contracts via
 `/home/v1/contactPerson` and `/energy/v2/customer/productPicker`, usage via
 `/energy/v1/contract/<id>/usagecosts/details?PeriodDuration=Day`, summed over all contracts.
 Every `usage*` block of a day with a `rawUsage` counts: electricity consumption, electricity
