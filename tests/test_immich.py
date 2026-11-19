@@ -124,6 +124,7 @@ class FakeImmich:
         self.albums: dict[str, dict[str, Any]] = {}
         self.trashed: list[str] = []
         self.busy = False
+        self.partners = False  # searches also return the other user's assets
         self.writes = 0
 
     def asset(self, aid: str, user: str, taken: datetime.datetime, where=None, *,
@@ -133,7 +134,7 @@ class FakeImmich:
         if where:
             exif["latitude"], exif["longitude"] = where
         self.assets[aid] = {
-            "id": aid, "ownerId": user, "type": kind, "isTrashed": False, "isFavorite": False,
+            "id": aid, "ownerId": f"id-{user}", "type": kind, "isTrashed": False, "isFavorite": False,
             "isArchived": False, "visibility": "timeline",
             "fileCreatedAt": taken.isoformat(), "localDateTime": taken.isoformat(),
             "createdAt": (uploaded or taken).isoformat(), "updatedAt": taken.isoformat(),
@@ -152,7 +153,7 @@ class FakeApi:
     async def search(self, body):
         out = []
         for a in self.s.assets.values():
-            if a["ownerId"] != self.user or a["isTrashed"]:
+            if (a["ownerId"] != f"id-{self.user}" and not self.s.partners) or a["isTrashed"]:
                 continue
             if "personIds" in body and not set(body["personIds"]) & a["_people"]:
                 continue
@@ -380,3 +381,17 @@ async def test_share_albums(setup) -> None:
     assert shared["_users"] == ["id-sercan", "id-melike"]
     await manager.async_run()
     assert manager.summary["shared"] == []
+
+
+async def test_partner_assets_are_not_counted_twice(setup) -> None:
+    manager, server = setup
+    server.partners = True
+    server.people["sercan"] = [{"id": "pk", "name": "Kaan"}]
+    server.asset("k1", "sercan", t(1, 1), HOME, people={"pk"})
+    server.asset("k2", "melike", t(2, 1), HOME, people={"pk"})
+    server.asset("a1", "sercan", t(1), ANTALYA, country="Turkey", state="Antalya")
+    server.asset("a2", "melike", t(2), ANTALYA, country="Turkey", state="Antalya")
+    manager.mode = MODE_DRY
+    await manager.async_run()
+    assert manager.summary["people"] == {"Kaan": 1}
+    assert manager.summary["trips"][0].endswith("2 foto/video, +2, sürüyor")
