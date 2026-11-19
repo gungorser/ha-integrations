@@ -59,7 +59,8 @@ def test_usage_days() -> None:
     }
 
 
-def _accounts_app(password: str) -> web.Application:
+def _accounts_app() -> web.Application:
+    """Authorize -> /inloggen -> /inloglink-aanvragen (e-mail) -> mailed link -> code."""
     state: dict = {}
 
     async def authorize(request: web.Request) -> web.Response:
@@ -67,23 +68,49 @@ def _accounts_app(password: str) -> web.Application:
         assert request.query["client_id"] == "mobile"
         raise web.HTTPFound("/inloggen?" + urlencode({"ReturnUrl": "/connect/authorize/callback?x=1"}))
 
-    async def login_page(request: web.Request) -> web.Response:
+    async def inloggen(request: web.Request) -> web.Response:
+        raise web.HTTPFound("/inloglink-aanvragen?" + urlencode({"returnUrl": request.query["ReturnUrl"]}))
+
+    async def link_page(request: web.Request) -> web.Response:
         resp = web.Response(
-            text='<form><input name="__RequestVerificationToken" type="hidden" value="tok123" /></form>',
+            text=(
+                '<form method="post" action="/inloglink-aanvragen">'
+                '<input type="email" name="EmailAddress" />'
+                '<input value="/connect/authorize/callback?x=1&amp;y=2" type="hidden" name="ReturnUrl" />'
+                '<input type="hidden" name="Label" value="budgetenergie" />'
+                '<input name="__RequestVerificationToken" type="hidden" value="tok123" /></form>'
+            ),
             content_type="text/html",
         )
         resp.set_cookie("csrf", "c1")
         return resp
 
-    async def login_post(request: web.Request) -> web.Response:
+    async def link_post(request: web.Request) -> web.Response:
         form = await request.post()
         assert form["__RequestVerificationToken"] == "tok123"
         assert request.cookies.get("csrf") == "c1"
-        if form["Password"] != password:
-            return web.Response(text="wrong", status=200)
-        raise web.HTTPFound(form["ReturnUrl"])
+        assert form["ReturnUrl"] == "/connect/authorize/callback?x=1&y=2"
+        state["mailed"] = form["EmailAddress"]
+        return web.Response(text="mail sent")
+
+    async def mail_link(request: web.Request) -> web.Response:
+        if request.query.get("t") != "good":
+            return web.Response(text="verlopen", status=400)
+        # a confirm page that posts itself
+        return web.Response(
+            text='<form method="post" action="/inloglink/bevestig">'
+                 '<input type="hidden" name="t" value="good" /></form>',
+            content_type="text/html",
+        )
+
+    async def confirm(request: web.Request) -> web.Response:
+        assert (await request.post())["t"] == "good"
+        resp = web.HTTPFound("/connect/authorize/callback?x=1&y=2")
+        resp.set_cookie("auth", "yes")
+        raise resp
 
     async def callback(request: web.Request) -> web.Response:
+        assert request.cookies.get("auth") == "yes"
         raise web.HTTPFound("budgetthuis://login_success?code=abc")
 
     async def token(request: web.Request) -> web.Response:
@@ -98,25 +125,36 @@ def _accounts_app(password: str) -> web.Application:
         return web.json_response({"error": "invalid_grant"}, status=400)
 
     app = web.Application()
+    app["state"] = state
     app.router.add_get("/connect/authorize", authorize)
-    app.router.add_get("/inloggen", login_page)
-    app.router.add_post("/inloggen", login_post)
+    app.router.add_get("/inloggen", inloggen)
+    app.router.add_get("/inloglink-aanvragen", link_page)
+    app.router.add_post("/inloglink-aanvragen", link_post)
+    app.router.add_get("/inloglink", mail_link)
+    app.router.add_post("/inloglink/bevestig", confirm)
     app.router.add_get("/connect/authorize/callback", callback)
     app.router.add_post("/connect/token", token)
     return app
 
 
-async def test_login_and_refresh(hass: HomeAssistant, socket_enabled) -> None:
-    server = TestServer(_accounts_app("secret"))
+async def test_login_link_and_refresh(hass: HomeAssistant, socket_enabled) -> None:
+    app = _accounts_app()
+    server = TestServer(app)
     await server.start_server()
     try:
-        api = BudgetThuisApi(async_get_clientsession(hass), str(server.make_url("")))
-        tokens = await api.login("a@b.c", "secret")
+        base = str(server.make_url("")).rstrip("/")
+        api = BudgetThuisApi(async_get_clientsession(hass), base)
+        verifier = await api.request_link("a@b.c")
+        assert app["state"]["mailed"] == "a@b.c" and verifier
+        tokens = await api.login_with_link(f"{base}/inloglink?t=good", verifier)
         assert tokens["access_token"] == "A1" and tokens["refresh_token"] == "R1"
+        # the end address works too
+        tokens = await api.login_with_link("budgetthuis://login_success?code=abc", verifier)
+        assert tokens["refresh_token"] == "R1"
         refreshed = await api.refresh("R1")
-        assert refreshed == {**refreshed, "access_token": "A2", "refresh_token": "R1"}
+        assert refreshed["access_token"] == "A2" and refreshed["refresh_token"] == "R1"
         with pytest.raises(BudgetThuisAuthError):
-            await api.login("a@b.c", "wrong")
+            await api.login_with_link(f"{base}/inloglink?t=old", verifier)
         with pytest.raises(BudgetThuisAuthError):
             await api.refresh("bad")
     finally:
@@ -125,16 +163,24 @@ async def test_login_and_refresh(hass: HomeAssistant, socket_enabled) -> None:
 
 class FakeApi:
     def __init__(self) -> None:
-        self.logins = 0
+        self.refreshes = 0
         self.refused = False
+        self.dead = False
+        self.links: list[str] = []
 
-    async def login(self, username: str, password: str) -> dict:
-        self.logins += 1
-        if password != "pw":
-            raise BudgetThuisAuthError("e-posta veya şifre yanlış")
-        return {"access_token": "A", "refresh_token": "R", "expires_at": 9e12}
+    async def request_link(self, email: str) -> str:
+        self.links.append(email)
+        return "verifier"
+
+    async def login_with_link(self, link: str, verifier: str) -> dict:
+        if link.strip() != "https://mail/link":
+            raise BudgetThuisAuthError("giriş linki geçersiz veya süresi dolmuş (400)")
+        return {"access_token": "A", "refresh_token": "R0", "expires_at": 9e12}
 
     async def refresh(self, refresh_token: str) -> dict:
+        if self.dead:
+            raise BudgetThuisAuthError("token: 400")
+        self.refreshes += 1
         return {"access_token": "A", "refresh_token": "R", "expires_at": 9e12}
 
     async def contracts(self, token: str) -> list[str]:
@@ -153,6 +199,9 @@ class FakeApi:
 def fake_api(monkeypatch) -> FakeApi:
     api = FakeApi()
     monkeypatch.setattr(budget_thuis, "BudgetThuisApi", lambda *_a, **_k: api)
+    monkeypatch.setattr(
+        "custom_components.gungors.budget_thuis.BudgetThuisApi", lambda *_a, **_k: api
+    )
     return api
 
 
@@ -164,9 +213,11 @@ async def _setup(hass: HomeAssistant, options: dict) -> MockConfigEntry:
     return entry
 
 
+BT = {"username": "a@b.c", "scan_interval": 3600, "refresh_token": "R0", "login_at": 1.0}
+
+
 async def test_sensors_month_so_far(hass: HomeAssistant, fake_api: FakeApi) -> None:
-    await _setup(hass, {"presets": {}, "budget_thuis": {
-        "username": "a@b.c", "password": "pw", "scan_interval": 3600}})
+    await _setup(hass, {"presets": {}, "budget_thuis": dict(BT)})
     elec = hass.states.get("sensor.budget_thuis_elektrik")
     assert float(elec.state) == 16.5
     assert elec.attributes["unit_of_measurement"] == "kWh"
@@ -180,51 +231,68 @@ async def test_sensors_month_so_far(hass: HomeAssistant, fake_api: FakeApi) -> N
     assert float(hass.states.get("sensor.budget_thuis_teruglevering").state) == 1.25
 
 
-async def test_refused_token_logs_in_again(hass: HomeAssistant, fake_api: FakeApi) -> None:
-    await _setup(hass, {"presets": {}, "budget_thuis": {
-        "username": "a@b.c", "password": "pw", "scan_interval": 3600}})
-    assert fake_api.logins == 1
+async def test_refused_token_refreshes_then_asks_for_login(
+    hass: HomeAssistant, fake_api: FakeApi
+) -> None:
+    await _setup(hass, {"presets": {}, "budget_thuis": dict(BT)})
+    assert fake_api.refreshes == 1
     fake_api.refused = True
     await budget_thuis.async_get_manager(hass).async_run()
-    assert fake_api.logins == 2
+    assert fake_api.refreshes == 2
     assert hass.states.get("sensor.budget_thuis_elektrik").attributes["status"] == "tamam"
 
+    fake_api.dead = True
+    fake_api.refused = True
+    await budget_thuis.async_get_manager(hass).async_run()
+    attrs = hass.states.get("sensor.budget_thuis_elektrik").attributes
+    assert attrs["status"] == "hata" and "yeniden giriş" in attrs["error"]
 
-async def test_wrong_password_and_not_configured(hass: HomeAssistant, fake_api: FakeApi) -> None:
+
+async def _bt_form(hass: HomeAssistant, entry: MockConfigEntry) -> dict:
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    for step in ("services", "budget_thuis"):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": step}
+        )
+    return result
+
+
+async def test_login_by_link_in_configure(hass: HomeAssistant, fake_api: FakeApi) -> None:
     entry = await _setup(hass, {"presets": {}})
     assert hass.states.get("sensor.budget_thuis_elektrik").state == "unavailable"
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    for step in ("services", "budget_thuis"):
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"next_step_id": step}
-        )
+    result = await _bt_form(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"username": "a@b.c", "password": "nope", "scan_interval": 1800}
+        result["flow_id"], {"username": "a@b.c", "scan_interval": 1800}
     )
-    await hass.async_block_till_done()
-    assert entry.options["budget_thuis"] == {
-        "username": "a@b.c", "password": "nope", "scan_interval": 1800}
-    manager = budget_thuis.async_get_manager(hass)
-    assert manager.status == "hata" and "şifre" in manager.error
-
-    # password left empty keeps it; a new one replaces it and runs at once
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    for step in ("services", "budget_thuis"):
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"next_step_id": step}
-        )
+    assert result["step_id"] == "budget_thuis_link"
+    assert fake_api.links == ["a@b.c"]
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"username": "a@b.c", "password": "pw"}
+        result["flow_id"], {"link": "https://mail/old"}
     )
+    assert result["errors"] == {"base": "budget_thuis"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"link": " https://mail/link "}
+    )
+    assert result["type"] == "create_entry"
     await hass.async_block_till_done()
+    bt = entry.options["budget_thuis"]
+    assert bt["username"] == "a@b.c" and bt["scan_interval"] == 1800
+    assert bt["refresh_token"] == "R0" and bt["login_at"]
     assert float(hass.states.get("sensor.budget_thuis_elektrik").state) == 16.5
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    for step in ("services", "budget_thuis"):
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"next_step_id": step}
-        )
+    # only the interval: no new mail
+    result = await _bt_form(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"username": "a@b.c", "scan_interval": 3600}
+    )
+    assert result["type"] == "create_entry"
+    assert fake_api.links == ["a@b.c"]
+    assert entry.options["budget_thuis"]["scan_interval"] == 3600
+    await hass.async_block_till_done()
+
+    # empty e-mail: off
+    result = await _bt_form(hass, entry)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     await hass.async_block_till_done()
     assert "budget_thuis" not in entry.options

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -29,6 +30,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
 from .immich import IMMICH_SCHEMA
@@ -237,9 +239,10 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                         ),
                         vol.Optional("share_albums", default=False): selector.BooleanSelector(),
                     }
-                )
+                ),
+                {"collapsed": True},
             ),
-            vol.Required("users"): section(vol.Schema(user_fields)),
+            vol.Required("users"): section(vol.Schema(user_fields), {"collapsed": True}),
             vol.Required("people"): section(
                 vol.Schema({vol.Optional("people"): selector.ObjectSelector()}),
                 {"collapsed": True},
@@ -386,32 +389,42 @@ class GungorsOptionsFlow(OptionsFlow):
     async def async_step_budget_thuis(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """E-mail and interval; a new login mails a link (Budget Thuis has no password)."""
+        from .budget_thuis import BudgetThuisApi, BudgetThuisError  # noqa: PLC0415
+
         options = self._options()
         old = options.get("budget_thuis") or {}
         errors: dict[str, str] = {}
+        placeholders = {"error": "", "status": "bağlı" if old.get("refresh_token") else "bağlı değil"}
         if user_input is not None:
-            username = (user_input.get("username") or "").strip()
-            password = user_input.get("password") or old.get("password") or ""
-            if not username:
+            email = (user_input.get("username") or "").strip()
+            interval = int(user_input.get("scan_interval", DEFAULT_BT_INTERVAL))
+            if not email:
                 options.pop("budget_thuis", None)
                 return self.async_create_entry(data=options)
-            if not password:
-                errors["password"] = "required"
-            else:
-                options["budget_thuis"] = {
-                    "username": username,
-                    "password": password,
-                    "scan_interval": int(user_input.get("scan_interval", DEFAULT_BT_INTERVAL)),
-                }
+            new_login = (
+                user_input.get("new_login")
+                or not old.get("refresh_token")
+                or email != old.get("username")
+            )
+            if not new_login:
+                options["budget_thuis"] = {**old, "scan_interval": interval}
                 return self.async_create_entry(data=options)
+            api = BudgetThuisApi(async_get_clientsession(self.hass))
+            try:
+                self._bt_verifier = await api.request_link(email)
+            except BudgetThuisError as err:
+                errors["base"] = "budget_thuis"
+                placeholders["error"] = str(err)
+            else:
+                self._bt_login = {"username": email, "scan_interval": interval}
+                return await self.async_step_budget_thuis_link()
         schema = vol.Schema(
             {
                 vol.Optional("username"): selector.TextSelector(
                     selector.TextSelectorConfig(type=selector.TextSelectorType.EMAIL)
                 ),
-                vol.Optional("password"): selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-                ),
+                vol.Optional("new_login", default=False): selector.BooleanSelector(),
                 vol.Optional("scan_interval", default=DEFAULT_BT_INTERVAL): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=300, max=86400, step=60, unit_of_measurement="s",
@@ -425,56 +438,88 @@ class GungorsOptionsFlow(OptionsFlow):
             step_id="budget_thuis",
             data_schema=self.add_suggested_values_to_schema(schema, user_input or suggested),
             errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_budget_thuis_link(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Paste the link from the mail (copied, not clicked)."""
+        from .budget_thuis import BudgetThuisApi, BudgetThuisError  # noqa: PLC0415
+
+        errors: dict[str, str] = {}
+        placeholders = {"error": "", "email": self._bt_login["username"]}
+        if user_input is not None and (user_input.get("link") or "").strip():
+            api = BudgetThuisApi(async_get_clientsession(self.hass))
+            try:
+                tokens = await api.login_with_link(user_input["link"], self._bt_verifier)
+            except BudgetThuisError as err:
+                errors["base"] = "budget_thuis"
+                placeholders["error"] = str(err)
+            else:
+                if not tokens.get("refresh_token"):
+                    errors["base"] = "budget_thuis"
+                    placeholders["error"] = "no refresh token"
+                else:
+                    options = self._options()
+                    options["budget_thuis"] = {
+                        **self._bt_login,
+                        "refresh_token": tokens["refresh_token"],
+                        "login_at": time.time(),
+                    }
+                    return self.async_create_entry(data=options)
+        return self.async_show_form(
+            step_id="budget_thuis_link",
+            data_schema=vol.Schema({vol.Optional("link"): selector.TextSelector()}),
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def async_step_presets(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self.async_show_menu(
-            step_id="presets", menu_options=[f"{d}_{n}" for d, n in PRESETS]
-        )
-
-    async def _async_preset(
-        self, domain: str, name: str, user_input: dict[str, Any] | None
-    ) -> ConfigFlowResult:
-        step_id = f"{domain}_{name}"
+        """One form: a closed section per preset, opened by its header."""
         options = self._options()
         errors: dict[str, str] = {}
         placeholders = {"error": ""}
+        stored_all = options.get("presets") or {}
         if user_input is not None:
+            new: dict[str, dict[str, Any]] = {}
             try:
-                values = _preset_from_form(domain, user_input)
+                for domain, name in PRESETS:
+                    key = f"{domain}_{name}"
+                    try:
+                        new.setdefault(domain, {})[name] = _preset_from_form(
+                            domain, user_input.get(key) or {}
+                        )
+                    except vol.Invalid as err:
+                        raise vol.Invalid(f"{key}: {err.msg if hasattr(err, 'msg') else err}") from err
             except vol.Invalid as err:
                 errors["base"] = "invalid_preset"
-                placeholders["error"] = str(err.msg if hasattr(err, "msg") else err)
+                placeholders["error"] = str(err.msg)
             else:
-                options.setdefault("presets", {}).setdefault(domain, {})[name] = values
+                presets = {d: dict(v) for d, v in stored_all.items()}
+                for domain, values in new.items():
+                    presets.setdefault(domain, {}).update(values)
+                options["presets"] = presets
                 return self.async_create_entry(data=options)
-        stored = (options.get("presets") or {}).get(domain, {}).get(name)
-        if stored is None:
-            stored = builtin_presets().get(domain, {}).get(name, {})
+        builtin = builtin_presets()
+        fields: dict[Any, Any] = {}
+        suggested: dict[str, Any] = {}
+        for domain, name in PRESETS:
+            key = f"{domain}_{name}"
+            fields[vol.Required(key)] = section(_preset_schema(domain), {"collapsed": True})
+            stored = (stored_all.get(domain) or {}).get(name)
+            if stored is None:
+                stored = builtin.get(domain, {}).get(name, {})
+            suggested[key] = _preset_form_values(domain, stored)
         schema = self.add_suggested_values_to_schema(
-            _preset_schema(domain),
-            user_input if user_input is not None else _preset_form_values(domain, stored),
+            vol.Schema(fields), user_input if user_input is not None else suggested
         )
         return self.async_show_form(
-            step_id=step_id, data_schema=schema, errors=errors, description_placeholders=placeholders
+            step_id="presets", data_schema=schema, errors=errors,
+            description_placeholders=placeholders,
         )
-
-    async def async_step_light_default(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("light", "default", user_input)
-
-    async def async_step_light_dim(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("light", "dim", user_input)
-
-    async def async_step_light_night(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("light", "night", user_input)
-
-    async def async_step_climate_default(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("climate", "default", user_input)
-
-    async def async_step_cover_default(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("cover", "default", user_input)
 
     async def async_step_immich(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         options = self._options()

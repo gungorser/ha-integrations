@@ -21,73 +21,69 @@
       },
       "presets": {
         "title": "Presetler",
-        "menu_options": {
-          "light_default": "Işık · default (tek basış, program sonu)",
-          "light_dim": "Işık · dim (çift basış)",
-          "light_night": "Işık · night (basılı tutma)",
-          "climate_default": "Klima · default (program sonu)",
-          "cover_default": "Perde · default (gün doğumu, batımı, program sonu)"
-        }
-      },
-      "light_default": {
-        "title": "Işık · default",
-        "description": "Tek basış bunu yakar; program bitince buna dönülür. Boş bırakılan alan uygulanmaz.{error}",
-        "data": {
-          "state": "Durum",
-          "brightness_pct": "Parlaklık",
-          "rgb_color": "Renk",
-          "color_temp_kelvin": "Renk sıcaklığı",
-          "templates": "Şablonlar (özellik: şablon)"
-        },
-        "data_description": {
-          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-        }
-      },
-      "light_dim": {
-        "title": "Işık · dim",
-        "description": "Çift basış: sadece parlaklığı taşır. Boş bırakılan alan uygulanmaz.{error}",
-        "data": {
-          "state": "Durum",
-          "brightness_pct": "Parlaklık",
-          "rgb_color": "Renk",
-          "color_temp_kelvin": "Renk sıcaklığı",
-          "templates": "Şablonlar (özellik: şablon)"
-        },
-        "data_description": {
-          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-        }
-      },
-      "light_night": {
-        "title": "Işık · night",
-        "description": "Basılı tutma: sadece rengi taşır. Boş bırakılan alan uygulanmaz.{error}",
-        "data": {
-          "state": "Durum",
-          "brightness_pct": "Parlaklık",
-          "rgb_color": "Renk",
-          "color_temp_kelvin": "Renk sıcaklığı",
-          "templates": "Şablonlar (özellik: şablon)"
-        },
-        "data_description": {
-          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-        }
-      },
-      "climate_default": {
-        "title": "Klima · default",
-        "description": "Program bitince buna dönülür. Boş bırakılan alan uygulanmaz.{error}",
-        "data": {
-          "state": "Durum",
-          "temperature": "Sıcaklık",
-          "templates": "Şablonlar (özellik: şablon)"
-        },
-        "data_description": {
-          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-        }
-      },
-      "cover_default": {
-        "title": "Perde · default",
-        "description": "Gün doğumu, batımı ve program bitince uygulanır. Boş bırakılan alan uygulanmaz.{error}",
-        "data": {
-          "current_position": "Pozisyon (sayı veya şablon)"
+        "description": "Bir preset'in başlığına bas: açılır, tekrar bas: kapanır. Boş bırakılan alan uygulanmaz.{error}",
+        "sections": {
+          "light_default": {
+            "name": "Işık · default (tek basış, program sonu)",
+            "data": {
+              "state": "Durum",
+              "brightness_pct": "Parlaklık",
+              "rgb_color": "Renk",
+              "color_temp_kelvin": "Renk sıcaklığı",
+              "templates": "Şablonlar (özellik: şablon)"
+            },
+            "data_description": {
+              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+            },
+            "description": "Tek basış bunu yakar; program bitince buna dönülür."
+          },
+          "light_dim": {
+            "name": "Işık · dim (çift basış)",
+            "data": {
+              "state": "Durum",
+              "brightness_pct": "Parlaklık",
+              "rgb_color": "Renk",
+              "color_temp_kelvin": "Renk sıcaklığı",
+              "templates": "Şablonlar (özellik: şablon)"
+            },
+            "data_description": {
+              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+            },
+            "description": "Çift basış: sadece parlaklığı taşır."
+          },
+          "light_night": {
+            "name": "Işık · night (basılı tutma)",
+            "data": {
+              "state": "Durum",
+              "brightness_pct": "Parlaklık",
+              "rgb_color": "Renk",
+              "color_temp_kelvin": "Renk sıcaklığı",
+              "templates": "Şablonlar (özellik: şablon)"
+            },
+            "data_description": {
+              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+            },
+            "description": "Basılı tutma: sadece rengi taşır."
+          },
+          "climate_default": {
+            "name": "Klima · default (program sonu)",
+            "data": {
+              "state": "Durum",
+              "temperature": "Sıcaklık",
+              "templates": "Şablonlar (özellik: şablon)"
+            },
+            "data_description": {
+              "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+            },
+            "description": "Program bitince buna dönülür."
+          },
+          "cover_default": {
+            "name": "Perde · default (gün doğumu, batımı, program sonu)",
+            "data": {
+              "current_position": "Pozisyon (sayı veya şablon)"
+            },
+            "description": "Gün doğumu, batımı ve program bitince uygulanır."
+          }
         }
       },
       "immich": {
@@ -155,18 +151,26 @@
       },
       "budget_thuis": {
         "title": "Budget Thuis",
-        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak (Energy panosu). Budget Thuis uygulamasının e-posta ve şifresi. Şifre boş görünür: boş bırakırsan kayıtlı şifre kalır. E-posta boş: Budget Thuis kapalı.",
+        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak (Energy panosu). Durum: {status}. Budget Thuis'te şifre yok: e-postana bir giriş linki gönderilir. E-posta boş: Budget Thuis kapalı.{error}",
         "data": {
           "username": "E-posta",
-          "password": "Şifre",
+          "new_login": "Yeniden giriş yap (yeni link iste)",
           "scan_interval": "Tarama aralığı"
+        }
+      },
+      "budget_thuis_link": {
+        "title": "Budget Thuis: giriş linki",
+        "description": "{email} adresine bir mail gönderildi. Maildeki giriş linkine TIKLAMA: sağ tıklayıp linki kopyala ve buraya yapıştır. (Tıkladıysan ve tarayıcı budgetthuis://login_success?code=... adresinde kaldıysa onu da yapıştırabilirsin.){error}",
+        "data": {
+          "link": "Giriş linki"
         }
       }
     },
     "error": {
       "invalid_preset": "Geçersiz değer",
       "invalid_immich": "Geçersiz Immich ayarı",
-      "required": "Gerekli"
+      "required": "Gerekli",
+      "budget_thuis": "Budget Thuis girişi olmadı"
     }
   },
   "selector": {
