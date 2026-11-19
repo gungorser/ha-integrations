@@ -253,7 +253,8 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   the first is home again are one trip. Album name: the most frequent place + the start year,
   ascii lowercase: the `detail` field (state or city) for the countries listed there (Turkey: il,
   Netherlands: city), else the country's Turkish name (`ispanya_2025`, built in, `names:` over
-  it); `_2` on a clash. A trip's album opens with its first photo and is renamed once at its end
+  it); `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly in that country that spans
+  fewer calendar days is not a trip. A trip's album opens with its first photo and is renamed once at its end
   if the most frequent place changed and nobody renamed it.
 - Faceless: images uploaded after the first run, `wait_hours` after upload, with Immich's face
   detection queue empty and no face found, not a favourite, not archived and in no album of their
