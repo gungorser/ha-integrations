@@ -35,4 +35,4 @@ class ImmichSyncButton(ButtonEntity):
     async def async_press(self) -> None:
         manager = async_get_manager(self.hass)
         if manager is not None:
-            await manager.async_run()
+            await manager.async_run(force=True)

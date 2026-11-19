@@ -17,7 +17,16 @@ gungors:
     faceless:
       album: check_before_delete
       wait_hours: 24
+    partou:                     # daycare photos -> Immich (partou.py)
+      username: !secret partou_email
+      password: !secret partou_password
+      albums: {Kaan: kaan_partou}  # Partou first name -> album prefix (default: <name>_partou)
+      after: "18:00"            # once a day from this local time (and on gungors.immich_run)
 ```
+
+Partou: new items of each child's Partou album are uploaded to the owner's library, once,
+into monthly albums `kaan_partou_mart_2026` (capture month). This writes in every mode but
+`Kapalı` (also in `Deneme`); the uploads stay out of the person, trip and faceless rules.
 
 The mode is `select.immich` (restored): `Kapalı` does nothing, `Deneme` plans
 without writing (the plan is on `sensor.immich`), `Albüm` writes albums, `Albüm +
@@ -75,6 +84,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .partou import DEFAULT_URL as PARTOU_URL, PartouApi, PartouError, exif_time, file_name, item_day
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,6 +97,8 @@ MODE_DRY = "Deneme"
 MODE_ALBUM = "Albüm"
 MODE_TRASH = "Albüm + çöp"
 MODES = [MODE_OFF, MODE_DRY, MODE_ALBUM, MODE_TRASH]
+MONTHS = ["ocak", "subat", "mart", "nisan", "mayis", "haziran", "temmuz", "agustos", "eylul",
+          "ekim", "kasim", "aralik"]
 
 PAGE_SIZE = 1000
 ADD_CHUNK = 500
@@ -166,6 +178,15 @@ IMMICH_SCHEMA = vol.Schema(
                     {cv.string: vol.All(vol.Coerce(int), vol.Range(min=1))},
                     lambda v: {country_key(str(k)): n for k, n in v.items()},
                 ),
+            }
+        ),
+        vol.Optional("partou"): vol.Schema(
+            {
+                vol.Optional("url", default=PARTOU_URL): cv.url,
+                vol.Required("username"): cv.string,
+                vol.Required("password"): cv.string,
+                vol.Optional("albums", default={}): {cv.string: cv.string},
+                vol.Optional("after", default="18:00"): cv.time,
             }
         ),
         vol.Optional("faceless", default={}): vol.Schema(
@@ -516,6 +537,17 @@ class ImmichApi:
                     done.add(row["id"])
         return done
 
+    async def upload(self, data: bytes, name: str, taken: datetime.datetime) -> str:
+        """Upload one file (Immich 3 API); returns the asset id, also for a duplicate."""
+        form = aiohttp.FormData()
+        form.add_field("fileCreatedAt", taken.isoformat())
+        form.add_field("fileModifiedAt", taken.isoformat())
+        form.add_field("filename", name)
+        form.add_field("assetData", data, filename=name,
+                       content_type="application/octet-stream")
+        result = await self.request("POST", "/assets", data=form)
+        return result["id"]
+
     async def faces(self, asset_id: str) -> list[dict[str, Any]]:
         return await self.request("GET", "/faces", params={"id": asset_id})
 
@@ -561,12 +593,13 @@ class ImmichManager:
         self._last_scan: datetime.datetime | None = None
         self._unsub = None
         self._running = False
+        self._partou_writing = False  # Partou writes in every mode but `Kapalı`
 
     # lifecycle
 
     async def async_start(self) -> None:
         self._state = await self._store.async_load() or {}
-        for key in ("albums", "added", "faceless"):
+        for key in ("albums", "added", "faceless", "partou"):
             self._state.setdefault(key, {})
         self._state.setdefault("trips", [])
         self._apply_config()
@@ -617,14 +650,15 @@ class ImmichManager:
 
     @property
     def writing(self) -> bool:
-        return self.mode in (MODE_ALBUM, MODE_TRASH)
+        return self._partou_writing or self.mode in (MODE_ALBUM, MODE_TRASH)
 
     def _notify(self) -> None:
         async_dispatcher_send(self.hass, SIGNAL_UPDATE)
 
     # one run
 
-    async def async_run(self) -> None:
+    async def async_run(self, force: bool = False) -> None:
+        """One run; `force` (gungors.immich_run) also checks Partou outside its daily time."""
         if self.mode == MODE_OFF or self._running:
             return
         self._running = True
@@ -636,6 +670,8 @@ class ImmichManager:
                 self._state["since"] = now.isoformat()
                 await self._store.async_save(self._state)
             await self._ensure_users()
+            if self.config.get("partou"):
+                summary["partou"] = await self._run_partou(now, force)
             await self._refresh_index(now)
             summary["people"] = await self._run_people()
             trips, summary["trips"] = await self._run_trips()
@@ -663,6 +699,8 @@ class ImmichManager:
     async def _refresh_index(self, now: datetime.datetime) -> None:
         """All assets with EXIF per user: full daily, else changed since the last scan."""
         full = self._last_full is None or now - self._last_full > FULL_SCAN_EVERY
+        # Daycare photos carry the daycare's GPS: they would end a trip of a parent away.
+        partou = self._partou_ids()
         for user, api in self._apis.items():
             body: dict[str, Any] = {"withExif": True}
             if not full and self._last_scan is not None:
@@ -674,7 +712,7 @@ class ImmichManager:
                     index.pop(asset["id"], None)
                     continue
                 point = point_from_asset(user, asset)
-                if point is not None:
+                if point is not None and point.id not in partou:
                     index[point.id] = point
             self._index[user] = index
         if full:
@@ -737,6 +775,7 @@ class ImmichManager:
                 for person_id in ids:
                     found = await api.search({"personIds": [person_id]})
                     assets |= {a["id"] for a in self._own(user, found)}
+                assets -= self._partou_ids()
                 new += await self._add(album_id, user, assets)
             result[album_name] = new
         return result
@@ -829,6 +868,64 @@ class ImmichManager:
                     await api.share_album(album["id"], missing)
                 lines.append(album.get("albumName") or album["id"])
         return lines
+
+    # partou
+
+    def _partou_ids(self) -> set[str]:
+        return set(self._state["partou"].get("assets", {}).values())
+
+    async def _run_partou(self, now: datetime.datetime, force: bool) -> dict[str, Any]:
+        """Copy new Partou album items to the owner's library, into monthly albums.
+
+        Once a day after `after` (local), or when forced. Writes in every mode but
+        `Kapalı`. Each Partou id is uploaded once (`.storage`: Partou id -> Immich id).
+        """
+        conf = self.config["partou"]
+        local = dt_util.as_local(now)
+        today = local.date().isoformat()
+        if not force and (local.time() < conf["after"] or self._state["partou"].get("_day") == today):
+            return self.summary.get("partou") or {"durum": "bekliyor"}
+        result: dict[str, Any] = {}
+        tz = dt_util.get_default_time_zone()
+        uploaded: dict[str, str] = self._state["partou"].setdefault("assets", {})
+        api = PartouApi(async_get_clientsession(self.hass), conf["url"],
+                        conf["username"], conf["password"])
+        immich = self._apis[self.owner]
+        self._partou_writing = True
+        try:
+            await api.login()
+            for child in await api.children():
+                first = child.get("firstName") or child["id"]
+                prefix = conf["albums"].get(first) or f"{slug(first)}_partou"
+                items = await api.album(child["id"])
+                new = [i for i in items if i["id"] not in uploaded and i.get("fullSizeUrl")]
+                months: dict[str, set[str]] = {}
+                for item in reversed(new):  # oldest first
+                    data = await api.download(item["fullSizeUrl"])
+                    taken = None
+                    if item.get("mediaType") != "video":
+                        taken = await self.hass.async_add_executor_job(exif_time, data, tz)
+                    taken = taken or item_day(item, tz)
+                    asset_id = await immich.upload(data, file_name(item), taken)
+                    uploaded[item["id"]] = asset_id
+                    self._state["faceless"][asset_id] = "partou"
+                    month = f"{prefix}_{MONTHS[taken.month - 1]}_{taken.year}"
+                    months.setdefault(month, set()).add(asset_id)
+                    if len(uploaded) % 25 == 0:
+                        await self._store.async_save(self._state)
+                for name, ids in sorted(months.items()):
+                    album_id = await self._album(f"partou:{name}", name, self.owner, True)
+                    await self._add(album_id, self.owner, ids)
+                result[first] = {"toplam": len(items), "yeni": len(new),
+                                 "albümler": sorted(months)}
+            self._state["partou"]["_day"] = today
+        except PartouError as err:
+            _LOGGER.warning("Partou failed: %s", err)
+            result["hata"] = str(err)
+        finally:
+            self._partou_writing = False
+            await self._store.async_save(self._state)
+        return result
 
     # faceless
 

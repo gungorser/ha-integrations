@@ -130,7 +130,7 @@ async def _async_setup_immich(
     await manager.async_start()
 
     async def run(_call: ServiceCall) -> None:
-        await manager.async_run()
+        await manager.async_run(force=True)
 
     hass.services.async_register(DOMAIN, "immich_run", run)
     for platform in (Platform.BUTTON, Platform.SELECT, Platform.SENSOR):
