@@ -239,9 +239,10 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                         ),
                         vol.Optional("share_albums", default=False): selector.BooleanSelector(),
                     }
-                )
+                ),
+                {"collapsed": True},
             ),
-            vol.Required("users"): section(vol.Schema(user_fields)),
+            vol.Required("users"): section(vol.Schema(user_fields), {"collapsed": True}),
             vol.Required("people"): section(
                 vol.Schema({vol.Optional("people"): selector.ObjectSelector()}),
                 {"collapsed": True},
@@ -477,51 +478,48 @@ class GungorsOptionsFlow(OptionsFlow):
     async def async_step_presets(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self.async_show_menu(
-            step_id="presets", menu_options=[f"{d}_{n}" for d, n in PRESETS]
-        )
-
-    async def _async_preset(
-        self, domain: str, name: str, user_input: dict[str, Any] | None
-    ) -> ConfigFlowResult:
-        step_id = f"{domain}_{name}"
+        """One form: a closed section per preset, opened by its header."""
         options = self._options()
         errors: dict[str, str] = {}
         placeholders = {"error": ""}
+        stored_all = options.get("presets") or {}
         if user_input is not None:
+            new: dict[str, dict[str, Any]] = {}
             try:
-                values = _preset_from_form(domain, user_input)
+                for domain, name in PRESETS:
+                    key = f"{domain}_{name}"
+                    try:
+                        new.setdefault(domain, {})[name] = _preset_from_form(
+                            domain, user_input.get(key) or {}
+                        )
+                    except vol.Invalid as err:
+                        raise vol.Invalid(f"{key}: {err.msg if hasattr(err, 'msg') else err}") from err
             except vol.Invalid as err:
                 errors["base"] = "invalid_preset"
-                placeholders["error"] = str(err.msg if hasattr(err, "msg") else err)
+                placeholders["error"] = str(err.msg)
             else:
-                options.setdefault("presets", {}).setdefault(domain, {})[name] = values
+                presets = {d: dict(v) for d, v in stored_all.items()}
+                for domain, values in new.items():
+                    presets.setdefault(domain, {}).update(values)
+                options["presets"] = presets
                 return self.async_create_entry(data=options)
-        stored = (options.get("presets") or {}).get(domain, {}).get(name)
-        if stored is None:
-            stored = builtin_presets().get(domain, {}).get(name, {})
+        builtin = builtin_presets()
+        fields: dict[Any, Any] = {}
+        suggested: dict[str, Any] = {}
+        for domain, name in PRESETS:
+            key = f"{domain}_{name}"
+            fields[vol.Required(key)] = section(_preset_schema(domain), {"collapsed": True})
+            stored = (stored_all.get(domain) or {}).get(name)
+            if stored is None:
+                stored = builtin.get(domain, {}).get(name, {})
+            suggested[key] = _preset_form_values(domain, stored)
         schema = self.add_suggested_values_to_schema(
-            _preset_schema(domain),
-            user_input if user_input is not None else _preset_form_values(domain, stored),
+            vol.Schema(fields), user_input if user_input is not None else suggested
         )
         return self.async_show_form(
-            step_id=step_id, data_schema=schema, errors=errors, description_placeholders=placeholders
+            step_id="presets", data_schema=schema, errors=errors,
+            description_placeholders=placeholders,
         )
-
-    async def async_step_light_default(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("light", "default", user_input)
-
-    async def async_step_light_dim(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("light", "dim", user_input)
-
-    async def async_step_light_night(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("light", "night", user_input)
-
-    async def async_step_climate_default(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("climate", "default", user_input)
-
-    async def async_step_cover_default(self, user_input=None) -> ConfigFlowResult:
-        return await self._async_preset("cover", "default", user_input)
 
     async def async_step_immich(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         options = self._options()

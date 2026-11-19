@@ -94,6 +94,17 @@ async def test_user_step_single_instance(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.ABORT
 
 
+def _builtin_input() -> dict:
+    """The presets form as shown (the built-in presets), section by section."""
+    return {
+        "light_default": {"state": "off", "rgb_color": [255, 255, 255], "brightness_pct": 100},
+        "light_dim": {"brightness_pct": 10},
+        "light_night": {"rgb_color": [255, 0, 0]},
+        "climate_default": {"state": "off"},
+        "cover_default": {"current_position": SUN},
+    }
+
+
 async def _open(hass: HomeAssistant, entry: MockConfigEntry, *steps: str) -> dict:
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
@@ -106,10 +117,10 @@ async def _open(hass: HomeAssistant, entry: MockConfigEntry, *steps: str) -> dic
 
 async def test_light_preset_form_applies_without_restart(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}})
-    result = await _open(hass, entry, "presets", "light_night")
+    result = await _open(hass, entry, "presets")
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"rgb_color": [255, 120, 0]}
+        result["flow_id"], {**_builtin_input(), "light_night": {"rgb_color": [255, 120, 0]}}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
@@ -119,15 +130,17 @@ async def test_light_preset_form_applies_without_restart(hass: HomeAssistant) ->
 
 async def test_light_preset_template_and_bad_template(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}})
-    result = await _open(hass, entry, "presets", "light_dim")
+    result = await _open(hass, entry, "presets")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"templates": {"brightness_pct": "{{ 5 + "}}
+        result["flow_id"],
+        {**_builtin_input(), "light_dim": {"templates": {"brightness_pct": "{{ 5 + "}}},
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_preset"}
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"brightness_pct": 50, "templates": {"brightness_pct": "{{ 5 + 5 }}"}},
+        {**_builtin_input(),
+         "light_dim": {"brightness_pct": 50, "templates": {"brightness_pct": "{{ 5 + 5 }}"}}},
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["presets"]["light"]["dim"] == {"brightness_pct": "{{ 5 + 5 }}"}
@@ -135,9 +148,9 @@ async def test_light_preset_template_and_bad_template(hass: HomeAssistant) -> No
 
 async def test_cover_preset_number_or_template(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {"cover": {"default": {"current_position": SUN}}}})
-    result = await _open(hass, entry, "presets", "cover_default")
+    result = await _open(hass, entry, "presets")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"current_position": "40"}
+        result["flow_id"], {**_builtin_input(), "cover_default": {"current_position": "40"}}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["presets"]["cover"]["default"] == {"current_position": 40}
