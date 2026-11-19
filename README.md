@@ -269,7 +269,8 @@ through the Immich API, with one API key per Immich user (faces and photos are p
 - `select.immich` is the mode (restored): `Kapalı`, `Deneme` (plans only; nothing written),
   `Albüm`, `Albüm + çöp`. `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
   per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.
-  A run every `scan_interval` (600 s), on a mode change and on `gungors.immich_run`.
+  A run every `scan_interval` (600 s; `0`: no timer), on a mode change, on
+  `button.immich_sync` and on `gungors.immich_run`.
 - `share_albums: true`: every album a user owns (also ones made by hand or by the phone app) is
   shared with the other users as editors; the faceless albums stay private.
 - Each asset is added to an album once (`.storage/gungors.immich`): one removed by hand stays out;
