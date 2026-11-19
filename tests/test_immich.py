@@ -224,7 +224,7 @@ async def setup(hass: HomeAssistant):
     server = FakeImmich()
     config = IMMICH_SCHEMA(
         {"url": "http://immich", "users": {"sercan": "k1", "melike": "k2"},
-         "owner": "sercan", "people": {"Kaan": "Kaan"}}
+         "owner": "sercan", "people": {"Kaan": "Kaan"}, "trips": {"min_assets": 1}}
     )
     manager = ImmichManager(hass, config)
     await manager.async_start()
@@ -285,7 +285,7 @@ async def test_trip_album_renamed_when_closed(setup) -> None:
     server.asset("h", "sercan", t(7), HOME)
     await manager.async_run()
     assert album_named(server, "antalya_2025") is None
-    assert album_named(server, "ispanya_2025")["_assets"] == {"a1", "v2", "v3", "v4", "v5"}
+    assert album_named(server, "turkiye_ispanya_2025")["_assets"] == {"a1", "v2", "v3", "v4", "v5"}
 
 
 async def test_faceless_new_uploads(setup) -> None:
@@ -428,16 +428,61 @@ def test_min_days_with_the_netherlands_name() -> None:
     assert find_trips(points, HOME, 50, DETAIL, {}, {"netherlands": 2}) == []
 
 
-def test_long_gap_or_new_country_starts_a_new_trip() -> None:
-    croatia, belgium = (45.81, 15.98), (50.85, 4.35)
+def test_long_gap_starts_a_new_trip_and_countries_join() -> None:
+    croatia, belgium, slovenia = (45.81, 15.98), (50.85, 4.35), (46.05, 14.51)
     points = [
         p("c1", t(22, 6), croatia, country="Croatia"),
         p("c2", t(1, 7), croatia, country="Croatia"),  # 9 days later: same trip
         p("b1", t(13, 7), belgium, country="Belgium"),  # 12 days later: new trip
         p("b2", t(14, 7), belgium, country="Belgium"),
-        p("c3", t(20, 7), croatia, country="Croatia"),  # other country, 6 days: new trip
-        p("c4", t(21, 7), croatia, country="Croatia"),
+        p("c3", t(20, 7), croatia, country="Croatia"),  # other country, 6 days: same trip
+        p("s1", t(21, 7), slovenia, country="Slovenia"),
     ]
     trips = find_trips(points, HOME, 50, DETAIL, {})
-    assert [sorted(x.all_assets()) for x in trips] == [["c1", "c2"], ["b1", "b2"], ["c3", "c4"]]
-    assert [x.closed for x in trips] == [True, True, False]
+    assert [sorted(x.all_assets()) for x in trips] == [["c1", "c2"], ["b1", "b2", "c3", "s1"]]
+    assert [x.closed for x in trips] == [True, False]
+    assert trip_base_name(trips[1]) == "belcika_hirvatistan_slovenya_2025"
+
+
+def test_trips_days_apart_merge_with_every_city_and_the_start_year() -> None:
+    ankara, samsun = (39.93, 32.85), (41.29, 36.33)
+    points = [
+        p("a1", t(27, 12, 2024), ankara, country="Türkiye", state="Ankara"),
+        p("s1", t(31, 12, 2024), samsun, user="melike", country="Türkiye", state="Samsun"),
+        p("a2", t(9, 1, 2025), ankara, user="melike", country="Türkiye", state="Ankara"),
+    ]
+    trips = find_trips(points, HOME, 50, DETAIL, {})
+    assert len(trips) == 1
+    assert trip_base_name(trips[0]) == "ankara_samsun_2024"
+
+
+def test_coming_home_ends_the_trip_of_that_user() -> None:
+    ankara = (39.93, 32.85)
+    points = [
+        p("a1", t(1), ankara, country="Turkey", state="Ankara"),
+        p("h1", t(3), HOME),
+        p("a2", t(6), ankara, country="Turkey", state="Ankara"),
+    ]
+    assert len(find_trips(points, HOME, 50, DETAIL, {})) == 2
+
+
+def test_multi_country_name_skips_the_home_country() -> None:
+    utrecht, paris, berlin = (52.09, 5.12), (48.86, 2.35), (52.52, 13.40)
+    points = [
+        p("u1", t(26), utrecht, country="Netherlands", city="Utrecht"),
+        p("v1", t(27), VALENCIA, country="Spain"),
+        p("f1", t(3, 8), paris, country="France"),
+        p("v2", t(5, 8), VALENCIA, country="Spain"),
+        p("g1", t(10, 8), berlin, country="Germany"),
+    ]
+    trips = find_trips(points, HOME, 50, DETAIL, {})
+    assert trip_base_name(trips[0], {}, "netherlands") == "ispanya_fransa_almanya_2025"
+    # One foreign country: its places only, without the home country's.
+    one = find_trips(points[:2], HOME, 50, DETAIL, {})
+    assert trip_base_name(one[0], {}, "netherlands") == "ispanya_2025"
+
+
+def test_min_assets() -> None:
+    points = [p("v1", t(1), VALENCIA, country="Spain"), p("v2", t(2), VALENCIA, country="Spain")]
+    assert find_trips(points, HOME, 50, DETAIL, {}, min_assets=3) == []
+    assert len(find_trips(points, HOME, 50, DETAIL, {}, min_assets=2)) == 1
