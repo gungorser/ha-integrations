@@ -1,0 +1,186 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Gungor Customizations",
+        "description": "Preset ve Immich ayarlarını Yapılandır'a ekler. Wrapper'lar YAML'da kalır."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Zaten kurulu."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Gungor Customizations",
+        "menu_options": {
+          "presets": "Presetler",
+          "services": "Servisler"
+        }
+      },
+      "presets": {
+        "title": "Presetler",
+        "menu_options": {
+          "light_default": "Işık · default (tek basış, program sonu)",
+          "light_dim": "Işık · dim (çift basış)",
+          "light_night": "Işık · night (basılı tutma)",
+          "climate_default": "Klima · default (program sonu)",
+          "cover_default": "Perde · default (gün doğumu, batımı, program sonu)"
+        }
+      },
+      "light_default": {
+        "title": "Işık · default",
+        "description": "Tek basış bunu yakar; program bitince buna dönülür. Boş bırakılan alan uygulanmaz.{error}",
+        "data": {
+          "state": "Durum",
+          "brightness_pct": "Parlaklık",
+          "rgb_color": "Renk",
+          "color_temp_kelvin": "Renk sıcaklığı",
+          "templates": "Şablonlar (özellik: şablon)"
+        },
+        "data_description": {
+          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "light_dim": {
+        "title": "Işık · dim",
+        "description": "Çift basış: sadece parlaklığı taşır. Boş bırakılan alan uygulanmaz.{error}",
+        "data": {
+          "state": "Durum",
+          "brightness_pct": "Parlaklık",
+          "rgb_color": "Renk",
+          "color_temp_kelvin": "Renk sıcaklığı",
+          "templates": "Şablonlar (özellik: şablon)"
+        },
+        "data_description": {
+          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "light_night": {
+        "title": "Işık · night",
+        "description": "Basılı tutma: sadece rengi taşır. Boş bırakılan alan uygulanmaz.{error}",
+        "data": {
+          "state": "Durum",
+          "brightness_pct": "Parlaklık",
+          "rgb_color": "Renk",
+          "color_temp_kelvin": "Renk sıcaklığı",
+          "templates": "Şablonlar (özellik: şablon)"
+        },
+        "data_description": {
+          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "climate_default": {
+        "title": "Klima · default",
+        "description": "Program bitince buna dönülür. Boş bırakılan alan uygulanmaz.{error}",
+        "data": {
+          "state": "Durum",
+          "temperature": "Sıcaklık",
+          "templates": "Şablonlar (özellik: şablon)"
+        },
+        "data_description": {
+          "templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
+        }
+      },
+      "cover_default": {
+        "title": "Perde · default",
+        "description": "Gün doğumu, batımı ve program bitince uygulanır. Boş bırakılan alan uygulanmaz.{error}",
+        "data": {
+          "current_position": "Pozisyon (sayı veya şablon)"
+        }
+      },
+      "immich": {
+        "title": "Immich",
+        "description": "Adres boş: Immich kapalı. Anahtar ve şifre alanları boş görünür: boş bırakırsan kayıtlı değer kalır, yenisini yazarsan değişir, '-' kullanıcıyı çıkarır.{error}",
+        "sections": {
+          "general": {
+            "name": "Genel",
+            "data": {
+              "url": "Adres",
+              "scan_interval": "Tarama aralığı (0 = sadece senkron butonu)",
+              "owner": "Ortak albümlerin sahibi",
+              "share_albums": "Albümleri herkesle paylaş"
+            }
+          },
+          "users": {
+            "name": "Kullanıcılar ve API anahtarları",
+            "data": {
+              "new_user": "Yeni kullanıcı",
+              "new_user_key": "Yeni kullanıcının API anahtarı"
+            }
+          },
+          "people": {
+            "name": "Kişiler → albüm",
+            "data": {
+              "people": "Immich'teki kişi: albüm"
+            }
+          },
+          "trips": {
+            "name": "Seyahat",
+            "data": {
+              "distance_km": "Evden uzaklık",
+              "advanced": "Diğer (detail, names, min_days, ...)"
+            }
+          },
+          "faceless": {
+            "name": "Yüzsüz fotoğraflar",
+            "data": {
+              "album": "Albüm",
+              "wait_hours": "Bekleme"
+            }
+          },
+          "partou": {
+            "name": "Partou",
+            "data": {
+              "username": "E-posta (boş: Partou kapalı)",
+              "password": "Şifre",
+              "after": "Günlük saat"
+            }
+          }
+        }
+      },
+      "services": {
+        "title": "Servisler",
+        "menu_options": {
+          "immich": "Immich",
+          "budget_thuis": "Budget Thuis"
+        }
+      },
+      "budget_thuis": {
+        "title": "Budget Thuis",
+        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak (Energy panosu). Budget Thuis uygulamasının e-posta ve şifresi. Şifre boş görünür: boş bırakırsan kayıtlı şifre kalır. E-posta boş: Budget Thuis kapalı.",
+        "data": {
+          "username": "E-posta",
+          "password": "Şifre",
+          "scan_interval": "Tarama aralığı"
+        }
+      }
+    },
+    "error": {
+      "invalid_preset": "Geçersiz değer",
+      "invalid_immich": "Geçersiz Immich ayarı",
+      "required": "Gerekli"
+    }
+  },
+  "selector": {
+    "light_state": {
+      "options": {
+        "on": "Açık",
+        "off": "Kapalı"
+      }
+    },
+    "climate_state": {
+      "options": {
+        "heat": "Isıt",
+        "off": "Kapalı"
+      }
+    }
+  },
+  "issues": {
+    "yaml_ignored": {
+      "title": "gungors: YAML'daki preset/Immich yok sayılıyor",
+      "description": "Artık Ayarlar > Cihazlar ve Hizmetler > gungors > Yapılandır'da. YAML'dan {keys} bölümünü kaldır."
+    }
+  }
+}

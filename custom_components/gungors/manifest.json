@@ -7,11 +7,13 @@
   "codeowners": [
     "@gungorser"
   ],
+  "config_flow": true,
   "documentation": "https://github.com/gungorser/ha-integrations",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/gungorser/ha-integrations/issues",
   "requirements": [
     "ical>=10.0.0"
   ],
-  "version": "1.19.0"
+  "single_config_entry": true,
+  "version": "1.20.0"
 }

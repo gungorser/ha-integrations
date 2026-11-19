@@ -69,10 +69,34 @@ and puts it back as it was; not a request, so no rule or `occupancy` sees it; a 
 ends it), `gungors.reload` (reloads the YAML of all platforms and the presets; Python changes
 still need a restart).
 
+## Configure (UI)
+
+Since 1.20.0 gungors has one config entry (Settings > Devices & services > Gungor
+Customizations, `config_flow.py`, logo in `brand/`). Configure opens a menu:
+
+- Presetler: the five presets below (light default/dim/night, climate default, cover
+  default), one form each; an empty field is not applied. Light and climate forms take an
+  optional `templates` mapping (attribute: template) over the typed fields; the cover position
+  is a template field (a number works too).
+- Servisler > Immich: the `immich:` settings below in sections. Key and password fields show
+  empty: left empty they keep the stored value, a new value replaces it, `-` removes a user.
+  An empty address turns Immich off.
+
+- Servisler > Budget Thuis: e-mail and password of the Budget Thuis app and the scan interval
+  (default 3600 s); see Budget Thuis below. Empty e-mail: off.
+
+Saving applies at once (no restart, no `gungors.reload`). The entry options keep the YAML
+shape (`{"presets": {...}, "immich": {...}}`). Wrappers, features and the program calendar stay
+in YAML.
+
+Migration: on the first start without an entry, `gungors: presets:` and `gungors: immich:` from
+YAML are imported into a new entry (secrets included). With an entry, these YAML keys are
+ignored (still accepted, so a restart never fails) and a Repairs warning asks to remove them.
+
 ## Presets
 
 Named attribute sets per domain, shared by the program defaults and the pushbuttons
-(`presets.py`):
+(`presets.py`); set in the UI (Configure > Presetler), shown here in the stored shape:
 
 ```yaml
 gungors:
@@ -241,7 +265,8 @@ climate:
 
 ## Immich albums
 
-`gungors: immich:` (ha-configs `gungors/packages/gungors.yaml`, `immich.py`) fills Immich albums
+Immich settings (Configure > Servisler > Immich; before 1.20.0 `gungors: immich:` in YAML,
+`immich.py`, shown here in the stored shape) fill Immich albums
 through the Immich API, with one API key per Immich user (faces and photos are per user):
 
 - People: every photo or video with a named person (`people: {Kaan: Kaan}`, the name as given in
@@ -283,6 +308,28 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   albums `kaan_partou_mart_2026`. This writes in every mode but `Kapalı`, also in `Deneme`.
   The uploads stay out of the person, trip and faceless rules. `sensor.immich` `partou`: per
   child `toplam`, `yeni`, `albümler`, or `hata`.
+
+## Budget Thuis
+
+`budget_thuis.py` reads the daily usage of the current month from the (unofficial) API of the
+Budget Thuis app: login with the app's OAuth2 PKCE flow (client `mobile`, the accounts site's
+login form), refresh tokens kept in `.storage/gungors.budget_thuis`, contracts via
+`/home/v1/contactPerson` and `/energy/v2/customer/productPicker`, usage via
+`/energy/v1/contract/<id>/usagecosts/details?PeriodDuration=Day`, summed over all contracts.
+Every `usage*` block of a day with a `rawUsage` counts: electricity consumption, electricity
+production, gas. The field names of the first run are logged at info level.
+
+Sensors (from the config entry, unavailable while not configured), the month so far,
+`total_increasing` (0 again at a new month), so the Energy dashboard takes them:
+
+| Entity | Unit |
+| --- | --- |
+| `sensor.budget_thuis_elektrik` | kWh |
+| `sensor.budget_thuis_gaz` | m³ |
+| `sensor.budget_thuis_teruglevering` | kWh |
+
+Attributes: `last_day` and `last_day_value` (the newest day with a reading; readings lag a day
+or two), `month_start`, `last_run`, `status` (`tamam` / `hata`), `error`.
 
 ## Wrappers drive hidden originals
 
