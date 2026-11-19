@@ -14,14 +14,7 @@
     "step": {
       "init": {
         "title": "Gungor Customizations",
-        "menu_options": {
-          "presets": "Presetler",
-          "services": "Servisler"
-        }
-      },
-      "presets": {
-        "title": "Presetler",
-        "description": "Bir preset'in başlığına bas: açılır, tekrar bas: kapanır. Boş bırakılan alan uygulanmaz.{error}",
+        "description": "Bir bölümün başlığına bas: açılır, tekrar bas: kapanır. Boş bırakılan preset alanı uygulanmaz. Anahtar ve şifre alanları boş görünür: boş bırakırsan kayıtlı değer kalır. Immich adresi boş: Immich kapalı.{error}",
         "sections": {
           "light_default": {
             "name": "Işık · default (tek basış, program sonu)",
@@ -83,15 +76,9 @@
               "current_position": "Pozisyon (sayı veya şablon)"
             },
             "description": "Gün doğumu, batımı ve program bitince uygulanır."
-          }
-        }
-      },
-      "immich": {
-        "title": "Immich",
-        "description": "Adres boş: Immich kapalı. Anahtar ve şifre alanları boş görünür: boş bırakırsan kayıtlı değer kalır, yenisini yazarsan değişir, '-' kullanıcıyı çıkarır.{error}",
-        "sections": {
-          "general": {
-            "name": "Genel",
+          },
+          "immich_general": {
+            "name": "Immich · Genel",
             "data": {
               "url": "Adres",
               "scan_interval": "Tarama aralığı (0 = sadece senkron butonu)",
@@ -99,28 +86,30 @@
               "share_albums": "Albümleri herkesle paylaş"
             }
           },
-          "users": {
-            "name": "Kullanıcılar ve API anahtarları",
+          "immich_users": {
+            "name": "Immich · Kullanıcılar ve API anahtarları",
             "data": {
-              "new_user": "Yeni kullanıcı",
-              "new_user_key": "Yeni kullanıcının API anahtarı"
+              "users": "Kullanıcılar"
+            },
+            "data_description": {
+              "users": "Ekle / sil: her Immich kullanıcısı için ad ve API anahtarı (Hesap ayarları > API anahtarları). Kayıtlı anahtar boş görünür; boş bırakırsan kalır."
             }
           },
-          "people": {
-            "name": "Kişiler → albüm",
+          "immich_people": {
+            "name": "Immich · Kişiler → albüm",
             "data": {
               "people": "Immich'teki kişi: albüm"
             }
           },
-          "trips": {
-            "name": "Seyahat",
+          "immich_trips": {
+            "name": "Immich · Seyahat",
             "data": {
               "distance_km": "Evden uzaklık",
               "advanced": "Diğer (detail, names, min_days, ...)"
             }
           },
-          "faceless": {
-            "name": "Yüzsüz fotoğraflar",
+          "immich_faceless": {
+            "name": "Immich · Yüzsüz fotoğraflar",
             "data": {
               "album": "Albüm adı",
               "wait_hours": "Bekleme",
@@ -132,30 +121,23 @@
               "trip": "Yüz bulunmayan yeni fotoğraf, bir gezide çekildiyse"
             }
           },
-          "partou": {
-            "name": "Partou",
+          "immich_partou": {
+            "name": "Immich · Partou",
             "data": {
               "username": "E-posta (boş: Partou kapalı)",
               "password": "Şifre",
               "after": "Günlük saat"
             }
+          },
+          "budget_thuis": {
+            "name": "Budget Thuis",
+            "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak. Durum: {budget_thuis}. Şifre yok: yeni girişte e-postana link gönderilir, sonraki sayfada yapıştırırsın. E-posta boş: kapalı.",
+            "data": {
+              "username": "E-posta",
+              "new_login": "Yeniden giriş yap (yeni link iste)",
+              "scan_interval": "Tarama aralığı"
+            }
           }
-        }
-      },
-      "services": {
-        "title": "Servisler",
-        "menu_options": {
-          "immich": "Immich",
-          "budget_thuis": "Budget Thuis"
-        }
-      },
-      "budget_thuis": {
-        "title": "Budget Thuis",
-        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak (Energy panosu). Durum: {status}. Budget Thuis'te şifre yok: e-postana bir giriş linki gönderilir. E-posta boş: Budget Thuis kapalı.{error}",
-        "data": {
-          "username": "E-posta",
-          "new_login": "Yeniden giriş yap (yeni link iste)",
-          "scan_interval": "Tarama aralığı"
         }
       },
       "budget_thuis_link": {
@@ -167,9 +149,7 @@
       }
     },
     "error": {
-      "invalid_preset": "Geçersiz değer",
-      "invalid_immich": "Geçersiz Immich ayarı",
-      "required": "Gerekli",
+      "invalid": "Geçersiz değer",
       "budget_thuis": "Budget Thuis girişi olmadı"
     }
   },

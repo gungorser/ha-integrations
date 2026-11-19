@@ -217,9 +217,18 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
-    user_fields: dict[Any, Any] = {vol.Optional(user): password for user in users}
-    user_fields[vol.Optional("new_user")] = selector.TextSelector()
-    user_fields[vol.Optional("new_user_key")] = password
+    user_fields: dict[Any, Any] = {
+        vol.Optional("users"): selector.ObjectSelector(
+            selector.ObjectSelectorConfig(
+                fields={
+                    "name": {"label": "Ad", "required": True, "selector": {"text": {}}},
+                    "key": {"label": "API anahtarı", "selector": {"text": {"type": "password"}}},
+                },
+                multiple=True,
+                label_field="name",
+            )
+        )
+    }
     return vol.Schema(
         {
             vol.Required("general"): section(
@@ -235,7 +244,10 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                             )
                         ),
                         vol.Optional("owner"): selector.SelectSelector(
-                            selector.SelectSelectorConfig(options=users or ["-"])
+                            selector.SelectSelectorConfig(
+                                options=users, custom_value=True,
+                                mode=selector.SelectSelectorMode.DROPDOWN,
+                            )
                         ),
                         vol.Optional("share_albums", default=False): selector.BooleanSelector(),
                     }
@@ -301,7 +313,8 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
         "general": {
             k: conf[k] for k in ("url", "scan_interval", "owner", "share_albums") if k in conf
         },
-        "users": {},
+        # keys stay on the server: an empty key keeps the stored one
+        "users": {"users": [{"name": u, "key": ""} for u in (conf.get("users") or {})]},
         "people": {"people": conf.get("people") or {}},
         "trips": {
             **({"distance_km": trips["distance_km"]} if "distance_km" in trips else {}),
@@ -318,21 +331,18 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     url = (general.get("url") or "").strip()
     if not url:
         return None
-    users_in = dict(user_input.get("users") or {})
-    new_user = (users_in.pop("new_user", "") or "").strip()
-    new_key = users_in.pop("new_user_key", "") or ""
+    stored = old.get("users") or {}
     users: dict[str, str] = {}
-    for user, key in (old.get("users") or {}).items():
-        typed = (users_in.get(user) or "").strip()
-        if not typed:
-            users[user] = key  # left empty: keep the stored key
-        elif typed != "-":
-            users[user] = typed
-        # "-": the user is removed
-    if new_user:
-        if not new_key.strip():
-            raise vol.Invalid("new_user_key")
-        users[new_user] = new_key.strip()
+    for item in (user_input.get("users") or {}).get("users") or []:
+        name = str((item or {}).get("name") or "").strip()
+        if not name:
+            continue
+        key = str(item.get("key") or "").strip() or stored.get(name, "")
+        if not key:
+            raise vol.Invalid(f"{name}: API anahtarı gerekli")
+        users[name] = key
+    if not users:
+        raise vol.Invalid("en az bir kullanıcı gerekli")
     conf: dict[str, Any] = {
         "url": url,
         "users": users,
@@ -372,72 +382,126 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     return conf
 
 
+IMMICH_SECTIONS = ("general", "users", "people", "trips", "faceless", "partou")
+
+
+def _budget_thuis_section() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Optional("username"): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.EMAIL)
+            ),
+            vol.Optional("new_login", default=False): selector.BooleanSelector(),
+            vol.Optional("scan_interval", default=DEFAULT_BT_INTERVAL): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=300, max=86400, step=60, unit_of_measurement="s",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+        }
+    )
+
+
 class GungorsOptionsFlow(OptionsFlow):
-    """Configure: Presetler / Immich."""
+    """Configure: one form, a closed section per preset, per Immich part and Budget Thuis.
+
+    A new Budget Thuis login (first time, another e-mail or "Yeniden giriş yap") mails a
+    link and asks for it on a second page.
+    """
 
     def _options(self) -> dict[str, Any]:
         return copy.deepcopy(dict(self.config_entry.options))
 
+    def _schema(self, options: dict[str, Any]) -> tuple[vol.Schema, dict[str, Any]]:
+        fields: dict[Any, Any] = {}
+        suggested: dict[str, Any] = {}
+        closed = {"collapsed": True}
+        builtin = builtin_presets()
+        stored_presets = options.get("presets") or {}
+        for domain, name in PRESETS:
+            key = f"{domain}_{name}"
+            fields[vol.Required(key)] = section(_preset_schema(domain), closed)
+            stored = (stored_presets.get(domain) or {}).get(name)
+            if stored is None:
+                stored = builtin.get(domain, {}).get(name, {})
+            suggested[key] = _preset_form_values(domain, stored)
+        immich = options.get("immich") or {}
+        immich_schema = _immich_schema(immich).schema
+        immich_values = _immich_form_values(immich)
+        for marker, sec in immich_schema.items():
+            fields[vol.Required(f"immich_{marker.schema}")] = sec
+            suggested[f"immich_{marker.schema}"] = immich_values.get(marker.schema, {})
+        fields[vol.Required("budget_thuis")] = section(_budget_thuis_section(), closed)
+        bt = options.get("budget_thuis") or {}
+        suggested["budget_thuis"] = {k: bt[k] for k in ("username", "scan_interval") if k in bt}
+        return vol.Schema(fields), suggested
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="init", menu_options=["presets", "services"])
-
-    async def async_step_services(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="services", menu_options=["immich", "budget_thuis"])
-
-    async def async_step_budget_thuis(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """E-mail and interval; a new login mails a link (Budget Thuis has no password)."""
         from .budget_thuis import BudgetThuisApi, BudgetThuisError  # noqa: PLC0415
 
         options = self._options()
-        old = options.get("budget_thuis") or {}
         errors: dict[str, str] = {}
-        placeholders = {"error": "", "status": "bağlı" if old.get("refresh_token") else "bağlı değil"}
+        old_bt = options.get("budget_thuis") or {}
+        placeholders = {
+            "error": "",
+            "budget_thuis": "bağlı" if old_bt.get("refresh_token") else "bağlı değil",
+        }
         if user_input is not None:
-            email = (user_input.get("username") or "").strip()
-            interval = int(user_input.get("scan_interval", DEFAULT_BT_INTERVAL))
-            if not email:
-                options.pop("budget_thuis", None)
-                return self.async_create_entry(data=options)
-            new_login = (
-                user_input.get("new_login")
-                or not old.get("refresh_token")
-                or email != old.get("username")
-            )
-            if not new_login:
-                options["budget_thuis"] = {**old, "scan_interval": interval}
-                return self.async_create_entry(data=options)
-            api = BudgetThuisApi(async_get_clientsession(self.hass))
             try:
-                self._bt_verifier = await api.request_link(email)
-            except BudgetThuisError as err:
-                errors["base"] = "budget_thuis"
-                placeholders["error"] = str(err)
-            else:
-                self._bt_login = {"username": email, "scan_interval": interval}
-                return await self.async_step_budget_thuis_link()
-        schema = vol.Schema(
-            {
-                vol.Optional("username"): selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.EMAIL)
-                ),
-                vol.Optional("new_login", default=False): selector.BooleanSelector(),
-                vol.Optional("scan_interval", default=DEFAULT_BT_INTERVAL): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=300, max=86400, step=60, unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
+                presets = {d: dict(v) for d, v in (options.get("presets") or {}).items()}
+                for domain, name in PRESETS:
+                    key = f"{domain}_{name}"
+                    try:
+                        presets.setdefault(domain, {})[name] = _preset_from_form(
+                            domain, user_input.get(key) or {}
+                        )
+                    except vol.Invalid as err:
+                        raise vol.Invalid(f"{key}: {err.msg}") from err
+                try:
+                    immich = _immich_from_form(
+                        options.get("immich") or {},
+                        {s: user_input.get(f"immich_{s}") or {} for s in IMMICH_SECTIONS},
                     )
-                ),
-            }
+                except vol.Invalid as err:
+                    raise vol.Invalid(f"immich: {err.msg}") from err
+            except vol.Invalid as err:
+                errors["base"] = "invalid"
+                placeholders["error"] = str(err.msg)
+            else:
+                options["presets"] = presets
+                if immich is None:
+                    options.pop("immich", None)
+                else:
+                    options["immich"] = immich
+                bt_in = user_input.get("budget_thuis") or {}
+                email = (bt_in.get("username") or "").strip()
+                interval = int(bt_in.get("scan_interval", DEFAULT_BT_INTERVAL))
+                if not email:
+                    options.pop("budget_thuis", None)
+                    return self.async_create_entry(data=options)
+                if not (
+                    bt_in.get("new_login")
+                    or not old_bt.get("refresh_token")
+                    or email != old_bt.get("username")
+                ):
+                    options["budget_thuis"] = {**old_bt, "scan_interval": interval}
+                    return self.async_create_entry(data=options)
+                api = BudgetThuisApi(async_get_clientsession(self.hass))
+                try:
+                    self._bt_verifier = await api.request_link(email)
+                except BudgetThuisError as err:
+                    errors["base"] = "budget_thuis"
+                    placeholders["error"] = str(err)
+                else:
+                    self._pending = options
+                    self._bt_login = {"username": email, "scan_interval": interval}
+                    return await self.async_step_budget_thuis_link()
+        schema, suggested = self._schema(options)
+        schema = self.add_suggested_values_to_schema(
+            schema, user_input if user_input is not None else suggested
         )
-        suggested = {k: old[k] for k in ("username", "scan_interval") if k in old}
         return self.async_show_form(
-            step_id="budget_thuis",
-            data_schema=self.add_suggested_values_to_schema(schema, user_input or suggested),
-            errors=errors,
+            step_id="init", data_schema=schema, errors=errors,
             description_placeholders=placeholders,
         )
 
@@ -461,7 +525,7 @@ class GungorsOptionsFlow(OptionsFlow):
                     errors["base"] = "budget_thuis"
                     placeholders["error"] = "no refresh token"
                 else:
-                    options = self._options()
+                    options = self._pending
                     options["budget_thuis"] = {
                         **self._bt_login,
                         "refresh_token": tokens["refresh_token"],
@@ -473,77 +537,6 @@ class GungorsOptionsFlow(OptionsFlow):
             data_schema=vol.Schema({vol.Optional("link"): selector.TextSelector()}),
             errors=errors,
             description_placeholders=placeholders,
-        )
-
-    async def async_step_presets(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """One form: a closed section per preset, opened by its header."""
-        options = self._options()
-        errors: dict[str, str] = {}
-        placeholders = {"error": ""}
-        stored_all = options.get("presets") or {}
-        if user_input is not None:
-            new: dict[str, dict[str, Any]] = {}
-            try:
-                for domain, name in PRESETS:
-                    key = f"{domain}_{name}"
-                    try:
-                        new.setdefault(domain, {})[name] = _preset_from_form(
-                            domain, user_input.get(key) or {}
-                        )
-                    except vol.Invalid as err:
-                        raise vol.Invalid(f"{key}: {err.msg if hasattr(err, 'msg') else err}") from err
-            except vol.Invalid as err:
-                errors["base"] = "invalid_preset"
-                placeholders["error"] = str(err.msg)
-            else:
-                presets = {d: dict(v) for d, v in stored_all.items()}
-                for domain, values in new.items():
-                    presets.setdefault(domain, {}).update(values)
-                options["presets"] = presets
-                return self.async_create_entry(data=options)
-        builtin = builtin_presets()
-        fields: dict[Any, Any] = {}
-        suggested: dict[str, Any] = {}
-        for domain, name in PRESETS:
-            key = f"{domain}_{name}"
-            fields[vol.Required(key)] = section(_preset_schema(domain), {"collapsed": True})
-            stored = (stored_all.get(domain) or {}).get(name)
-            if stored is None:
-                stored = builtin.get(domain, {}).get(name, {})
-            suggested[key] = _preset_form_values(domain, stored)
-        schema = self.add_suggested_values_to_schema(
-            vol.Schema(fields), user_input if user_input is not None else suggested
-        )
-        return self.async_show_form(
-            step_id="presets", data_schema=schema, errors=errors,
-            description_placeholders=placeholders,
-        )
-
-    async def async_step_immich(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        options = self._options()
-        old = options.get("immich") or {}
-        errors: dict[str, str] = {}
-        placeholders = {"error": ""}
-        if user_input is not None:
-            try:
-                conf = _immich_from_form(old, user_input)
-            except vol.Invalid as err:
-                errors["base"] = "invalid_immich"
-                placeholders["error"] = str(err.msg if hasattr(err, "msg") else err)
-            else:
-                if conf is None:
-                    options.pop("immich", None)
-                else:
-                    options["immich"] = conf
-                return self.async_create_entry(data=options)
-        schema = self.add_suggested_values_to_schema(
-            _immich_schema(old),
-            user_input if user_input is not None else _immich_form_values(old),
-        )
-        return self.async_show_form(
-            step_id="immich", data_schema=schema, errors=errors, description_placeholders=placeholders
         )
 
 

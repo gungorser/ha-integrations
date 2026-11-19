@@ -14,14 +14,7 @@
     "step": {
       "init": {
         "title": "Gungor Customizations",
-        "menu_options": {
-          "presets": "Presets",
-          "services": "Services"
-        }
-      },
-      "presets": {
-        "title": "Presets",
-        "description": "Press a preset's header to open it, again to close it. An empty field is not applied.{error}",
+        "description": "Press a section's header to open it, again to close it. An empty preset field is not applied. Key and password fields show empty: leave them empty to keep the stored value. Empty Immich address: Immich off.{error}",
         "sections": {
           "light_default": {
             "name": "Light · default (single press, program end)",
@@ -83,15 +76,9 @@
               "current_position": "Position (number or template)"
             },
             "description": "Applied at sunrise, sunset and when a program ends."
-          }
-        }
-      },
-      "immich": {
-        "title": "Immich",
-        "description": "Empty address: Immich off. Key and password fields stay empty: leave them empty to keep the stored value, type a new one to replace it, '-' removes a user.{error}",
-        "sections": {
-          "general": {
-            "name": "General",
+          },
+          "immich_general": {
+            "name": "Immich · General",
             "data": {
               "url": "Address",
               "scan_interval": "Scan interval (0 = only the sync button)",
@@ -99,28 +86,30 @@
               "share_albums": "Share every album with the others"
             }
           },
-          "users": {
-            "name": "Users and API keys",
+          "immich_users": {
+            "name": "Immich · Users and API keys",
             "data": {
-              "new_user": "New user",
-              "new_user_key": "New user's API key"
+              "users": "Users"
+            },
+            "data_description": {
+              "users": "Add / remove: name and API key per Immich user (Account settings > API keys). A stored key shows empty; leave it empty to keep it."
             }
           },
-          "people": {
-            "name": "People → album",
+          "immich_people": {
+            "name": "Immich · People → album",
             "data": {
               "people": "Person in Immich: album"
             }
           },
-          "trips": {
-            "name": "Trips",
+          "immich_trips": {
+            "name": "Immich · Trips",
             "data": {
               "distance_km": "Distance from home",
               "advanced": "More (detail, names, min_days, ...)"
             }
           },
-          "faceless": {
-            "name": "Photos without faces",
+          "immich_faceless": {
+            "name": "Immich · Photos without faces",
             "data": {
               "album": "Album name",
               "wait_hours": "Wait",
@@ -132,30 +121,23 @@
               "trip": "A new photo without faces, taken on a trip"
             }
           },
-          "partou": {
-            "name": "Partou",
+          "immich_partou": {
+            "name": "Immich · Partou",
             "data": {
               "username": "E-mail (empty: Partou off)",
               "password": "Password",
               "after": "Daily from"
             }
+          },
+          "budget_thuis": {
+            "name": "Budget Thuis",
+            "description": "Electricity, gas and return delivery: the month so far as sensors. Status: {budget_thuis}. No password: a new login mails you a link to paste on the next page. Empty e-mail: off.",
+            "data": {
+              "username": "E-mail",
+              "new_login": "Log in again (mail a new link)",
+              "scan_interval": "Scan interval"
+            }
           }
-        }
-      },
-      "services": {
-        "title": "Services",
-        "menu_options": {
-          "immich": "Immich",
-          "budget_thuis": "Budget Thuis"
-        }
-      },
-      "budget_thuis": {
-        "title": "Budget Thuis",
-        "description": "Electricity, gas and return delivery: the month so far as sensors (Energy dashboard). Status: {status}. Budget Thuis has no password: a login link is mailed to you. Empty e-mail: Budget Thuis off.{error}",
-        "data": {
-          "username": "E-mail",
-          "new_login": "Log in again (mail a new link)",
-          "scan_interval": "Scan interval"
         }
       },
       "budget_thuis_link": {
@@ -167,9 +149,7 @@
       }
     },
     "error": {
-      "invalid_preset": "Invalid value",
-      "invalid_immich": "Invalid Immich settings",
-      "required": "Required",
+      "invalid": "Invalid value",
       "budget_thuis": "Budget Thuis login failed"
     }
   },
