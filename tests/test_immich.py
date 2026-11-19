@@ -395,3 +395,18 @@ async def test_partner_assets_are_not_counted_twice(setup) -> None:
     await manager.async_run()
     assert manager.summary["people"] == {"Kaan": 1}
     assert manager.summary["trips"][0].endswith("2 foto/video, +2, sürüyor")
+
+
+def test_min_days_drops_day_trips_in_the_home_country() -> None:
+    utrecht, rotterdam = (52.09, 5.12), (51.92, 4.48)
+    points = [
+        p("u1", t(1), utrecht, country="Netherlands", city="Utrecht"),
+        p("h1", t(1, hour=20), HOME),
+        p("r1", t(5), rotterdam, country="Netherlands", city="Rotterdam"),
+        p("r2", t(6), rotterdam, country="Netherlands", city="Rotterdam"),
+        p("h2", t(7), HOME),
+        p("b1", t(9), (50.85, 4.35), country="Belgium"),
+        p("h3", t(9, hour=20), HOME),
+    ]
+    trips = find_trips(points, HOME, 50, DETAIL, {}, {"netherlands": 2})
+    assert [trip_base_name(x) for x in trips] == ["rotterdam_2025", "belcika_2025"]

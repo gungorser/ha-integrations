@@ -13,6 +13,7 @@ gungors:
       distance_km: 50           # farther from home (zone.home) = away
       detail: {turkey: state, turkiye: state, netherlands: city}
       names: {spain: ispanya}   # country -> name (over the built-in Turkish names)
+      min_days: {netherlands: 2}  # shorter trips mostly in that country are no trips
     faceless:
       album: check_before_delete
       wait_hours: 24
@@ -137,6 +138,10 @@ IMMICH_SCHEMA = vol.Schema(
                     {cv.string: vol.In(["city", "state"])}, _slug_keys
                 ),
                 vol.Optional("names", default={}): vol.All({cv.string: cv.string}, _slug_keys),
+                vol.Optional("min_days", default={}): vol.All(
+                    {cv.string: vol.All(vol.Coerce(int), vol.Range(min=1))},
+                    lambda v: {slug(str(k)): n for k, n in v.items()},
+                ),
             }
         ),
         vol.Optional("faceless", default={}): vol.Schema(
@@ -187,6 +192,12 @@ class Trip:
     until: datetime.datetime | None = None  # first photo at home again (None: still away)
     assets: dict[str, set[str]] = field(default_factory=dict)  # user -> asset ids
     places: Counter = field(default_factory=Counter)
+    countries: Counter = field(default_factory=Counter)
+
+    @property
+    def days(self) -> int:
+        """Calendar days from the first to the last away photo."""
+        return (self.end.date() - self.start.date()).days + 1
 
     def all_assets(self) -> set[str]:
         return set().union(*self.assets.values()) if self.assets else set()
@@ -211,8 +222,13 @@ def find_trips(
     away_km: float,
     detail: dict[str, str],
     names: dict[str, str],
+    min_days: dict[str, int] | None = None,
 ) -> list[Trip]:
-    """Trips per user, then overlapping trips of different users merged."""
+    """Trips per user, then overlapping trips of different users merged.
+
+    `min_days` {country slug: days}: a trip mostly in that country that is shorter
+    is not a trip (day trips inside the home country).
+    """
     by_user: dict[str, list[Point]] = {}
     for point in points:
         by_user.setdefault(point.user, []).append(point)
@@ -235,6 +251,8 @@ def find_trips(
                 place = place_of(point, detail, names)
                 if place:
                     current.places[place] += 1
+                if point.country:
+                    current.countries[slug(point.country)] += 1
             elif current is not None:
                 current.closed = True
                 current.until = point.time
@@ -263,9 +281,16 @@ def find_trips(
             for user, ids in trip.assets.items():
                 last.assets.setdefault(user, set()).update(ids)
             last.places.update(trip.places)
+            last.countries.update(trip.countries)
         else:
             merged.append(trip)
-    return merged
+    min_days = min_days or {}
+    return [
+        trip
+        for trip in merged
+        if not trip.countries
+        or trip.days >= min_days.get(trip.countries.most_common(1)[0][0], 1)
+    ]
 
 
 def trip_base_name(trip: Trip) -> str:
@@ -651,6 +676,7 @@ class ImmichManager:
             conf["distance_km"],
             detail,
             conf["names"],
+            conf["min_days"],
         )
         stored: list[dict[str, Any]] = self._state["trips"]
         taken = {t["name"] for t in stored}
