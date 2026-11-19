@@ -249,16 +249,18 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   the other users as editors.
 - Trips: per user, a trip starts at the first photo farther than `distance_km` from `zone.home`
   and ends at the next photo taken at home; days without photos in between do not matter, up
-  to `max_gap_days` (10; or 2 days when the next away photo is in another country: few photos at
-  home carry GPS).
-  Camera photos without GPS taken during it belong to it. Trips of two users away at the same time
-  (a day apart at most) are one trip. Countries match by name (`The Netherlands` = `netherlands`,
-  `Türkiye` = `turkey`). Album name: the most frequent place + the start year,
-  ascii lowercase: the `detail` field (state or city) for the countries listed there (Turkey: il,
-  Netherlands: city), else the country's Turkish name (`ispanya_2025`, built in, `names:` over
-  it); `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly in that country that spans
-  fewer calendar days is not a trip. A trip's album opens with its first photo and is renamed once at its end
-  if the most frequent place changed and nobody renamed it.
+  to `max_gap_days` (10; few photos at home carry GPS).
+  Camera photos without GPS taken during it belong to it. Trips less than `max_gap_days` apart
+  are one trip (also of different users), unless a user of the later one came home in between.
+  A trip with fewer than `min_assets` (3) photos is no trip. Countries match by name
+  (`The Netherlands` = `netherlands`, `Türkiye` = `turkey`). Album name: every place in visit
+  order + the start year, ascii lowercase: the `detail` field (state or city) for the countries
+  listed there (Turkey: il, Netherlands: city), else the country's Turkish name (built in,
+  `names:` over it): `ankara_samsun_2024`, `ispanya_2025`. A trip in more than one country
+  (`home_country`, default `netherlands`, not counted) is named by its countries
+  (`ispanya_fransa_almanya_2023`); `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly
+  in that country that spans fewer calendar days is not a trip. A trip's album opens with its
+  first photo and is renamed once at its end if the name changed and nobody renamed it.
 - Faceless: images uploaded after the first run, `wait_hours` after upload, with Immich's face
   detection queue empty and no face found, not a favourite, not archived and in no album of their
   own go to the user's `faceless.album` (`check_before_delete`). In `Albüm + çöp` mode the ones
