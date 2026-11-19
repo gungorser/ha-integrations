@@ -72,19 +72,18 @@ still need a restart).
 ## Configure (UI)
 
 Since 1.20.0 gungors has one config entry (Settings > Devices & services > Gungor
-Customizations, `config_flow.py`, logo in `brand/`). Configure opens a menu:
+Customizations, `config_flow.py`, logo in `brand/`). Configure is one form (1.23.0) of closed
+sections that their header opens and closes:
 
-- Presetler: one form, a closed section per preset (light default/dim/night, climate
-  default, cover default) that its header opens and closes; an empty field is not applied. Light and climate forms take an
-  optional `templates` mapping (attribute: template) over the typed fields; the cover position
-  is a template field (a number works too).
-- Servisler > Immich: the `immich:` settings below in closed sections (the header opens one). Key and password fields show
-  empty: left empty they keep the stored value, a new value replaces it, `-` removes a user.
-  An empty address turns Immich off.
-
-- Servisler > Budget Thuis: e-mail and scan interval (default 3600 s); Budget Thuis has no
-  password, so a new login mails a link: copy it (do not click) into the second step. See Budget
-  Thuis below. Empty e-mail: off.
+- the five presets (light default/dim/night, climate default, cover default); an empty field
+  is not applied. Light and climate take an optional `templates` mapping (attribute: template)
+  over the typed fields; the cover position is a template field (a number works too).
+- Immich: general, users, people, trips, faceless photos, Partou. Users are a list (add /
+  remove, name + API key; HA's list editor also edits it as YAML); a stored key shows empty and
+  stays when left empty. People and the trip details are YAML fields. An empty address turns
+  Immich off.
+- Budget Thuis: e-mail and scan interval (default 3600 s); Budget Thuis has no password, so a
+  new login mails a link: copy it (do not click) into the page that follows. Empty e-mail: off.
 
 Saving applies at once (no restart, no `gungors.reload`). The entry options keep the YAML
 shape (`{"presets": {...}, "immich": {...}}`). Wrappers, features and the program calendar stay
