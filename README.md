@@ -248,9 +248,12 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   Immich, in each user's library) goes to that person's album, owned by `owner` and shared with
   the other users as editors.
 - Trips: per user, a trip starts at the first photo farther than `distance_km` from `zone.home`
-  and ends at the next photo taken at home; days without photos in between do not matter.
-  Camera photos without GPS taken during it belong to it. Trips of two users overlapping before
-  the first is home again are one trip. Album name: the most frequent place + the start year,
+  and ends at the next photo taken at home; days without photos in between do not matter, up
+  to `max_gap_days` (10; or 2 days when the next away photo is in another country: few photos at
+  home carry GPS).
+  Camera photos without GPS taken during it belong to it. Trips of two users away at the same time
+  (a day apart at most) are one trip. Countries match by name (`The Netherlands` = `netherlands`,
+  `Türkiye` = `turkey`). Album name: the most frequent place + the start year,
   ascii lowercase: the `detail` field (state or city) for the countries listed there (Turkey: il,
   Netherlands: city), else the country's Turkish name (`ispanya_2025`, built in, `names:` over
   it); `_2` on a clash. `min_days: {netherlands: 2}`: a trip mostly in that country that spans
