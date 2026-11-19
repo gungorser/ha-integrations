@@ -126,8 +126,14 @@
           "faceless": {
             "name": "Photos without faces",
             "data": {
-              "album": "Album",
-              "wait_hours": "Wait"
+              "album": "Album name",
+              "wait_hours": "Wait",
+              "home": "At home",
+              "trip": "On a trip"
+            },
+            "data_description": {
+              "home": "A new photo without faces, taken outside a trip",
+              "trip": "A new photo without faces, taken on a trip"
             }
           },
           "partou": {
@@ -174,6 +180,14 @@
       "options": {
         "heat": "Heat",
         "off": "Off"
+      }
+    },
+    "faceless_action": {
+      "options": {
+        "delete": "Delete (cannot be undone)",
+        "trash": "Move to the trash (30 days to restore)",
+        "keep": "Leave it, no album",
+        "album": "Move to the album"
       }
     }
   },

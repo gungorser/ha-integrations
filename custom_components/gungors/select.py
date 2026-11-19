@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .immich import MODE_DRY, MODES, async_get_manager
+from .immich import MODE_DRY, MODE_TRASH, MODES, async_get_manager
 
 
 async def async_setup_platform(
@@ -37,7 +37,8 @@ class ImmichModeSelect(SelectEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         last = await self.async_get_last_state()
-        mode = last.state if last is not None and last.state in MODES else MODE_DRY
+        known = (*MODES, MODE_TRASH)  # the old trash mode restores as Albüm
+        mode = last.state if last is not None and last.state in known else MODE_DRY
         await async_get_manager(self.hass).async_set_mode(mode)
 
     @property

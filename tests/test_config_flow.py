@@ -152,7 +152,8 @@ def _immich_input(**changes) -> dict:
         "users": {},
         "people": {"people": {"Kaan": "Kaan"}},
         "trips": {"distance_km": 60, "advanced": {"min_days": {"netherlands": 2}}},
-        "faceless": {"album": "check_before_delete", "wait_hours": 24},
+        "faceless": {"home": "trash", "trip": "album", "album": "check_before_delete",
+                     "wait_hours": 24},
         "partou": {"username": "a@b.c", "after": "18:00:00"},
     }
     for key, value in changes.items():
@@ -175,6 +176,7 @@ async def test_immich_form_keeps_secrets_and_adds_a_user(hass: HomeAssistant) ->
     assert immich["partou"]["after"] == "18:00"
     assert immich["trips"] == {"min_days": {"netherlands": 2}, "distance_km": 60.0}
     assert immich["share_albums"] is True
+    assert immich["faceless"]["home"] == "trash" and immich["faceless"]["trip"] == "album"
 
 
 async def test_immich_form_removes_a_user_and_turns_off(hass: HomeAssistant) -> None:

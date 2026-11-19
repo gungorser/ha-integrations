@@ -124,6 +124,7 @@ class FakeImmich:
         self.faces: dict[str, int] = {}
         self.albums: dict[str, dict[str, Any]] = {}
         self.trashed: list[str] = []
+        self.deleted: list[str] = []
         self.busy = False
         self.partners = False  # searches also return the other user's assets
         self.writes = 0
@@ -209,11 +210,11 @@ class FakeApi:
     async def faces(self, asset_id):
         return [{}] * self.s.faces.get(asset_id, 0)
 
-    async def trash(self, ids):
+    async def trash(self, ids, force=False):
         self.s.writes += 1
         for i in ids:
             self.s.assets[i]["isTrashed"] = True
-        self.s.trashed.extend(ids)
+        (self.s.deleted if force else self.s.trashed).extend(ids)
 
     async def face_queue_busy(self):
         return self.s.busy
@@ -317,9 +318,9 @@ async def test_faceless_new_uploads(setup) -> None:
     assert manager.summary["faceless"] == {"bekliyor": 5}  # face detection still busy
 
     server.busy = False
-    manager.mode = MODE_TRASH
+    manager.config["faceless"]["home"] = "trash"  # trip photos stay "album"
     await manager.async_run()
-    assert server.trashed == ["label", "bin"]  # trip photo "view" is never trashed
+    assert server.trashed == ["label", "bin"]  # trip photo "view" goes to the album
     albums = [a for a in server.albums.values() if a["albumName"] == "check_before_delete"]
     assert [(a["_users"], a["_assets"]) for a in albums] == [(["id-melike"], {"view"})]
 
@@ -544,3 +545,36 @@ def test_single_photo_places_are_left_out_of_the_name() -> None:
     # Only single-photo places: the first most common one still names it.
     lone = find_trips(points[:1], HOME, 50, DETAIL, {})[0]
     assert trip_base_name(lone, {}, "netherlands", 0.1, 2) == "almanya_2025"
+
+
+async def test_faceless_actions_home_and_trip(setup) -> None:
+    manager, server = setup
+    now = dt_util.utcnow()
+    manager.mode = MODE_ALBUM
+    await manager.async_run()
+    manager._state["since"] = (now - datetime.timedelta(days=2)).isoformat()
+    old = now - datetime.timedelta(days=1, hours=1)
+    server.asset("home1", "sercan", now, HOME, faces=0, uploaded=old)
+    server.asset("trip1", "melike", now, VALENCIA, faces=0, uploaded=old, country="Spain")
+    manager.config["faceless"].update(home="keep", trip="delete")
+
+    manager.mode = MODE_DRY  # the plan: nothing written
+    await manager.async_run()
+    assert manager.summary["faceless"] == {"kalsın": 1, "silinecek": 1}
+    assert server.deleted == []
+
+    manager.mode = MODE_ALBUM
+    await manager.async_run()
+    assert manager.summary["faceless"] == {"kalsın": 1, "silindi": 1}
+    assert server.deleted == ["trip1"] and server.trashed == []
+    assert album_named(server, "check_before_delete") is None
+    await manager.async_run()  # decided once
+    assert server.deleted == ["trip1"]
+
+
+async def test_old_trash_mode_restores_as_album(setup) -> None:
+    manager, _server = setup
+    await manager.async_set_mode(MODE_TRASH, run=False)
+    assert manager.mode == MODE_ALBUM
+    assert manager.config["faceless"]["home"] == "album"
+    assert manager.config["faceless"]["trip"] == "album"

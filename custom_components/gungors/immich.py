@@ -17,6 +17,8 @@ gungors:
     faceless:
       album: check_before_delete
       wait_hours: 24
+      home: album               # album | keep | trash | delete (outside trips)
+      trip: album               # the same, for trip photos
     partou:                     # daycare photos -> Immich (partou.py)
       username: !secret partou_email
       password: !secret partou_password
@@ -29,8 +31,9 @@ into monthly albums `kaan_partou_mart_2026` (capture month). This writes in ever
 `Kapalı` (also in `Deneme`); the uploads stay out of the person, trip and faceless rules.
 
 The mode is `select.immich` (restored): `Kapalı` does nothing, `Deneme` plans
-without writing (the plan is on `sensor.immich`), `Albüm` writes albums, `Albüm +
-çöp` also moves faceless new photos that are not trip photos to the Immich trash.
+without writing (the plan is on `sensor.immich`), `Albüm` writes (a restored
+`Albüm + çöp` from before 1.21.0 reads as `Albüm`). What happens to faceless photos
+is `faceless: home:` / `trip:` (Configure > Immich): album (default), keep, trash, delete.
 A run every `scan_interval` seconds (600; 0 = no timer) and on `button.immich_sync`
 or `gungors.immich_run`:
 
@@ -52,9 +55,10 @@ or `gungors.immich_run`:
   name changed and nobody renamed it meanwhile.
 - Faceless: images uploaded after the first run (never the existing library),
   `wait_hours` after upload and with the face detection queue empty, with no face
-  found, not a favourite, not archived and in no album of their own -> the user's
-  `faceless.album`; in `Albüm + çöp` mode those outside trips go to the trash
-  (recoverable for 30 days) instead. Videos are never touched.
+  found, not a favourite, not archived and in no album of their own: `home` (outside
+  trips) or `trip` (a trip photo) decides: `album` -> the user's `faceless.album`,
+  `keep` -> left as it is, `trash` -> the Immich trash (recoverable for 30 days),
+  `delete` -> deleted for good. Videos are never touched.
 - `share_albums: true`: every album a user owns (also ones made by hand or by the
   phone app) is shared with the other users as editors; the faceless albums stay
   private.
@@ -95,8 +99,14 @@ SIGNAL_UPDATE = f"{DOMAIN}_immich_update"
 MODE_OFF = "Kapalı"
 MODE_DRY = "Deneme"
 MODE_ALBUM = "Albüm"
-MODE_TRASH = "Albüm + çöp"
-MODES = [MODE_OFF, MODE_DRY, MODE_ALBUM, MODE_TRASH]
+MODE_TRASH = "Albüm + çöp"  # before 1.21.0; restored as MODE_ALBUM (faceless actions decide now)
+MODES = [MODE_OFF, MODE_DRY, MODE_ALBUM]
+# What happens to a faceless new photo, at home and on a trip (Configure > Immich).
+FACELESS_ALBUM = "album"    # into the user's faceless album (the default)
+FACELESS_KEEP = "keep"      # left as it is
+FACELESS_TRASH = "trash"    # Immich trash (recoverable for 30 days)
+FACELESS_DELETE = "delete"  # deleted for good
+FACELESS_ACTIONS = [FACELESS_ALBUM, FACELESS_KEEP, FACELESS_TRASH, FACELESS_DELETE]
 MONTHS = ["ocak", "subat", "mart", "nisan", "mayis", "haziran", "temmuz", "agustos", "eylul",
           "ekim", "kasim", "aralik"]
 
@@ -192,6 +202,8 @@ IMMICH_SCHEMA = vol.Schema(
         vol.Optional("faceless", default={}): vol.Schema(
             {
                 vol.Optional("album", default="check_before_delete"): cv.string,
+                vol.Optional("home", default=FACELESS_ALBUM): vol.In(FACELESS_ACTIONS),
+                vol.Optional("trip", default=FACELESS_ALBUM): vol.In(FACELESS_ACTIONS),
                 vol.Optional("wait_hours", default=24): vol.Coerce(float),
             }
         ),
@@ -551,8 +563,9 @@ class ImmichApi:
     async def faces(self, asset_id: str) -> list[dict[str, Any]]:
         return await self.request("GET", "/faces", params={"id": asset_id})
 
-    async def trash(self, ids: list[str]) -> None:
-        await self.request("DELETE", "/assets", json={"ids": ids, "force": False})
+    async def trash(self, ids: list[str], force: bool = False) -> None:
+        """To the trash; `force` deletes for good."""
+        await self.request("DELETE", "/assets", json={"ids": ids, "force": force})
 
     async def face_queue_busy(self) -> bool | None:
         """True while face detection has jobs; None when the queues are not readable."""
@@ -639,7 +652,7 @@ class ImmichManager:
         await self.async_run()
 
     async def async_set_mode(self, mode: str, run: bool = True) -> None:
-        self.mode = mode
+        self.mode = MODE_ALBUM if mode == MODE_TRASH else mode
         self._notify()
         if run:
             self.hass.async_create_task(self.async_run(), "gungors immich run")
@@ -650,7 +663,7 @@ class ImmichManager:
 
     @property
     def writing(self) -> bool:
-        return self._partou_writing or self.mode in (MODE_ALBUM, MODE_TRASH)
+        return self._partou_writing or self.mode == MODE_ALBUM
 
     def _notify(self) -> None:
         async_dispatcher_send(self.hass, SIGNAL_UPDATE)
@@ -942,6 +955,7 @@ class ImmichManager:
             }
             to_album: set[str] = set()
             to_trash: list[str] = []
+            to_delete: list[str] = []
             assets = self._own(
                 user, await api.search({"type": "IMAGE", "createdAfter": self._state["since"]})
             )
@@ -971,8 +985,14 @@ class ImmichManager:
                 if albums - managed - album_ids:
                     self._decide(aid, "skip")
                     continue
-                if self.mode == MODE_TRASH and aid not in in_trip:
+                action = conf["trip"] if aid in in_trip else conf["home"]
+                if action == FACELESS_TRASH:
                     to_trash.append(aid)
+                elif action == FACELESS_DELETE:
+                    to_delete.append(aid)
+                elif action == FACELESS_KEEP:
+                    counts["kalsın"] += 1
+                    self._decide(aid, "keep")
                 else:
                     to_album.add(aid)
             if to_album:
@@ -980,12 +1000,17 @@ class ImmichManager:
                 await self._add(album_id, user, to_album)
                 for aid in to_album:
                     self._decide(aid, "album")
-            if to_trash:
+            if self.writing and to_trash:
                 await api.trash(to_trash)
                 for aid in to_trash:
                     self._decide(aid, "trash")
+            if self.writing and to_delete:
+                await api.trash(to_delete, force=True)
+                for aid in to_delete:
+                    self._decide(aid, "delete")
             counts["albüme"] += len(to_album)
             counts["çöpe"] += len(to_trash)
+            counts["silinecek" if not self.writing else "silindi"] += len(to_delete)
         return {k: v for k, v in counts.items() if v}
 
     def _decide(self, asset_id: str, decision: str) -> None:
