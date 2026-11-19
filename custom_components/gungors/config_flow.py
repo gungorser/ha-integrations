@@ -211,13 +211,15 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
     password = selector.TextSelector(
         selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
     )
-    faceless_action = selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=["delete", "trash", "keep", "album"],
-            translation_key="faceless_action",
-            mode=selector.SelectSelectorMode.DROPDOWN,
+    def faceless_action(options: list[str]) -> selector.SelectSelector:
+        return selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=options,
+                translation_key="faceless_action",
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
         )
-    )
+
     user_fields: dict[Any, Any] = {
         vol.Optional("users"): selector.ObjectSelector(
             selector.ObjectSelectorConfig(
@@ -277,9 +279,12 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
             vol.Required("faceless"): section(
                 vol.Schema(
                     {
-                        vol.Optional("home", default="album"): faceless_action,
-                        vol.Optional("trip", default="album"): faceless_action,
-                        vol.Optional("album", default="check_before_delete"): selector.TextSelector(),
+                        vol.Optional("home", default="keep"): faceless_action(
+                            ["keep", "trash", "delete"]
+                        ),
+                        vol.Optional("trip", default="album"): faceless_action(
+                            ["album", "keep", "trash", "delete"]
+                        ),
                         vol.Optional("wait_hours", default=24): selector.NumberSelector(
                             selector.NumberSelectorConfig(
                                 min=0, max=720, step=1, unit_of_measurement="h",
@@ -321,7 +326,11 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
             **({"distance_km": trips["distance_km"]} if "distance_km" in trips else {}),
             "advanced": {k: trips[k] for k in IMMICH_TRIPS_ADVANCED if k in trips},
         },
-        "faceless": dict(conf.get("faceless") or {}),
+        "faceless": {
+            k: ("keep" if k == "home" and v == "album" else v)
+            for k, v in (conf.get("faceless") or {}).items()
+            if k in ("home", "trip", "wait_hours")
+        },
         "partou": {k: partou[k] for k in ("username", "after") if k in partou},
     }
 
@@ -361,9 +370,8 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     conf["trips"] = {**advanced, "distance_km": float(trips_in.get("distance_km", 50))}
     faceless = user_input.get("faceless") or {}
     conf["faceless"] = {
-        "home": faceless.get("home") or "album",
+        "home": faceless.get("home") or "keep",
         "trip": faceless.get("trip") or "album",
-        "album": faceless.get("album") or "check_before_delete",
         "wait_hours": float(faceless.get("wait_hours", 24)),
     }
     partou_in = user_input.get("partou") or {}

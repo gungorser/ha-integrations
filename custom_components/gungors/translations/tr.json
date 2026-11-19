@@ -14,141 +14,175 @@
     "step": {
       "init": {
         "title": "Gungor Customizations",
+        "description": "Ne ayarlamak istiyorsun?",
         "menu_options": {
-          "presets": "Presets",
-          "services": "Services"
+          "presets": "Presets: ışık, termostat ve perde ayarları",
+          "services": "Services: Immich ve Budget Thuis"
         }
       },
       "presets": {
         "title": "Presets",
-        "description": "Bir bölümün başlığına bas: açılır, tekrar bas: kapanır. Boş bırakılan alan uygulanmaz.{error}",
+        "description": "Duvar anahtarlarının ve programların kullandığı hazır ayarlar. Bir başlığa basınca açılır, tekrar basınca kapanır.{error}",
         "sections": {
           "light": {
-            "name": "Light",
+            "name": "Işık",
+            "description": "Duvardaki anahtarlara basınca ışıkların alacağı ayarlar. Boş bırakılan alan değiştirilmez.",
             "data": {
-              "default_state": "Default · Durum",
-              "default_brightness_pct": "Default · Parlaklık",
-              "default_rgb_color": "Default · Renk",
-              "default_color_temp_kelvin": "Default · Renk sıcaklığı",
-              "default_templates": "Default · Şablonlar (özellik: şablon)",
-              "dim_state": "Dim · Durum",
-              "dim_brightness_pct": "Dim · Parlaklık",
-              "dim_rgb_color": "Dim · Renk",
-              "dim_color_temp_kelvin": "Dim · Renk sıcaklığı",
-              "dim_templates": "Dim · Şablonlar (özellik: şablon)",
-              "night_state": "Night · Durum",
-              "night_brightness_pct": "Night · Parlaklık",
-              "night_rgb_color": "Night · Renk",
-              "night_color_temp_kelvin": "Night · Renk sıcaklığı",
-              "night_templates": "Night · Şablonlar (özellik: şablon)"
+              "default_state": "Normal ayar: açık / kapalı",
+              "default_brightness_pct": "Normal ayar: parlaklık",
+              "default_rgb_color": "Normal ayar: renk",
+              "default_color_temp_kelvin": "Normal ayar: beyaz tonu",
+              "default_templates": "Normal ayar: koşula göre değerler",
+              "dim_state": "Kısık ışık: açık / kapalı",
+              "dim_brightness_pct": "Kısık ışık: parlaklık",
+              "dim_rgb_color": "Kısık ışık: renk",
+              "dim_color_temp_kelvin": "Kısık ışık: beyaz tonu",
+              "dim_templates": "Kısık ışık: koşula göre değerler",
+              "night_state": "Gece ışığı: açık / kapalı",
+              "night_brightness_pct": "Gece ışığı: parlaklık",
+              "night_rgb_color": "Gece ışığı: renk",
+              "night_color_temp_kelvin": "Gece ışığı: beyaz tonu",
+              "night_templates": "Gece ışığı: koşula göre değerler"
             },
             "data_description": {
-              "default_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
-              "dim_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
-              "night_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "- default (tek basış, program sonu): Tek basış bunu yakar; program bitince buna dönülür.\n- dim (çift basış): Çift basış: sadece parlaklığı taşır.\n- night (basılı tutma): Basılı tutma: sadece rengi taşır."
+              "default_templates": "İleri düzey, isteğe bağlı: bir değeri koşula göre hesaplatmak için Jinja şablonu, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". Buradaki değer yukarıdaki alanın yerine geçer.",
+              "default_color_temp_kelvin": "Renk yerine beyaz ışık: 2000 K sıcak (sarı), 6500 K soğuk (mavi). Renk ya da beyaz tonundan birini doldur.",
+              "dim_templates": "İleri düzey, isteğe bağlı: bir değeri koşula göre hesaplatmak için Jinja şablonu, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". Buradaki değer yukarıdaki alanın yerine geçer.",
+              "dim_color_temp_kelvin": "Renk yerine beyaz ışık: 2000 K sıcak (sarı), 6500 K soğuk (mavi). Renk ya da beyaz tonundan birini doldur.",
+              "night_templates": "İleri düzey, isteğe bağlı: bir değeri koşula göre hesaplatmak için Jinja şablonu, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". Buradaki değer yukarıdaki alanın yerine geçer.",
+              "night_color_temp_kelvin": "Renk yerine beyaz ışık: 2000 K sıcak (sarı), 6500 K soğuk (mavi). Renk ya da beyaz tonundan birini doldur.",
+              "default_state": "Tek basışta ve bir program bitince ışık bu ayara döner.",
+              "dim_brightness_pct": "Çift basış: sadece parlaklık bu değere iner, renk aynı kalır.",
+              "night_rgb_color": "Basılı tutma: sadece renk bu renge döner, parlaklık aynı kalır."
+            }
           },
           "climate": {
-            "name": "Climate",
+            "name": "Termostat",
+            "description": "Bir program bittiğinde termostatların döndüğü ayar.",
             "data": {
-              "default_state": "Default · Durum",
-              "default_temperature": "Default · Sıcaklık",
-              "default_templates": "Default · Şablonlar (özellik: şablon)"
+              "default_state": "Normal ayar: ısıtma açık / kapalı",
+              "default_temperature": "Normal ayar: hedef sıcaklık",
+              "default_templates": "Normal ayar: koşula göre değerler"
             },
             "data_description": {
-              "default_templates": "İsteğe bağlı. Buradaki şablon yukarıdaki alanı geçersiz kılar, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "- default (program sonu): Program bitince buna dönülür."
+              "default_templates": "İleri düzey, isteğe bağlı: bir değeri koşula göre hesaplatmak için Jinja şablonu, ör. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". Buradaki değer yukarıdaki alanın yerine geçer."
+            }
           },
           "cover": {
-            "name": "Cover",
+            "name": "Perde",
+            "description": "Gün doğumunda, gün batımında ve bir program bitince perdelerin gideceği konum.",
             "data": {
-              "default_current_position": "Default · Pozisyon (sayı veya şablon)"
+              "default_current_position": "Perdelerin normal konumu"
             },
-            "description": "- default (gün doğumu, batımı, program sonu): Gün doğumu, batımı ve program bitince uygulanır."
+            "data_description": {
+              "default_current_position": "0 kapalı, 100 tamamen açık. Sayı ya da şablon yazılabilir; şu anki şablon gündüz açar, gece kapatır."
+            }
           }
         }
       },
       "services": {
         "title": "Services",
+        "description": "Hangi servisi ayarlamak istiyorsun?",
         "menu_options": {
-          "immich": "Immich",
-          "budget_thuis": "Budget Thuis"
+          "immich": "Immich: fotoğraf albümleri",
+          "budget_thuis": "Budget Thuis: elektrik ve gaz tüketimi"
         }
       },
       "immich": {
         "title": "Immich",
-        "description": "Bir bölümün başlığına bas: açılır, tekrar bas: kapanır. Anahtar ve şifre alanları boş görünür: boş bırakırsan kayıtlı değer kalır. Adres boş: Immich kapalı.{error}",
+        "description": "Fotoğrafları kişi ve tatil albümlerine otomatik dağıtır. Bir başlığa basınca açılır, tekrar basınca kapanır.{error}",
         "sections": {
           "general": {
             "name": "Genel",
             "data": {
-              "url": "Adres",
-              "scan_interval": "Tarama aralığı (0 = sadece senkron butonu)",
+              "url": "Immich adresi",
+              "scan_interval": "Ne sıklıkla kontrol edilsin",
               "owner": "Ortak albümlerin sahibi",
-              "share_albums": "Albümleri herkesle paylaş"
+              "share_albums": "Albümleri tüm kullanıcılarla paylaş"
+            },
+            "data_description": {
+              "url": "Boş bırakırsan Immich otomasyonu tamamen kapanır.",
+              "scan_interval": "Saniye cinsinden. 0 yazarsan sadece Senkronize düğmesine basınca çalışır.",
+              "owner": "Kişi ve tatil albümleri bu kullanıcının hesabında açılır, diğer kullanıcılar düzenleyici olarak eklenir.",
+              "share_albums": "Açıksa bir kullanıcının açtığı her albüm (elle açılanlar dahil) diğer kullanıcılarla da paylaşılır."
             }
           },
           "users": {
-            "name": "Kullanıcılar ve API anahtarları",
+            "name": "Kullanıcılar",
             "data": {
-              "users": "Kullanıcılar"
+              "users": "Immich kullanıcıları"
             },
             "data_description": {
-              "users": "Ekle / sil: her Immich kullanıcısı için ad ve API anahtarı (Hesap ayarları > API anahtarları). Kayıtlı anahtar boş görünür; boş bırakırsan kalır."
+              "users": "Her kullanıcı için bir ad ve o kullanıcının Immich API anahtarı (Immich > Hesap ayarları > API anahtarları). Kayıtlı anahtar boş görünür; boş bırakırsan değişmez."
             }
           },
           "people": {
-            "name": "Kişiler → albüm",
+            "name": "Kişi albümleri",
             "data": {
-              "people": "Immich'teki kişi: albüm"
+              "people": "Kişi ve albümü"
+            },
+            "data_description": {
+              "people": "Her satır kişi: albüm. Soldaki, Immich'te yüzü tanınan kişinin adı; sağdaki, o kişinin bütün fotoğraflarının toplanacağı albüm. Ör. Kaan: Kaan"
             }
           },
           "trips": {
-            "name": "Seyahat",
+            "name": "Tatil albümleri",
             "data": {
-              "distance_km": "Evden uzaklık",
-              "advanced": "Diğer (detail, names, min_days, ...)"
+              "distance_km": "Evden ne kadar uzak tatil sayılsın",
+              "advanced": "İleri ayarlar"
+            },
+            "data_description": {
+              "distance_km": "Evden bu kadar uzakta çekilen ilk fotoğraf bir tatil başlatır, evde çekilen ilk fotoğraf bitirir. Her tatil için ayrı bir albüm açılır (ör. antalya_2025).",
+              "advanced": "İsteğe bağlı. min_days: bir ülkedeki en kısa tatil (ör. netherlands: 2 = Hollanda içinde günübirlik gezi tatil sayılmaz); detail: hangi ülkede il ya da şehir adı kullanılsın; names: ülke adlarının albümdeki yazımı."
             }
           },
           "faceless": {
             "name": "Yüzsüz fotoğraflar",
+            "description": "Sadece yeni yüklenen fotoğraflar için: içinde yüz bulunmayan, favori olmayan ve elle bir albüme konmamış resimler (ekran görüntüsü, etiket, fiş gibi). Videolara dokunulmaz.",
             "data": {
-              "album": "Albüm adı",
-              "wait_hours": "Bekleme",
-              "home": "Evdeyken",
-              "trip": "Tatildeyken"
+              "home": "Evde çekilmişse",
+              "trip": "Tatilde çekilmişse",
+              "wait_hours": "Karar vermeden önce bekleme"
             },
             "data_description": {
-              "home": "Yüz bulunmayan yeni fotoğraf, gezi dışında çekildiyse",
-              "trip": "Yüz bulunmayan yeni fotoğraf, bir gezide çekildiyse"
+              "home": "Tatil dışında çekilen yüzsüz fotoğrafa ne olsun.",
+              "trip": "Tatilde çekilen yüzsüz fotoğrafa ne olsun. Tatil albümüne taşınsın: yüzü olmasa da o tatilin albümüne girer.",
+              "wait_hours": "Saat. Yüklendikten sonra bu kadar beklenir ki Immich yüz tanımayı bitirsin."
             }
           },
           "partou": {
             "name": "Partou",
             "data": {
-              "username": "E-posta (boş: Partou kapalı)",
-              "password": "Şifre",
-              "after": "Günlük saat"
+              "username": "Partou e-postası",
+              "password": "Partou şifresi",
+              "after": "Her gün şu saatten sonra çek"
+            },
+            "data_description": {
+              "username": "Kreşin Partou'da paylaştığı fotoğraflar her gün Immich'e, aylık albümlere aktarılır. Boş bırakırsan kapalı.",
+              "password": "Kayıtlı şifre boş görünür; boş bırakırsan değişmez."
             }
           }
         }
       },
       "budget_thuis": {
         "title": "Budget Thuis",
-        "description": "Elektrik, gaz ve teruglevering: bu ayın toplamı sensör olarak. Durum: {budget_thuis}. Şifre yok: yeni girişte e-postana link gönderilir, sonraki sayfada yapıştırırsın. E-posta boş: kapalı.{error}",
+        "description": "Bu ayın elektrik, gaz ve şebekeye geri verilen elektrik toplamı sensör olarak gelir. Durum: {budget_thuis}.{error}",
         "data": {
-          "username": "E-posta",
-          "new_login": "Yeniden giriş yap (yeni link iste)",
-          "scan_interval": "Tarama aralığı"
+          "username": "Budget Thuis e-postası",
+          "new_login": "Yeniden giriş yap",
+          "scan_interval": "Ne sıklıkla güncellensin"
+        },
+        "data_description": {
+          "username": "Budget Thuis'te şifre yok: kaydedince bu adrese bir giriş linki gelir, sonraki sayfada yapıştırırsın. Boş bırakırsan kapalı.",
+          "new_login": "Bağlantı koparsa aç: yeni bir giriş linki gönderilir.",
+          "scan_interval": "Saniye cinsinden. 3600 = saatte bir."
         }
       },
       "budget_thuis_link": {
         "title": "Budget Thuis: giriş linki",
         "description": "{email} adresine bir mail gönderildi. Maildeki giriş linkine TIKLAMA: sağ tıklayıp linki kopyala ve buraya yapıştır. (Tıkladıysan ve tarayıcı budgetthuis://login_success?code=... adresinde kaldıysa onu da yapıştırabilirsin.){error}",
         "data": {
-          "link": "Giriş linki"
+          "link": "Maildeki giriş linki"
         }
       }
     },
@@ -173,9 +207,9 @@
     "faceless_action": {
       "options": {
         "delete": "Silinsin (geri alınamaz)",
-        "trash": "Çöpe kaldırılsın (30 gün geri alınabilir)",
-        "keep": "Öyle kalsın, albüme taşınmasın",
-        "album": "Albüme taşınsın"
+        "trash": "Çöp kutusuna taşınsın (30 gün içinde geri alınabilir)",
+        "keep": "Olduğu gibi kalsın, albüme girmesin",
+        "album": "Tatil albümüne taşınsın"
       }
     }
   },

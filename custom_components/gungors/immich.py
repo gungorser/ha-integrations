@@ -15,10 +15,9 @@ gungors:
       names: {spain: ispanya}   # country -> name (over the built-in Turkish names)
       min_days: {netherlands: 2}  # shorter trips mostly in that country are no trips
     faceless:
-      album: check_before_delete
       wait_hours: 24
-      home: album               # album | keep | trash | delete (outside trips)
-      trip: album               # the same, for trip photos
+      home: keep                # keep | trash | delete (outside trips)
+      trip: album               # album | keep | trash | delete (trip photos)
     partou:                     # daycare photos -> Immich (partou.py)
       username: !secret partou_email
       password: !secret partou_password
@@ -33,7 +32,8 @@ into monthly albums `kaan_partou_mart_2026` (capture month). This writes in ever
 The mode is `select.immich` (restored): `Kapalı` does nothing, `Deneme` plans
 without writing (the plan is on `sensor.immich`), `Albüm` writes (a restored
 `Albüm + çöp` from before 1.21.0 reads as `Albüm`). What happens to faceless photos
-is `faceless: home:` / `trip:` (Configure > Immich): album (default), keep, trash, delete.
+is `faceless: home:` (keep, the default; trash; delete) and `faceless: trip:` (album, the
+default: into the trip album like any trip photo; keep; trash; delete) in Configure > Immich.
 A run every `scan_interval` seconds (600; 0 = no timer) and on `button.immich_sync`
 or `gungors.immich_run`:
 
@@ -56,11 +56,14 @@ or `gungors.immich_run`:
 - Faceless: images uploaded after the first run (never the existing library),
   `wait_hours` after upload and with the face detection queue empty, with no face
   found, not a favourite, not archived and in no album of their own: `home` (outside
-  trips) or `trip` (a trip photo) decides: `album` -> the user's `faceless.album`,
-  `keep` -> left as it is, `trash` -> the Immich trash (recoverable for 30 days),
-  `delete` -> deleted for good. Videos are never touched.
+  trips) or `trip` (a trip photo) decides: `album` (trips only) -> stays in the trip
+  album, `keep` -> left as it is (a trip photo stays out of the trip album), `trash` ->
+  the Immich trash (recoverable for 30 days), `delete` -> deleted for good. Unless
+  `trip` is `album`, a new image joins its trip album only once it has a face (or is
+  skipped). Videos are never touched. (Before 1.25.0 faceless photos went to a
+  `check_before_delete` album; that album is left as it is.)
 - `share_albums: true`: every album a user owns (also ones made by hand or by the
-  phone app) is shared with the other users as editors; the faceless albums stay
+  phone app) is shared with the other users as editors; the old faceless albums stay
   private.
 - An asset is added to an album once: one removed by hand is not added again.
 """
@@ -102,11 +105,20 @@ MODE_ALBUM = "Albüm"
 MODE_TRASH = "Albüm + çöp"  # before 1.21.0; restored as MODE_ALBUM (faceless actions decide now)
 MODES = [MODE_OFF, MODE_DRY, MODE_ALBUM]
 # What happens to a faceless new photo, at home and on a trip (Configure > Immich).
-FACELESS_ALBUM = "album"    # into the user's faceless album (the default)
-FACELESS_KEEP = "keep"      # left as it is
+FACELESS_ALBUM = "album"    # trips only: into the trip album like any trip photo (default)
+FACELESS_KEEP = "keep"      # left as it is, out of any album (the default at home)
 FACELESS_TRASH = "trash"    # Immich trash (recoverable for 30 days)
 FACELESS_DELETE = "delete"  # deleted for good
 FACELESS_ACTIONS = [FACELESS_ALBUM, FACELESS_KEEP, FACELESS_TRASH, FACELESS_DELETE]
+OLD_FACELESS_ALBUM = "check_before_delete"  # the faceless album before 1.25.0 (stays private)
+FACELESS_HOME_ACTIONS = [FACELESS_KEEP, FACELESS_TRASH, FACELESS_DELETE]
+# Faceless decisions that let a trip photo into its trip album.
+TRIP_ALBUM_DECISIONS = {"face", "skip", FACELESS_ALBUM}
+
+
+def _home_action(value: Any) -> str:
+    """`album` at home (before 1.25.0: the faceless album) is `keep` now."""
+    return FACELESS_KEEP if value == FACELESS_ALBUM else value
 MONTHS = ["ocak", "subat", "mart", "nisan", "mayis", "haziran", "temmuz", "agustos", "eylul",
           "ekim", "kasim", "aralik"]
 
@@ -201,8 +213,10 @@ IMMICH_SCHEMA = vol.Schema(
         ),
         vol.Optional("faceless", default={}): vol.Schema(
             {
-                vol.Optional("album", default="check_before_delete"): cv.string,
-                vol.Optional("home", default=FACELESS_ALBUM): vol.In(FACELESS_ACTIONS),
+                vol.Optional("album"): cv.string,  # before 1.25.0; unused
+                vol.Optional("home", default=FACELESS_KEEP): vol.All(
+                    _home_action, vol.In(FACELESS_HOME_ACTIONS)
+                ),
                 vol.Optional("trip", default=FACELESS_ALBUM): vol.In(FACELESS_ACTIONS),
                 vol.Optional("wait_hours", default=24): vol.Coerce(float),
             }
@@ -236,6 +250,8 @@ class Point:
     state: str | None = None
     city: str | None = None
     camera: bool = False  # has a camera make (screenshots have none)
+    uploaded: datetime.datetime | None = None  # upload time (faceless rule)
+    image: bool = True
 
 
 @dataclass
@@ -439,6 +455,8 @@ def point_from_asset(user: str, asset: dict[str, Any]) -> Point | None:
         state=exif.get("state"),
         city=exif.get("city"),
         camera=bool(exif.get("make")),
+        uploaded=_parse_time(asset.get("createdAt")),
+        image=asset.get("type", "IMAGE") == "IMAGE",
     )
 
 
@@ -793,6 +811,27 @@ class ImmichManager:
             result[album_name] = new
         return result
 
+    def _held_from_trips(self) -> set[str]:
+        """New images that may not join a trip album (yet): faceless `trip` is not `album`.
+
+        Undecided ones wait for the faceless rule; `keep`, `trash` and `delete` never join.
+        """
+        if self.config["faceless"]["trip"] == FACELESS_ALBUM:
+            return set()
+        since = _parse_time(self._state.get("since"))
+        if since is None:
+            return set()
+        decided: dict[str, str] = self._state["faceless"]
+        return {
+            point.id
+            for index in self._index.values()
+            for point in index.values()
+            if point.image
+            and point.uploaded is not None
+            and point.uploaded > since
+            and decided.get(point.id) not in TRIP_ALBUM_DECISIONS
+        }
+
     async def _run_trips(self) -> tuple[list[Trip], list[str]]:
         conf = self.config["trips"]
         detail = {**DEFAULT_DETAIL, **conf["detail"]}
@@ -807,6 +846,7 @@ class ImmichManager:
             conf["max_gap_days"],
             conf["min_assets"],
         )
+        held = self._held_from_trips()
         stored: list[dict[str, Any]] = self._state["trips"]
         taken = {t["name"] for t in stored}
         lines: list[str] = []
@@ -843,7 +883,7 @@ class ImmichManager:
                 record["album"] = album_id
             new = 0
             for user, ids in trip.assets.items():
-                new += await self._add(album_id, user, ids)
+                new += await self._add(album_id, user, ids - held)
             lines.append(
                 f"{record['name']}: {trip.start.date()}..{trip.end.date()}, "
                 f"{len(trip.all_assets())} foto/video, +{new}"
@@ -872,7 +912,7 @@ class ImmichManager:
                 members = [u.get("user", {}).get("id") for u in album.get("albumUsers") or []]
                 if not members or members[0] != me or album["id"] in faceless:
                     continue
-                if album.get("albumName") == self.config["faceless"]["album"]:
+                if album.get("albumName") == self.config["faceless"].get("album", OLD_FACELESS_ALBUM):
                     continue
                 missing = [uid for uid in self._user_ids.values() if uid not in members]
                 if not missing:
@@ -953,7 +993,7 @@ class ImmichManager:
             album_ids = {
                 aid for key, aid in self._state["albums"].items() if key == f"faceless:{user}"
             }
-            to_album: set[str] = set()
+            to_album: list[str] = []
             to_trash: list[str] = []
             to_delete: list[str] = []
             assets = self._own(
@@ -985,7 +1025,7 @@ class ImmichManager:
                 if albums - managed - album_ids:
                     self._decide(aid, "skip")
                     continue
-                action = conf["trip"] if aid in in_trip else conf["home"]
+                action = conf["trip"] if aid in in_trip else _home_action(conf["home"])
                 if action == FACELESS_TRASH:
                     to_trash.append(aid)
                 elif action == FACELESS_DELETE:
@@ -993,13 +1033,9 @@ class ImmichManager:
                 elif action == FACELESS_KEEP:
                     counts["kalsın"] += 1
                     self._decide(aid, "keep")
-                else:
-                    to_album.add(aid)
-            if to_album:
-                album_id = await self._album(f"faceless:{user}", conf["album"], user, False)
-                await self._add(album_id, user, to_album)
-                for aid in to_album:
-                    self._decide(aid, "album")
+                else:  # album (trips only): the trip run adds it like any trip photo
+                    to_album.append(aid)
+                    self._decide(aid, FACELESS_ALBUM)
             if self.writing and to_trash:
                 await api.trash(to_trash)
                 for aid in to_trash:

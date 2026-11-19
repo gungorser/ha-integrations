@@ -320,12 +320,13 @@ async def test_faceless_new_uploads(setup) -> None:
     server.busy = False
     manager.config["faceless"]["home"] = "trash"  # trip photos stay "album"
     await manager.async_run()
-    assert server.trashed == ["label", "bin"]  # trip photo "view" goes to the album
-    albums = [a for a in server.albums.values() if a["albumName"] == "check_before_delete"]
-    assert [(a["_users"], a["_assets"]) for a in albums] == [(["id-melike"], {"view"})]
+    assert server.trashed == ["label", "bin"]  # trip photo "view" stays in its trip album
+    assert manager.summary["faceless"] == {"albüme": 1, "çöpe": 2}
+    assert manager._state["faceless"]["view"] == "album"
+    assert album_named(server, "check_before_delete") is None
 
 
-async def test_faceless_album_mode_never_trashes(setup) -> None:
+async def test_faceless_defaults_never_trash(setup) -> None:
     manager, server = setup
     now = dt_util.utcnow()
     manager.mode = MODE_ALBUM
@@ -333,8 +334,36 @@ async def test_faceless_album_mode_never_trashes(setup) -> None:
     manager._state["since"] = (now - datetime.timedelta(days=2)).isoformat()
     server.asset("label", "sercan", now, HOME, faces=0, uploaded=now - datetime.timedelta(days=1, hours=1))
     await manager.async_run()
-    assert server.trashed == []
-    assert album_named(server, "check_before_delete")["_assets"] == {"label"}
+    assert server.trashed == [] and server.deleted == []
+    assert manager.summary["faceless"] == {"kalsın": 1}  # home default: keep, no album
+    assert album_named(server, "check_before_delete") is None
+
+
+async def test_faceless_trip_keep_stays_out_of_the_trip_album(setup) -> None:
+    manager, server = setup
+    now = dt_util.utcnow()
+    manager.mode = MODE_ALBUM
+    await manager.async_run()
+    manager.config["faceless"]["trip"] = "keep"
+    since = now - datetime.timedelta(days=30)
+    manager._state["since"] = since.isoformat()
+    fresh = now - datetime.timedelta(hours=1)  # face detection not decided yet
+    server.asset("v1", "sercan", t(1), VALENCIA, country="Spain", faces=1, uploaded=since - datetime.timedelta(days=1))
+    server.asset("v2", "sercan", t(2), VALENCIA, country="Spain", faces=1, uploaded=fresh)
+    server.asset("v3", "sercan", t(3), VALENCIA, country="Spain", faces=0, uploaded=fresh)
+    server.asset("v4", "sercan", t(4), VALENCIA, country="Spain", faces=0, uploaded=since - datetime.timedelta(days=1))
+    server.asset("h", "sercan", t(6), HOME)
+    await manager.async_run()
+    # old uploads join at once; new ones wait for the faceless rule
+    assert album_named(server, "ispanya_2025")["_assets"] == {"v1", "v4"}
+
+    for aid in ("v2", "v3"):
+        server.assets[aid]["createdAt"] = (now - datetime.timedelta(days=2)).isoformat()
+        server.assets[aid]["updatedAt"] = now.isoformat()
+    await manager.async_run()  # v2 has a face, v3 is kept out
+    await manager.async_run()
+    assert album_named(server, "ispanya_2025")["_assets"] == {"v1", "v2", "v4"}
+    assert manager._state["faceless"]["v3"] == "keep"
 
 
 async def test_setup_from_yaml(hass: HomeAssistant, monkeypatch) -> None:
@@ -576,5 +605,5 @@ async def test_old_trash_mode_restores_as_album(setup) -> None:
     manager, _server = setup
     await manager.async_set_mode(MODE_TRASH, run=False)
     assert manager.mode == MODE_ALBUM
-    assert manager.config["faceless"]["home"] == "album"
+    assert manager.config["faceless"]["home"] == "keep"
     assert manager.config["faceless"]["trip"] == "album"
