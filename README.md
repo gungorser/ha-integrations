@@ -289,10 +289,12 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   first photo and is renamed once at its end if the name changed and nobody renamed it.
 - Faceless: images uploaded after the first run, `wait_hours` after upload, with Immich's face
   detection queue empty and no face found, not a favourite, not archived and in no album of their
-  own go to the user's `faceless.album` (`check_before_delete`). In `Albüm + çöp` mode the ones
-  outside trips go to the Immich trash instead (restorable for 30 days). Videos are never touched.
+  own: `faceless.home` (outside trips) or `faceless.trip` (trip photos) decides, both
+  `album` by default: `album` -> the user's `faceless.album` (`check_before_delete`), `keep` ->
+  left as it is, `trash` -> the Immich trash (restorable for 30 days), `delete` -> deleted for
+  good. Configure > Immich has a dropdown for each. Videos are never touched.
 - `select.immich` is the mode (restored): `Kapalı`, `Deneme` (plans only; nothing written),
-  `Albüm`, `Albüm + çöp`. `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
+  `Albüm` (writes; the old `Albüm + çöp` restores as `Albüm`). `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
   per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.
   A run every `scan_interval` (600 s; `0`: no timer), on a mode change, on
   `button.immich_sync` and on `gungors.immich_run`.

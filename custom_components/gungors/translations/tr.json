@@ -126,8 +126,14 @@
           "faceless": {
             "name": "Yüzsüz fotoğraflar",
             "data": {
-              "album": "Albüm",
-              "wait_hours": "Bekleme"
+              "album": "Albüm adı",
+              "wait_hours": "Bekleme",
+              "home": "Evdeyken",
+              "trip": "Tatildeyken"
+            },
+            "data_description": {
+              "home": "Yüz bulunmayan yeni fotoğraf, gezi dışında çekildiyse",
+              "trip": "Yüz bulunmayan yeni fotoğraf, bir gezide çekildiyse"
             }
           },
           "partou": {
@@ -174,6 +180,14 @@
       "options": {
         "heat": "Isıt",
         "off": "Kapalı"
+      }
+    },
+    "faceless_action": {
+      "options": {
+        "delete": "Silinsin (geri alınamaz)",
+        "trash": "Çöpe kaldırılsın (30 gün geri alınabilir)",
+        "keep": "Öyle kalsın, albüme taşınmasın",
+        "album": "Albüme taşınsın"
       }
     }
   },

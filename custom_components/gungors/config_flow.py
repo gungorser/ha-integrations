@@ -208,6 +208,13 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
     password = selector.TextSelector(
         selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
     )
+    faceless_action = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=["delete", "trash", "keep", "album"],
+            translation_key="faceless_action",
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
     user_fields: dict[Any, Any] = {vol.Optional(user): password for user in users}
     user_fields[vol.Optional("new_user")] = selector.TextSelector()
     user_fields[vol.Optional("new_user_key")] = password
@@ -254,6 +261,8 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
             vol.Required("faceless"): section(
                 vol.Schema(
                     {
+                        vol.Optional("home", default="album"): faceless_action,
+                        vol.Optional("trip", default="album"): faceless_action,
                         vol.Optional("album", default="check_before_delete"): selector.TextSelector(),
                         vol.Optional("wait_hours", default=24): selector.NumberSelector(
                             selector.NumberSelectorConfig(
@@ -338,6 +347,8 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     conf["trips"] = {**advanced, "distance_km": float(trips_in.get("distance_km", 50))}
     faceless = user_input.get("faceless") or {}
     conf["faceless"] = {
+        "home": faceless.get("home") or "album",
+        "trip": faceless.get("trip") or "album",
         "album": faceless.get("album") or "check_before_delete",
         "wait_hours": float(faceless.get("wait_hours", 24)),
     }
