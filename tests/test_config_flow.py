@@ -273,3 +273,22 @@ async def test_immich_form_holds_secrets_and_durations(hass: HomeAssistant) -> N
     assert values["users"]["users"][0] == {"name": "sercan", "key": "k1"}
     assert values["general"]["scan_interval"] == {"hours": 0, "minutes": 10, "seconds": 0}
     assert values["faceless"]["wait"] == {"hours": 36, "minutes": 0, "seconds": 0}
+
+
+async def test_sync_now_menu_item(hass: HomeAssistant, monkeypatch) -> None:
+    calls = []
+
+    class Manager:
+        async def async_run(self, force=False):
+            calls.append(force)
+
+    entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
+    monkeypatch.setattr("custom_components.gungors.config_flow.async_get_manager", lambda h: Manager())
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    for step in ("services", "immich_sync"):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": step}
+        )
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "sync_started"
+    await hass.async_block_till_done()
+    assert calls == [True]

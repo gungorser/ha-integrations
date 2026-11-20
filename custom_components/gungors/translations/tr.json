@@ -85,7 +85,8 @@
         "description": "Hangi servisi ayarlamak istiyorsun?",
         "menu_options": {
           "immich": "Immich: fotoğraf albümleri",
-          "budget_thuis": "Budget Thuis: elektrik ve gaz tüketimi"
+          "budget_thuis": "Budget Thuis: elektrik ve gaz tüketimi",
+          "immich_sync": "Şimdi senkronize et"
         }
       },
       "immich": {
@@ -189,6 +190,10 @@
     "error": {
       "invalid": "Geçersiz değer",
       "budget_thuis": "Budget Thuis girişi olmadı"
+    },
+    "abort": {
+      "sync_started": "Senkronizasyon başlatıldı. sensor.immich'ten izleyebilirsin.",
+      "immich_off": "Immich kapalı: önce Immich ayarlarına bir adres gir."
     }
   },
   "selector": {
