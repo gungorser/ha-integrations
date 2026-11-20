@@ -87,8 +87,9 @@ Each form saves on submit:
   Immich off.
 - Services > Budget Thuis: e-mail, mailbox app password (optional, shown empty, empty keeps it) and
   scan interval (default 3600 s). Budget Thuis has no password, so a new login mails a link: with the
-  app password gungors reads that mail over IMAP (a progress page, up to ~2.5 min); without it, or
-  when the mail does not come, copy the link (do not click) into the page that follows. Empty
+  app password the form saves at once and gungors reads that mail over IMAP and logs in in the
+  background (status `giriş yapılıyor`, then `tamam` or `hata` with the reason on the sensors);
+  without it, copy the link (do not click) into the page that follows. Empty
   e-mail: off.
 
 Saving applies at once (no restart, no `gungors.reload`). The entry options keep the YAML

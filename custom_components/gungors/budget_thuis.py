@@ -3,9 +3,9 @@
 Configure > Servisler > Budget Thuis logs in and sets the scan interval (default
 hourly). Budget Thuis has no password login: it mails a link. With the mailbox's
 password (Gmail: an app password) gungors reads that mail itself over IMAP (INBOX,
-read-only, mails from "budget" since the request) and follows the link; without it, or
-when no mail came within `MAIL_WAIT` seconds, the link is pasted (copied, not clicked)
-on the next page. The login's refresh token is kept; a refused one logs in again by
+read-only, mails from "budget" since the request) and follows the link, in the background
+(status `giriş yapılıyor`; the form has closed); without it the link is pasted (copied,
+not clicked) on the next page. The login's refresh token is kept; a refused one logs in again by
 mail on its own (at most every `RELOGIN_EVERY` seconds), or asks for a new login
 (status `hata`, error "yeniden giriş gerekli"). Each run reads the daily usage of the
 current month from the API the Budget Thuis app uses (unofficial):
@@ -486,6 +486,7 @@ class BudgetThuisManager:
         self._unsub = None
         self._logged_keys = False
         self._mail_login_at = 0.0
+        self._running = False
 
     async def async_start(self) -> None:
         stored = await self._store.async_load() or {}
@@ -498,7 +499,9 @@ class BudgetThuisManager:
 
     async def async_reconfigure(self, config: dict[str, Any]) -> None:
         if config.get("login_at") != self.config.get("login_at"):
+            # a new login from Configure: its refresh token, or a mail login right away
             self._tokens = {"refresh_token": config.get("refresh_token")}
+            self._mail_login_at = 0.0
         self.config = config
         self._schedule()
         self.hass.async_create_task(self.async_run(), "gungors budget thuis")
@@ -540,7 +543,9 @@ class BudgetThuisManager:
         if not password or time.time() - self._mail_login_at < RELOGIN_EVERY:
             raise BudgetThuisAuthError(RELOGIN) from err
         self._mail_login_at = time.time()
-        _LOGGER.info("Budget Thuis: refresh token refused (%s), logging in by mail", err)
+        _LOGGER.info("Budget Thuis: logging in by mail (%s)", err)
+        self.status, self.error = "giriş yapılıyor", None
+        async_dispatcher_send(self.hass, SIGNAL_UPDATE)
         try:
             tokens = await async_mail_login(
                 self.hass, self.api, self.config["username"], password
@@ -552,6 +557,15 @@ class BudgetThuisManager:
         return tokens
 
     async def async_run(self) -> None:
+        if self._running:  # a mail login can take minutes: no second run meanwhile
+            return
+        self._running = True
+        try:
+            await self._async_run()
+        finally:
+            self._running = False
+
+    async def _async_run(self) -> None:
         now = dt_util.now()
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)

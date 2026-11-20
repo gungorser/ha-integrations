@@ -180,7 +180,7 @@
           "scan_interval": "Ne sıklıkla güncellensin"
         },
         "data_description": {
-          "username": "Budget Thuis'te şifre yok: kaydedince bu adrese bir giriş linki gelir. Uygulama şifresini girdiysen gungors maili kendisi okur, girmediysen linki sonraki sayfada yapıştırırsın. Boş bırakırsan kapalı.",
+          "username": "Budget Thuis'te şifre yok: kaydedince bu adrese bir giriş linki gelir. Uygulama şifresini girdiysen form hemen kapanır, gungors maili arka planda okuyup girer (durum: sensor.budget_thuis_elektrik'in status özelliği); girmediysen linki sonraki sayfada yapıştırırsın. Boş bırakırsan kapalı.",
           "mail_password": "Doluysa giriş mailini gungors kendisi okur, link yapıştırmana gerek kalmaz; bağlantı koparsa kendi kendine yeniden girer. Gmail için normal şifre olmaz: Google Hesabı > Güvenlik > Uygulama şifreleri'nden bir şifre oluştur. Kayıtlı şifre gizli olarak görünür (göz simgesiyle açılır); değiştirmezsen aynı kalır.",
           "new_login": "Bağlantı koparsa aç: yeni bir giriş linki gönderilir.",
           "scan_interval": "Saat, dakika, saniye. 01:00:00 = saatte bir (en az 5 dakika)."
@@ -197,12 +197,6 @@
     "error": {
       "invalid": "Geçersiz değer",
       "budget_thuis": "Budget Thuis girişi olmadı"
-    },
-    "progress": {
-      "budget_thuis_mail": "{email} adresine giriş maili istendi, gungors maili bekliyor ve okuyor. Bu iki dakikayı bulabilir."
-    },
-    "abort": {
-      "budget_thuis": "Budget Thuis girişi olmadı: {error}"
     }
   },
   "selector": {
