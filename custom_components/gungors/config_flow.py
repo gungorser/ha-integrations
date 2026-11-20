@@ -546,32 +546,6 @@ class GungorsOptionsFlow(OptionsFlow):
         self.hass.async_create_task(manager.async_run(force=True))
         return self.async_abort(reason="sync_started")
 
-        options = self._options()
-        immich = options.get("immich") or {}
-        errors: dict[str, str] = {}
-        placeholders = {"error": ""}
-        if user_input is not None:
-            try:
-                conf = _immich_from_form(immich, user_input)
-            except vol.Invalid as err:
-                errors["base"] = "invalid"
-                placeholders["error"] = str(err.msg)
-            else:
-                if conf is None:
-                    options.pop("immich", None)
-                else:
-                    options["immich"] = conf
-                return self.async_create_entry(data=options)
-        return self.async_show_form(
-            step_id="immich_settings",
-            data_schema=self.add_suggested_values_to_schema(
-                _immich_schema(immich),
-                user_input if user_input is not None else _immich_form_values(immich),
-            ),
-            errors=errors,
-            description_placeholders=placeholders,
-        )
-
     async def async_step_immich_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
