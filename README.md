@@ -339,7 +339,9 @@ logged at warning level. Only the refresh token
 is kept (entry options at login, then `.storage/gungors.budget_thuis` as it rotates); a refused
 one logs in again by mail when the app password is stored (at most every 6 h), otherwise, or
 when that fails, sets `status: hata`, `error: yeniden giriş gerekli`; contracts via
-`/home/v1/contactPerson` and `/energy/v2/customer/productPicker`, usage via
+`/home/v1/contactPerson` and `/energy/v2/customer/productPicker` (refused for the whole list: per relation, then
+`api.budgetthuis.nl/energy/v1/contractees/<Klantnummer>/contracts` with each number from contactPerson; the
+refusal, token claims and contactPerson field names are logged), usage via
 `/energy/v1/contract/<id>/usagecosts/details?PeriodDuration=Day`, summed over all contracts.
 Every `usage*` block of a day with a `rawUsage` counts: electricity consumption, electricity
 production, gas. The field names of the first run are logged at info level.
