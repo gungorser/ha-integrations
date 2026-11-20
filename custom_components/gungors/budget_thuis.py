@@ -537,9 +537,10 @@ class BudgetThuisApi:
                 json={"relationIds": relation_ids},
             ) or {}]
         except BudgetThuisAuthError as err:
-            # 403 for the whole list (seen live): maybe one relation is not an energy
-            # product. Ask per relation and keep the ones that answer.
-            _LOGGER.warning(
+            # 403 for the whole list (live: the account's Mobile relation does not belong
+            # to the contact person). Ask per relation and keep the ones that answer;
+            # this is the normal case, so it is logged at debug level only.
+            _LOGGER.debug(
                 "Budget Thuis productPicker refused (%s); token %s; products %s; "
                 "trying each of %d relations", err, token_claims(token),
                 product_summary(person), len(relation_ids),
@@ -552,8 +553,12 @@ class BudgetThuisApi:
                         json={"relationIds": [relation_id]},
                     ) or {})
                 except BudgetThuisAuthError as one_err:
-                    _LOGGER.warning("Budget Thuis productPicker, one relation: %s", one_err)
+                    _LOGGER.debug("Budget Thuis productPicker, one relation: %s", one_err)
             if not picked:
+                _LOGGER.warning(
+                    "Budget Thuis productPicker refused every relation (%s); token %s; "
+                    "products %s", err, token_claims(token), product_summary(person),
+                )
                 result = await self._contractees(token, person)
                 if result:
                     return result
