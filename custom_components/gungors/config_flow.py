@@ -34,7 +34,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
-from .immich import IMMICH_SCHEMA
+from .immich import IMMICH_SCHEMA, async_get_manager
 from .presets import BUILTIN
 from .rules import NAMES, defaults_json, parse_defaults
 
@@ -206,6 +206,31 @@ IMMICH_TRIPS_ADVANCED = (
 )
 
 
+MASK = "********"  # an older form showed this for a stored secret: still means "keep it"
+
+
+def _duration(seconds: float) -> dict[str, int]:
+    """Seconds -> the hh:mm:ss dict a DurationSelector holds."""
+    total = int(round(seconds))
+    return {"hours": total // 3600, "minutes": total % 3600 // 60, "seconds": total % 60}
+
+
+def _seconds(value: Any, default: float = 0) -> int:
+    """A DurationSelector dict (or plain number of seconds) -> seconds."""
+    if value is None:
+        return int(default)
+    if isinstance(value, dict):
+        return int(
+            value.get("days", 0) * 86400 + value.get("hours", 0) * 3600
+            + value.get("minutes", 0) * 60 + value.get("seconds", 0)
+        )
+    return int(value)
+
+
+def _duration_selector() -> selector.DurationSelector:
+    return selector.DurationSelector(selector.DurationSelectorConfig())
+
+
 def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
     users = list((conf.get("users") or {}).keys())
     password = selector.TextSelector(
@@ -240,12 +265,7 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                         vol.Optional("url"): selector.TextSelector(
                             selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
                         ),
-                        vol.Optional("scan_interval", default=600): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=0, max=86400, step=1, unit_of_measurement="s",
-                                mode=selector.NumberSelectorMode.BOX,
-                            )
-                        ),
+                        vol.Optional("scan_interval", default=_duration(600)): _duration_selector(),
                         vol.Optional("owner"): selector.SelectSelector(
                             selector.SelectSelectorConfig(
                                 options=users, custom_value=True,
@@ -285,12 +305,7 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                         vol.Optional("trip", default="album"): faceless_action(
                             ["album", "keep", "trash", "delete"]
                         ),
-                        vol.Optional("wait_hours", default=24): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=0, max=720, step=1, unit_of_measurement="h",
-                                mode=selector.NumberSelectorMode.BOX,
-                            )
-                        ),
+                        vol.Optional("wait", default=_duration(24 * 3600)): _duration_selector(),
                     }
                 ),
                 {"collapsed": True},
@@ -317,21 +332,33 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
     partou = conf.get("partou") or {}
     return {
         "general": {
-            k: conf[k] for k in ("url", "scan_interval", "owner", "share_albums") if k in conf
+            **{k: conf[k] for k in ("url", "owner", "share_albums") if k in conf},
+            "scan_interval": _duration(conf.get("scan_interval", 600)),
         },
-        # keys stay on the server: an empty key keeps the stored one
-        "users": {"users": [{"name": u, "key": ""} for u in (conf.get("users") or {})]},
+        # the form holds the real secrets (password fields hide them, with a show toggle);
+        # only an admin can open it
+        "users": {"users": [{"name": u, "key": k} for u, k in (conf.get("users") or {}).items()]},
         "people": {"people": conf.get("people") or {}},
         "trips": {
             **({"distance_km": trips["distance_km"]} if "distance_km" in trips else {}),
             "advanced": {k: trips[k] for k in IMMICH_TRIPS_ADVANCED if k in trips},
         },
         "faceless": {
-            k: ("keep" if k == "home" and v == "album" else v)
-            for k, v in (conf.get("faceless") or {}).items()
-            if k in ("home", "trip", "wait_hours")
+            **{
+                k: ("keep" if k == "home" and v == "album" else v)
+                for k, v in (conf.get("faceless") or {}).items()
+                if k in ("home", "trip")
+            },
+            **(
+                {"wait": _duration(float(conf["faceless"]["wait_hours"]) * 3600)}
+                if "wait_hours" in (conf.get("faceless") or {})
+                else {}
+            ),
         },
-        "partou": {k: partou[k] for k in ("username", "after") if k in partou},
+        "partou": {
+            **{k: partou[k] for k in ("username", "after") if k in partou},
+            **({"password": partou["password"]} if partou.get("password") else {}),
+        },
     }
 
 
@@ -347,7 +374,9 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
         name = str((item or {}).get("name") or "").strip()
         if not name:
             continue
-        key = str(item.get("key") or "").strip() or stored.get(name, "")
+        key = str(item.get("key") or "").strip()
+        if not key or key == MASK:
+            key = stored.get(name, "")
         if not key:
             raise vol.Invalid(f"{name}: API anahtarı gerekli")
         users[name] = key
@@ -356,7 +385,7 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     conf: dict[str, Any] = {
         "url": url,
         "users": users,
-        "scan_interval": int(general.get("scan_interval", 600)),
+        "scan_interval": _seconds(general.get("scan_interval"), 600),
         "share_albums": bool(general.get("share_albums", False)),
         "people": (user_input.get("people") or {}).get("people") or {},
     }
@@ -372,7 +401,7 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     conf["faceless"] = {
         "home": faceless.get("home") or "keep",
         "trip": faceless.get("trip") or "album",
-        "wait_hours": float(faceless.get("wait_hours", 24)),
+        "wait_hours": _seconds(faceless.get("wait"), 24 * 3600) / 3600,
     }
     partou_in = user_input.get("partou") or {}
     username = (partou_in.get("username") or "").strip()
@@ -382,7 +411,10 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
             k: v for k, v in old_partou.items() if k not in ("username", "password", "after")
         }
         partou["username"] = username
-        partou["password"] = partou_in.get("password") or old_partou.get("password") or ""
+        password = partou_in.get("password") or ""
+        partou["password"] = (
+            old_partou.get("password", "") if password in ("", MASK) else password
+        ) or ""
         if not partou["password"]:
             raise vol.Invalid("partou_password")
         partou["after"] = str(partou_in.get("after") or "18:00")[:5]
@@ -402,12 +434,9 @@ def _budget_thuis_section() -> vol.Schema:
                 selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
             ),
             vol.Optional("new_login", default=False): selector.BooleanSelector(),
-            vol.Optional("scan_interval", default=DEFAULT_BT_INTERVAL): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=300, max=86400, step=60, unit_of_measurement="s",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
-            ),
+            vol.Optional(
+                "scan_interval", default=_duration(DEFAULT_BT_INTERVAL)
+            ): _duration_selector(),
         }
     )
 
@@ -432,7 +461,19 @@ class GungorsOptionsFlow(OptionsFlow):
     async def async_step_services(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="services", menu_options=["immich", "budget_thuis"])
+        return self.async_show_menu(
+            step_id="services", menu_options=["immich", "immich_sync", "budget_thuis"]
+        )
+
+    async def async_step_immich_sync(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Sync now: the same run as button.immich_sync, started in the background."""
+        manager = async_get_manager(self.hass)
+        if manager is None:
+            return self.async_abort(reason="immich_off")
+        self.hass.async_create_task(manager.async_run(force=True))
+        return self.async_abort(reason="sync_started")
 
     # --- presets
 
@@ -546,8 +587,12 @@ class GungorsOptionsFlow(OptionsFlow):
         }
         if user_input is not None:
             email = (user_input.get("username") or "").strip()
-            interval = int(user_input.get("scan_interval", DEFAULT_BT_INTERVAL))
-            new_password = (user_input.get("mail_password") or "").strip()
+            interval = max(300, _seconds(user_input.get("scan_interval"), DEFAULT_BT_INTERVAL))
+            typed = (user_input.get("mail_password") or "").strip()
+            # the form holds the stored password (hidden): only a different one is new
+            new_password = (
+                typed if typed not in ("", MASK, old_bt.get("mail_password")) else ""
+            )
             if not email:
                 options.pop("budget_thuis", None)
                 return self.async_create_entry(data=options)
@@ -580,9 +625,16 @@ class GungorsOptionsFlow(OptionsFlow):
                 placeholders["error"] = str(err)
             else:
                 return await self.async_step_budget_thuis_link()
-        suggested = {k: old_bt[k] for k in ("username", "scan_interval") if k in old_bt}
+        suggested = {
+            **{k: old_bt[k] for k in ("username", "mail_password") if k in old_bt},
+            **(
+                {"scan_interval": _duration(old_bt["scan_interval"])}
+                if "scan_interval" in old_bt
+                else {}
+            ),
+        }
         if user_input is not None:
-            suggested = {k: v for k, v in user_input.items() if k != "mail_password"}
+            suggested = dict(user_input)
         return self.async_show_form(
             step_id="budget_thuis",
             data_schema=self.add_suggested_values_to_schema(_budget_thuis_section(), suggested),

@@ -85,7 +85,8 @@
         "description": "Which service do you want to set up?",
         "menu_options": {
           "immich": "Immich: photo albums",
-          "budget_thuis": "Budget Thuis: electricity and gas usage"
+          "budget_thuis": "Budget Thuis: electricity and gas usage",
+          "immich_sync": "Sync now"
         }
       },
       "immich": {
@@ -102,7 +103,7 @@
             },
             "data_description": {
               "url": "Leave empty to turn the Immich automation off.",
-              "scan_interval": "In seconds. 0: only when the sync button is pressed.",
+              "scan_interval": "Hours, minutes, seconds. All zero: only when the sync button is pressed.",
               "owner": "Person and trip albums are created in this user's account; the others are added as editors.",
               "share_albums": "When on, every album a user owns (hand-made ones too) is shared with the other users."
             }
@@ -113,7 +114,7 @@
               "users": "Immich users"
             },
             "data_description": {
-              "users": "A name and that user's Immich API key per user (Immich > Account settings > API keys). A stored key shows empty; leave it empty to keep it."
+              "users": "A name and that user's Immich API key per user (Immich > Account settings > API keys). A stored key is hidden; the eye icon shows it."
             }
           },
           "people": {
@@ -142,12 +143,12 @@
             "data": {
               "home": "Taken at home",
               "trip": "Taken on a trip",
-              "wait_hours": "Wait before deciding"
+              "wait": "Wait before deciding"
             },
             "data_description": {
               "home": "What happens to a photo without faces taken outside a trip.",
               "trip": "What happens to a photo without faces taken on a trip. Into the trip album: it joins that trip's album even without faces.",
-              "wait_hours": "Hours. Waits this long after the upload so Immich can finish face detection."
+              "wait": "Waits this long after the upload so Immich can finish face detection."
             }
           },
           "partou": {
@@ -159,7 +160,7 @@
             },
             "data_description": {
               "username": "The daycare's Partou photos are copied to Immich daily, into monthly albums. Leave empty to turn it off.",
-              "password": "The stored password shows empty; leave it empty to keep it."
+              "password": "The stored password is hidden; the eye icon shows it."
             }
           }
         }
@@ -175,9 +176,9 @@
         },
         "data_description": {
           "username": "Budget Thuis has no password: saving mails a login link to this address. With the app password gungors reads that mail itself; without it you paste the link on the next page. Leave empty to turn it off.",
-          "mail_password": "When set, gungors reads the login mail itself (no link to paste) and logs in again on its own when the login expires. Gmail does not take the normal password: create one under Google Account > Security > App passwords. The stored password shows empty; leave it empty to keep it.",
+          "mail_password": "When set, gungors reads the login mail itself (no link to paste) and logs in again on its own when the login expires. Gmail does not take the normal password: create one under Google Account > Security > App passwords. The stored password shows hidden (the eye shows it); leave it as is to keep it.",
           "new_login": "Turn on when the connection is lost: a new login link is mailed.",
-          "scan_interval": "In seconds. 3600 = hourly."
+          "scan_interval": "Hours, minutes, seconds. 01:00:00 = hourly (at least 5 minutes)."
         }
       },
       "budget_thuis_link": {
@@ -196,7 +197,9 @@
       "budget_thuis_mail": "A login mail was asked for {email}; gungors is waiting for it and reading it. This can take two minutes."
     },
     "abort": {
-      "budget_thuis": "Budget Thuis login failed: {error}"
+      "budget_thuis": "Budget Thuis login failed: {error}",
+      "sync_started": "Sync started. Follow it on sensor.immich.",
+      "immich_off": "Immich is off: set an address in the Immich settings first."
     }
   },
   "selector": {

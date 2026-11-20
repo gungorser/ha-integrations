@@ -270,7 +270,7 @@ async def test_login_by_link_in_configure(hass: HomeAssistant, fake_api: FakeApi
 
     result = await _bt_form(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], _bt(username="a@b.c", scan_interval=1800)
+        result["flow_id"], _bt(username="a@b.c", scan_interval={"hours": 0, "minutes": 30, "seconds": 0})
     )
     assert result["step_id"] == "budget_thuis_link"
     assert fake_api.links == ["a@b.c"]
@@ -291,7 +291,7 @@ async def test_login_by_link_in_configure(hass: HomeAssistant, fake_api: FakeApi
     # only the interval: no new mail
     result = await _bt_form(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], _bt(username="a@b.c", scan_interval=3600)
+        result["flow_id"], _bt(username="a@b.c", scan_interval={"hours": 1, "minutes": 0, "seconds": 0})
     )
     assert result["type"] == "create_entry"
     assert fake_api.links == ["a@b.c"]
@@ -408,7 +408,7 @@ async def test_login_by_mail_in_configure(
     entry = await _setup(hass, {"presets": {}})
     result = await _bt_form(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], _bt(username="a@gmail.com", mail_password="app", scan_interval=3600)
+        result["flow_id"], _bt(username="a@gmail.com", mail_password="app", scan_interval={"hours": 1, "minutes": 0, "seconds": 0})
     )
     result = await _through_progress(hass, result)
     assert result["type"] == "create_entry", result
@@ -418,13 +418,14 @@ async def test_login_by_mail_in_configure(
     assert fake_api.links == ["a@gmail.com"] and fake_mail["password"] == "app"
     assert float(hass.states.get("sensor.budget_thuis_elektrik").state) == 16.5
 
-    # the stored password is not shown and an empty field keeps it
+    # the stored password is prefilled (a password field hides it); kept as is: no new login
     result = await _bt_form(hass, entry)
     for marker in result["data_schema"].schema:
         if marker.schema == "mail_password":
-            assert not (marker.description or {}).get("suggested_value")
+            assert marker.description["suggested_value"] == "app"
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], _bt(username="a@gmail.com", scan_interval=1800)
+        result["flow_id"],
+        _bt(username="a@gmail.com", mail_password="app", scan_interval={"hours": 0, "minutes": 30, "seconds": 0}),
     )
     assert result["type"] == "create_entry"
     assert entry.options["budget_thuis"]["mail_password"] == "app"
@@ -437,7 +438,7 @@ async def test_login_by_mail_in_configure(
     try:
         result = await _bt_form(hass, entry)
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], _bt(username="a@gmail.com", new_login=True, scan_interval=1800)
+            result["flow_id"], _bt(username="a@gmail.com", new_login=True, scan_interval={"hours": 0, "minutes": 30, "seconds": 0})
         )
         result = await _through_progress(hass, result)
         assert result["step_id"] == "budget_thuis_link"

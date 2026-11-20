@@ -85,7 +85,8 @@
         "description": "Hangi servisi ayarlamak istiyorsun?",
         "menu_options": {
           "immich": "Immich: fotoğraf albümleri",
-          "budget_thuis": "Budget Thuis: elektrik ve gaz tüketimi"
+          "budget_thuis": "Budget Thuis: elektrik ve gaz tüketimi",
+          "immich_sync": "Şimdi senkronize et"
         }
       },
       "immich": {
@@ -102,7 +103,7 @@
             },
             "data_description": {
               "url": "Boş bırakırsan Immich otomasyonu tamamen kapanır.",
-              "scan_interval": "Saniye cinsinden. 0 yazarsan sadece Senkronize düğmesine basınca çalışır.",
+              "scan_interval": "Saat, dakika, saniye. Hepsi sıfırsa sadece Senkronize düğmesine basınca çalışır.",
               "owner": "Kişi ve tatil albümleri bu kullanıcının hesabında açılır, diğer kullanıcılar düzenleyici olarak eklenir.",
               "share_albums": "Açıksa bir kullanıcının açtığı her albüm (elle açılanlar dahil) diğer kullanıcılarla da paylaşılır."
             }
@@ -113,7 +114,7 @@
               "users": "Immich kullanıcıları"
             },
             "data_description": {
-              "users": "Her kullanıcı için bir ad ve o kullanıcının Immich API anahtarı (Immich > Hesap ayarları > API anahtarları). Kayıtlı anahtar boş görünür; boş bırakırsan değişmez."
+              "users": "Her kullanıcı için bir ad ve o kullanıcının Immich API anahtarı (Immich > Hesap ayarları > API anahtarları). Kayıtlı anahtar gizli görünür, göz simgesiyle açılır."
             }
           },
           "people": {
@@ -142,12 +143,12 @@
             "data": {
               "home": "Evde çekilmişse",
               "trip": "Tatilde çekilmişse",
-              "wait_hours": "Karar vermeden önce bekleme"
+              "wait": "Karar vermeden önce bekleme"
             },
             "data_description": {
               "home": "Tatil dışında çekilen yüzsüz fotoğrafa ne olsun.",
               "trip": "Tatilde çekilen yüzsüz fotoğrafa ne olsun. Tatil albümüne taşınsın: yüzü olmasa da o tatilin albümüne girer.",
-              "wait_hours": "Saat. Yüklendikten sonra bu kadar beklenir ki Immich yüz tanımayı bitirsin."
+              "wait": "Yüklendikten sonra bu kadar beklenir ki Immich yüz tanımayı bitirsin."
             }
           },
           "partou": {
@@ -159,7 +160,7 @@
             },
             "data_description": {
               "username": "Kreşin Partou'da paylaştığı fotoğraflar her gün Immich'e, aylık albümlere aktarılır. Boş bırakırsan kapalı.",
-              "password": "Kayıtlı şifre boş görünür; boş bırakırsan değişmez."
+              "password": "Kayıtlı şifre gizli görünür, göz simgesiyle açılır."
             }
           }
         }
@@ -175,9 +176,9 @@
         },
         "data_description": {
           "username": "Budget Thuis'te şifre yok: kaydedince bu adrese bir giriş linki gelir. Uygulama şifresini girdiysen gungors maili kendisi okur, girmediysen linki sonraki sayfada yapıştırırsın. Boş bırakırsan kapalı.",
-          "mail_password": "Doluysa giriş mailini gungors kendisi okur, link yapıştırmana gerek kalmaz; bağlantı koparsa kendi kendine yeniden girer. Gmail için normal şifre olmaz: Google Hesabı > Güvenlik > Uygulama şifreleri'nden bir şifre oluştur. Kayıtlı şifre boş görünür; boş bırakırsan değişmez.",
+          "mail_password": "Doluysa giriş mailini gungors kendisi okur, link yapıştırmana gerek kalmaz; bağlantı koparsa kendi kendine yeniden girer. Gmail için normal şifre olmaz: Google Hesabı > Güvenlik > Uygulama şifreleri'nden bir şifre oluştur. Kayıtlı şifre gizli olarak görünür (göz simgesiyle açılır); değiştirmezsen aynı kalır.",
           "new_login": "Bağlantı koparsa aç: yeni bir giriş linki gönderilir.",
-          "scan_interval": "Saniye cinsinden. 3600 = saatte bir."
+          "scan_interval": "Saat, dakika, saniye. 01:00:00 = saatte bir (en az 5 dakika)."
         }
       },
       "budget_thuis_link": {
@@ -196,7 +197,9 @@
       "budget_thuis_mail": "{email} adresine giriş maili istendi, gungors maili bekliyor ve okuyor. Bu iki dakikayı bulabilir."
     },
     "abort": {
-      "budget_thuis": "Budget Thuis girişi olmadı: {error}"
+      "budget_thuis": "Budget Thuis girişi olmadı: {error}",
+      "sync_started": "Senkronizasyon başlatıldı. sensor.immich'ten izleyebilirsin.",
+      "immich_off": "Immich kapalı: önce Immich ayarlarına bir adres gir."
     }
   },
   "selector": {

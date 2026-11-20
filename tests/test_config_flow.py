@@ -195,13 +195,13 @@ async def test_cover_preset_number_or_template(hass: HomeAssistant) -> None:
 
 def _immich_input(**changes) -> dict:
     data = {
-        "general": {"url": "http://immich", "scan_interval": 0, "owner": "sercan",
+        "general": {"url": "http://immich", "scan_interval": {"hours": 0, "minutes": 0, "seconds": 0}, "owner": "sercan",
                     "share_albums": True},
         "users": {"users": [{"name": "sercan", "key": ""}, {"name": "melike", "key": ""}]},
         "people": {"people": {"Kaan": "Kaan"}},
         "trips": {"distance_km": 60, "advanced": {"min_days": {"netherlands": 2}}},
-        "faceless": {"home": "trash", "trip": "album", "wait_hours": 24},
-        "partou": {"username": "a@b.c", "after": "18:00:00"},
+        "faceless": {"home": "trash", "trip": "album", "wait": {"hours": 24, "minutes": 0, "seconds": 0}},
+        "partou": {"username": "a@b.c", "password": "********", "after": "18:00:00"},
     }
     for key, value in changes.items():
         data[key] = {**data[key], **value}
@@ -263,3 +263,32 @@ async def test_immich_form_new_user_needs_a_key(hass: HomeAssistant) -> None:
     )
     assert result["errors"] == {"base": "invalid"}
     assert "kaan" in result["description_placeholders"]["error"]
+
+
+async def test_immich_form_holds_secrets_and_durations(hass: HomeAssistant) -> None:
+    from custom_components.gungors.config_flow import _immich_form_values
+
+    values = _immich_form_values({**IMMICH, "scan_interval": 600, "faceless": {"wait_hours": 36}})
+    assert values["partou"]["password"] == "pw"
+    assert values["users"]["users"][0] == {"name": "sercan", "key": "k1"}
+    assert values["general"]["scan_interval"] == {"hours": 0, "minutes": 10, "seconds": 0}
+    assert values["faceless"]["wait"] == {"hours": 36, "minutes": 0, "seconds": 0}
+
+
+async def test_sync_now_menu_item(hass: HomeAssistant, monkeypatch) -> None:
+    calls = []
+
+    class Manager:
+        async def async_run(self, force=False):
+            calls.append(force)
+
+    entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
+    monkeypatch.setattr("custom_components.gungors.config_flow.async_get_manager", lambda h: Manager())
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    for step in ("services", "immich_sync"):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": step}
+        )
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "sync_started"
+    await hass.async_block_till_done()
+    assert calls == [True]
