@@ -404,6 +404,9 @@ def test_mail_login_link_imap(monkeypatch) -> None:
         def select(self, box, readonly=False) -> None:
             calls["readonly"] = readonly
 
+        def store(self, num, what, flags) -> None:
+            calls["store"] = (num, what, flags)
+
         def search(self, _charset, *criteria):
             calls["criteria"] = criteria
             return "OK", [b" ".join(sorted(mails))]
@@ -414,7 +417,8 @@ def test_mail_login_link_imap(monkeypatch) -> None:
     monkeypatch.setattr(budget_thuis.imaplib, "IMAP4_SSL", FakeImap)
     link = budget_thuis.mail_login_link("a@gmail.com", "app", now)
     assert link.endswith("token=T1&returnUrl=%2Fx")
-    assert calls["host"] == "imap.gmail.com" and calls["readonly"] is True
+    assert calls["host"] == "imap.gmail.com"
+    assert calls["store"] == (b"2", "+X-GM-LABELS", "\\Trash")  # used once: to the trash
     assert calls["criteria"][-2:] == ("FROM", '"budget"')
     # only the old mail: nothing yet
     del mails[b"2"]
@@ -484,6 +488,7 @@ async def test_login_by_mail_in_configure(
         await hass.async_block_till_done()
         attrs = hass.states.get("sensor.budget_thuis_elektrik").attributes
         assert attrs["status"] == "hata" and "gelmedi" in attrs["error"]
+        assert fake_mail["reads"] >= 1
         assert fake_api.links == ["a@gmail.com", "a@gmail.com"]
     finally:
         budget_thuis.MAIL_WAIT = 150

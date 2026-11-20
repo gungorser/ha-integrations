@@ -329,8 +329,8 @@ Budget Thuis app: login with the app's OAuth2 PKCE flow (client `mobile`, no sec
 -> `/inloglink-aanvragen` mails a link -> the link (read from the mailbox, or pasted) is followed
 (also a self-posting confirm page) to `budgetthuis://login_success?code=` -> `/connect/token`.
 Mail reading: IMAP over SSL on the address's server (`imap.gmail.com` for Gmail, else
-`imap.<domain>`), the address and its app password, INBOX read-only, mails `FROM "budget"` sent
-after the request; the link is the "Direct inloggen" URL
+`imap.<domain>`), the address and its app password, INBOX, mails `FROM "budget"` sent
+after the request (the used login mail goes to the trash: Gmail's Trash label, else deleted); the link is the "Direct inloggen" URL
 (`mijn.budgetthuis.nl/autologin/<strategy>/?token=&email=`), else a URL that says
 `inloglink`/`login`/`token` (the hosts are logged when none matches). That link starts the
 website's login (client `onlineReact`), so its `token`, `email` and `strategy` are sent to

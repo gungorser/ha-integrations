@@ -131,6 +131,18 @@ def login_link(msg: email.message.Message) -> str | None:
     return None
 
 
+def _trash(imap: imaplib.IMAP4, address: str, num: bytes) -> None:
+    """Move a read login mail to the trash (Gmail: its Trash label; else delete + expunge)."""
+    try:
+        if imap_server(address) == "imap.gmail.com":
+            imap.store(num, "+X-GM-LABELS", "\\Trash")
+        else:
+            imap.store(num, "+FLAGS", "\\Deleted")
+            imap.expunge()
+    except imaplib.IMAP4.error as err:
+        _LOGGER.warning("Budget Thuis: login mail not deleted: %s", err)
+
+
 def mail_login_link(address: str, password: str, since: float) -> str | None:
     """Blocking (executor): the login link of the newest Budget Thuis mail since `since`."""
     day = time.gmtime(since - 86400)
@@ -138,7 +150,7 @@ def mail_login_link(address: str, password: str, since: float) -> str | None:
     try:
         with imaplib.IMAP4_SSL(imap_server(address), 993, timeout=30) as imap:
             imap.login(address, password)
-            imap.select("INBOX", readonly=True)
+            imap.select("INBOX")
             _typ, data = imap.search(None, "SINCE", since_day, "FROM", '"budget"')
             ids = data[0].split() if data and data[0] else []
             for num in reversed(ids[-10:]):
@@ -155,6 +167,7 @@ def mail_login_link(address: str, password: str, since: float) -> str | None:
                     continue
                 link = login_link(msg)
                 if link:
+                    _trash(imap, address, num)  # used once: the login mail goes away
                     return link
     except imaplib.IMAP4.error as err:
         raise BudgetThuisMailError(f"mail girişi olmadı: {err}") from err
@@ -387,11 +400,13 @@ class BudgetThuisApi:
             raise BudgetThuisError(f"login link: {err}") from err
 
     async def refresh(self, refresh_token: str) -> dict[str, Any]:
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token,
+                "client_id": CLIENT_ID}
         try:
-            tokens = await self._token(self._session, {
-                "grant_type": "refresh_token", "refresh_token": refresh_token,
-                "client_id": CLIENT_ID,
-            })
+            try:
+                tokens = await self._token(self._session, data)
+            except aiohttp.ServerDisconnectedError:  # a stale pooled connection: once more
+                tokens = await self._token(self._session, data)
         except (TimeoutError, aiohttp.ClientError) as err:
             raise BudgetThuisError(f"refresh: {err}") from err
         tokens.setdefault("refresh_token", refresh_token)
@@ -416,6 +431,14 @@ class BudgetThuisApi:
         return result
 
     async def _request(self, token: str, method: str, path: str, **kwargs: Any) -> Any:
+        try:
+            return await self._request_once(token, method, path, **kwargs)
+        except BudgetThuisError as err:
+            if not isinstance(err.__cause__, aiohttp.ServerDisconnectedError):
+                raise
+            return await self._request_once(token, method, path, **kwargs)  # stale connection
+
+    async def _request_once(self, token: str, method: str, path: str, **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
                    "User-Agent": USER_AGENT}
         try:
