@@ -206,7 +206,7 @@ IMMICH_TRIPS_ADVANCED = (
 )
 
 
-MASK = "********"  # shown for a stored secret; left unchanged it keeps the stored value
+MASK = "********"  # an older form showed this for a stored secret: still means "keep it"
 
 
 def _duration(seconds: float) -> dict[str, int]:
@@ -335,8 +335,9 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
             **{k: conf[k] for k in ("url", "owner", "share_albums") if k in conf},
             "scan_interval": _duration(conf.get("scan_interval", 600)),
         },
-        # secrets stay on the server: the form shows a mask, which keeps the stored one
-        "users": {"users": [{"name": u, "key": MASK} for u in (conf.get("users") or {})]},
+        # the form holds the real secrets (password fields hide them, with a show toggle);
+        # only an admin can open it
+        "users": {"users": [{"name": u, "key": k} for u, k in (conf.get("users") or {}).items()]},
         "people": {"people": conf.get("people") or {}},
         "trips": {
             **({"distance_km": trips["distance_km"]} if "distance_km" in trips else {}),
@@ -356,7 +357,7 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
         },
         "partou": {
             **{k: partou[k] for k in ("username", "after") if k in partou},
-            **({"password": MASK} if partou.get("password") else {}),
+            **({"password": partou["password"]} if partou.get("password") else {}),
         },
     }
 
