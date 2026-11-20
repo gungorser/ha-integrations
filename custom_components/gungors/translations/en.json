@@ -169,11 +169,13 @@
         "description": "This month's electricity, gas and returned electricity totals as sensors. Status: {budget_thuis}.{error}",
         "data": {
           "username": "Budget Thuis e-mail",
+          "mail_password": "Mailbox app password",
           "new_login": "Log in again",
           "scan_interval": "How often to update"
         },
         "data_description": {
-          "username": "Budget Thuis has no password: saving mails a login link to this address, which you paste on the next page. Leave empty to turn it off.",
+          "username": "Budget Thuis has no password: saving mails a login link to this address. With the app password gungors reads that mail itself; without it you paste the link on the next page. Leave empty to turn it off.",
+          "mail_password": "When set, gungors reads the login mail itself (no link to paste) and logs in again on its own when the login expires. Gmail does not take the normal password: create one under Google Account > Security > App passwords. The stored password shows empty; leave it empty to keep it.",
           "new_login": "Turn on when the connection is lost: a new login link is mailed.",
           "scan_interval": "In seconds. 3600 = hourly."
         }
@@ -189,6 +191,12 @@
     "error": {
       "invalid": "Invalid value",
       "budget_thuis": "Budget Thuis login failed"
+    },
+    "progress": {
+      "budget_thuis_mail": "A login mail was asked for {email}; gungors is waiting for it and reading it. This can take two minutes."
+    },
+    "abort": {
+      "budget_thuis": "Budget Thuis login failed: {error}"
     }
   },
   "selector": {

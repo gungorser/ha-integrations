@@ -169,11 +169,13 @@
         "description": "Bu ayın elektrik, gaz ve şebekeye geri verilen elektrik toplamı sensör olarak gelir. Durum: {budget_thuis}.{error}",
         "data": {
           "username": "Budget Thuis e-postası",
+          "mail_password": "E-posta uygulama şifresi",
           "new_login": "Yeniden giriş yap",
           "scan_interval": "Ne sıklıkla güncellensin"
         },
         "data_description": {
-          "username": "Budget Thuis'te şifre yok: kaydedince bu adrese bir giriş linki gelir, sonraki sayfada yapıştırırsın. Boş bırakırsan kapalı.",
+          "username": "Budget Thuis'te şifre yok: kaydedince bu adrese bir giriş linki gelir. Uygulama şifresini girdiysen gungors maili kendisi okur, girmediysen linki sonraki sayfada yapıştırırsın. Boş bırakırsan kapalı.",
+          "mail_password": "Doluysa giriş mailini gungors kendisi okur, link yapıştırmana gerek kalmaz; bağlantı koparsa kendi kendine yeniden girer. Gmail için normal şifre olmaz: Google Hesabı > Güvenlik > Uygulama şifreleri'nden bir şifre oluştur. Kayıtlı şifre boş görünür; boş bırakırsan değişmez.",
           "new_login": "Bağlantı koparsa aç: yeni bir giriş linki gönderilir.",
           "scan_interval": "Saniye cinsinden. 3600 = saatte bir."
         }
@@ -189,6 +191,12 @@
     "error": {
       "invalid": "Geçersiz değer",
       "budget_thuis": "Budget Thuis girişi olmadı"
+    },
+    "progress": {
+      "budget_thuis_mail": "{email} adresine giriş maili istendi, gungors maili bekliyor ve okuyor. Bu iki dakikayı bulabilir."
+    },
+    "abort": {
+      "budget_thuis": "Budget Thuis girişi olmadı: {error}"
     }
   },
   "selector": {

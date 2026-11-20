@@ -85,8 +85,11 @@ Each form saves on submit:
   remove, name + API key; HA's list editor also edits it as YAML); a stored key shows empty and
   stays when left empty. People and the trip details are YAML fields. An empty address turns
   Immich off.
-- Services > Budget Thuis: e-mail and scan interval (default 3600 s); Budget Thuis has no password, so a
-  new login mails a link: copy it (do not click) into the page that follows. Empty e-mail: off.
+- Services > Budget Thuis: e-mail, mailbox app password (optional, shown empty, empty keeps it) and
+  scan interval (default 3600 s). Budget Thuis has no password, so a new login mails a link: with the
+  app password gungors reads that mail over IMAP (a progress page, up to ~2.5 min); without it, or
+  when the mail does not come, copy the link (do not click) into the page that follows. Empty
+  e-mail: off.
 
 Saving applies at once (no restart, no `gungors.reload`). The entry options keep the YAML
 shape (`{"presets": {...}, "immich": {...}}`). Wrappers, features and the program calendar stay
@@ -322,10 +325,15 @@ through the Immich API, with one API key per Immich user (faces and photos are p
 
 `budget_thuis.py` reads the daily usage of the current month from the (unofficial) API of the
 Budget Thuis app: login with the app's OAuth2 PKCE flow (client `mobile`, no secret): authorize
--> `/inloglink-aanvragen` mails a link -> the pasted link is followed (also a self-posting
-confirm page) to `budgetthuis://login_success?code=` -> `/connect/token`. Only the refresh token
+-> `/inloglink-aanvragen` mails a link -> the link (read from the mailbox, or pasted) is followed
+(also a self-posting confirm page) to `budgetthuis://login_success?code=` -> `/connect/token`.
+Mail reading: IMAP over SSL on the address's server (`imap.gmail.com` for Gmail, else
+`imap.<domain>`), the address and its app password, INBOX read-only, mails `FROM "budget"` sent
+after the request; the link is the `accounts.*budget*` URL with a query, else a URL that says
+`inloglink`/`login`/`token` (the hosts are logged when none matches). Only the refresh token
 is kept (entry options at login, then `.storage/gungors.budget_thuis` as it rotates); a refused
-one sets `status: hata`, `error: yeniden giriş gerekli`, contracts via
+one logs in again by mail when the app password is stored (at most every 6 h), otherwise, or
+when that fails, sets `status: hata`, `error: yeniden giriş gerekli`; contracts via
 `/home/v1/contactPerson` and `/energy/v2/customer/productPicker`, usage via
 `/energy/v1/contract/<id>/usagecosts/details?PeriodDuration=Day`, summed over all contracts.
 Every `usage*` block of a day with a `rawUsage` counts: electricity consumption, electricity
