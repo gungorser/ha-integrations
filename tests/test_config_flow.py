@@ -210,7 +210,7 @@ def _immich_input(**changes) -> dict:
 
 async def test_immich_form_keeps_secrets_and_adds_a_user(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry, "services", "immich", "immich_settings")
+    result = await _open(hass, entry, "services", "immich")
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -230,14 +230,14 @@ async def test_immich_form_keeps_secrets_and_adds_a_user(hass: HomeAssistant) ->
 
 async def test_immich_form_removes_a_user_and_turns_off(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry, "services", "immich", "immich_settings")
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(users={"users": [{"name": "sercan"}]})
     )
     assert entry.options["immich"]["users"] == {"sercan": "k1"}
     await hass.async_block_till_done()
 
-    result = await _open(hass, entry, "services", "immich", "immich_settings")
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(general={"url": ""})
     )
@@ -247,7 +247,7 @@ async def test_immich_form_removes_a_user_and_turns_off(hass: HomeAssistant) -> 
 
 async def test_immich_form_bad_advanced(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry, "services", "immich", "immich_settings")
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(trips={"advanced": {"detail": {"turkey": "street"}}})
     )
@@ -257,7 +257,7 @@ async def test_immich_form_bad_advanced(hass: HomeAssistant) -> None:
 
 async def test_immich_form_new_user_needs_a_key(hass: HomeAssistant) -> None:
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    result = await _open(hass, entry, "services", "immich", "immich_settings")
+    result = await _open(hass, entry, "services", "immich")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], _immich_input(users={"users": [{"name": "kaan", "key": ""}]})
     )
@@ -275,7 +275,7 @@ async def test_immich_form_holds_secrets_and_durations(hass: HomeAssistant) -> N
     assert values["faceless"]["wait"] == {"hours": 36, "minutes": 0, "seconds": 0}
 
 
-async def test_sync_now_menu_item_starts_the_run(hass: HomeAssistant, monkeypatch) -> None:
+async def test_sync_now_menu_item(hass: HomeAssistant, monkeypatch) -> None:
     calls = []
 
     class Manager:
@@ -283,18 +283,12 @@ async def test_sync_now_menu_item_starts_the_run(hass: HomeAssistant, monkeypatc
             calls.append(force)
 
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    monkeypatch.setattr(
-        "custom_components.gungors.config_flow.async_get_manager", lambda h: Manager()
-    )
+    monkeypatch.setattr("custom_components.gungors.config_flow.async_get_manager", lambda h: Manager())
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    for step in ("services", "immich"):
+    for step in ("services", "immich_sync"):
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], {"next_step_id": step}
         )
-    assert result["menu_options"] == ["immich_settings", "immich_sync"]
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "immich_sync"}
-    )
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "sync_started"
     await hass.async_block_till_done()
     assert calls == [True]

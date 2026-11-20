@@ -458,8 +458,18 @@ class GungorsOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         return self.async_show_menu(
-            step_id="services", menu_options=["immich", "budget_thuis"]
+            step_id="services", menu_options=["immich", "immich_sync", "budget_thuis"]
         )
+
+    async def async_step_immich_sync(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Sync now: the same run as button.immich_sync, started in the background."""
+        manager = async_get_manager(self.hass)
+        if manager is None:
+            return self.async_abort(reason="immich_off")
+        self.hass.async_create_task(manager.async_run(force=True))
+        return self.async_abort(reason="sync_started")
 
     # --- presets
 
@@ -533,22 +543,6 @@ class GungorsOptionsFlow(OptionsFlow):
     # --- services
 
     async def async_step_immich(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Immich: a menu, the settings form first and "Sync now" last."""
-        return self.async_show_menu(step_id="immich", menu_options=["immich_settings", "immich_sync"])
-
-    async def async_step_immich_sync(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Sync now: the same run as button.immich_sync, started in the background."""
-        manager = async_get_manager(self.hass)
-        if manager is None:
-            return self.async_abort(reason="immich_off")
-        self.hass.async_create_task(manager.async_run(force=True))
-        return self.async_abort(reason="sync_started")
-
-    async def async_step_immich_settings(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
         options = self._options()
         immich = options.get("immich") or {}
         errors: dict[str, str] = {}
@@ -566,7 +560,7 @@ class GungorsOptionsFlow(OptionsFlow):
                     options["immich"] = conf
                 return self.async_create_entry(data=options)
         return self.async_show_form(
-            step_id="immich_settings",
+            step_id="immich",
             data_schema=self.add_suggested_values_to_schema(
                 _immich_schema(immich),
                 user_input if user_input is not None else _immich_form_values(immich),
