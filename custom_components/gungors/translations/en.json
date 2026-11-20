@@ -90,6 +90,35 @@
       },
       "immich": {
         "title": "Immich",
+        "description": "What do you want to do?",
+        "menu_options": {
+          "immich_settings": "Settings",
+          "immich_sync": "Sync now"
+        }
+      },
+      "budget_thuis": {
+        "title": "Budget Thuis",
+        "description": "This month's electricity, gas and returned electricity totals as sensors. Status: {budget_thuis}.{error}",
+        "data": {
+          "username": "Budget Thuis e-mail",
+          "new_login": "Log in again",
+          "scan_interval": "How often to update"
+        },
+        "data_description": {
+          "username": "Budget Thuis has no password: saving mails a login link to this address, which you paste on the next page. Leave empty to turn it off.",
+          "new_login": "Turn on when the connection is lost: a new login link is mailed.",
+          "scan_interval": "Hours, minutes, seconds. 01:00:00 = hourly (at least 5 minutes)."
+        }
+      },
+      "budget_thuis_link": {
+        "title": "Budget Thuis: login link",
+        "description": "A mail was sent to {email}. Do NOT click the login link: right-click it, copy the link and paste it here. (If you clicked it and the browser stopped at budgetthuis://login_success?code=..., paste that.){error}",
+        "data": {
+          "link": "Login link from the mail"
+        }
+      },
+      "immich_settings": {
+        "title": "Immich",
         "description": "Sorts photos into person and trip albums automatically. Press a title to open it, press again to close it.{error}",
         "sections": {
           "general": {
@@ -163,38 +192,17 @@
             }
           }
         },
-        "data": {
-          "sync_now": "Sync now after saving"
-        },
-        "data_description": {
-          "sync_now": "Tick and press Submit: saves and starts the sync right away. The box is empty next time."
-        }
-      },
-      "budget_thuis": {
-        "title": "Budget Thuis",
-        "description": "This month's electricity, gas and returned electricity totals as sensors. Status: {budget_thuis}.{error}",
-        "data": {
-          "username": "Budget Thuis e-mail",
-          "new_login": "Log in again",
-          "scan_interval": "How often to update"
-        },
-        "data_description": {
-          "username": "Budget Thuis has no password: saving mails a login link to this address, which you paste on the next page. Leave empty to turn it off.",
-          "new_login": "Turn on when the connection is lost: a new login link is mailed.",
-          "scan_interval": "Hours, minutes, seconds. 01:00:00 = hourly (at least 5 minutes)."
-        }
-      },
-      "budget_thuis_link": {
-        "title": "Budget Thuis: login link",
-        "description": "A mail was sent to {email}. Do NOT click the login link: right-click it, copy the link and paste it here. (If you clicked it and the browser stopped at budgetthuis://login_success?code=..., paste that.){error}",
-        "data": {
-          "link": "Login link from the mail"
-        }
+        "data": {},
+        "data_description": {}
       }
     },
     "error": {
       "invalid": "Invalid value",
       "budget_thuis": "Budget Thuis login failed"
+    },
+    "abort": {
+      "sync_started": "Sync started. Follow it on sensor.immich.",
+      "immich_off": "Immich is off: set an address in the Immich settings first."
     }
   },
   "selector": {
