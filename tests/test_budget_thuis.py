@@ -512,3 +512,41 @@ async def test_refused_token_logs_in_again_by_mail(
     attrs = hass.states.get("sensor.budget_thuis_elektrik").attributes
     assert attrs["status"] == "hata" and "yeniden giriş" in attrs["error"]
     assert fake_mail["reads"] == 1
+
+
+async def test_contracts_via_contractees_when_product_picker_refuses(
+    hass: HomeAssistant, socket_enabled
+) -> None:
+    """productPicker 403 (live 2026-11-20): contracts from contractees/<Klantnummer>."""
+    seen: list[str] = []
+
+    async def contact_person(request: web.Request) -> web.Response:
+        return web.json_response({"contactPerson": {"id": 77, "customers": [
+            {"customerNumber": "123456", "productCustomers": [{"productCustomerId": 9999}]}
+        ]}})
+
+    async def picker(request: web.Request) -> web.Response:
+        return web.json_response({"message": "relation not allowed"}, status=403)
+
+    async def contractees(request: web.Request) -> web.Response:
+        seen.append(request.match_info["number"])
+        if request.match_info["number"] != "123456":
+            return web.json_response({"message": "use the Klantnummer"}, status=403)
+        return web.json_response({"contractDetails": [
+            {"contractId": 555, "contractStatus": "Active"},
+            {"contractId": 556, "contractStatus": "Ended"},
+        ]})
+
+    app = web.Application()
+    app.router.add_get("/home/v1/contactPerson", contact_person)
+    app.router.add_post("/energy/v2/customer/productPicker", picker)
+    app.router.add_get("/energy/v1/contractees/{number}/contracts", contractees)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        base = str(server.make_url("")).rstrip("/")
+        api = BudgetThuisApi(async_get_clientsession(hass), base, base, base)
+        assert await api.contracts("a.b.c") == ["555"]
+        assert seen[0] == "123456"  # customers' numbers first
+    finally:
+        await server.close()

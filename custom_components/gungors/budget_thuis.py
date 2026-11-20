@@ -33,6 +33,7 @@ from email import policy as email_policy
 from email.utils import parsedate_to_datetime
 import hashlib
 import imaplib
+import json
 import logging
 import re
 import secrets
@@ -60,6 +61,7 @@ DEFAULT_SCAN_INTERVAL = 3600
 
 ACCOUNTS_URL = "https://accounts.budgetthuis.nl"
 API_URL = "https://app.api.nutsservices.nl"
+WEB_API_URL = "https://api.budgetthuis.nl"
 CLIENT_ID = "mobile"
 REDIRECT_URI = "budgetthuis://login_success"
 SCOPE = "mobileApi webApi offline_access openid email idsServiceExternal"
@@ -237,6 +239,65 @@ def usage_days(payload: dict[str, Any]) -> dict[datetime.date, dict[str, float]]
     return days
 
 
+def token_claims(token: str) -> dict[str, Any]:
+    """The non-secret claims of an access token (JWT) for the log: client, scope, login."""
+    try:
+        payload = token.split(".")[1]
+        data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, ValueError):
+        return {}
+    keep = ("client_id", "scope", "amr", "idp", "aud", "label", "role", "auth_time")
+    return {k: data[k] for k in keep if k in data}
+
+
+def _key_paths(data: Any, prefix: str = "") -> set[str]:
+    """The key paths of a JSON value (lists as []), no values: for the log."""
+    paths: set[str] = set()
+    if isinstance(data, dict):
+        for k, v in data.items():
+            paths.add(prefix + k)
+            paths |= _key_paths(v, prefix + k + ".")
+    elif isinstance(data, list):
+        for item in data:
+            paths |= _key_paths(item, prefix.rstrip(".") + "[].")
+    return paths
+
+
+def _numbers(data: Any) -> list[str]:
+    """Every distinct whole number (or digit string) in a JSON value, customers first."""
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, bool):
+            return
+        elif isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+            text = str(value)
+            if len(text) >= 4 and text not in found:
+                found.append(text)
+
+    walk((data.get("contactPerson") or {}).get("customers") if isinstance(data, dict) else data)
+    walk(data)
+    return found[:12]
+
+
+def product_summary(person: dict[str, Any]) -> list[str]:
+    """contactPerson -> the product kinds per relation (no ids or names) for the log."""
+    kinds = []
+    for customer in (person.get("contactPerson") or {}).get("customers") or []:
+        for pc in customer.get("productCustomers") or []:
+            kinds.append(",".join(
+                f"{k}={v}" for k, v in pc.items()
+                if isinstance(v, str) and k.lower().endswith(("type", "label", "status", "brand"))
+            ) or "?")
+    return kinds
+
+
 def _inputs(html: str) -> list[dict[str, str]]:
     """Every <input> tag's attributes (any attribute order)."""
     return [
@@ -273,10 +334,11 @@ class BudgetThuisApi:
     """Login, token refresh and the usage of one Budget Thuis account."""
 
     def __init__(self, session: aiohttp.ClientSession, accounts_url: str = ACCOUNTS_URL,
-                 api_url: str = API_URL) -> None:
+                 api_url: str = API_URL, web_api_url: str = WEB_API_URL) -> None:
         self._session = session
         self._accounts = accounts_url.rstrip("/")
         self._api = api_url.rstrip("/")
+        self._web_api = web_api_url.rstrip("/")
 
     def _login_session(self) -> aiohttp.ClientSession:
         return aiohttp.ClientSession(
@@ -438,16 +500,20 @@ class BudgetThuisApi:
                 raise
             return await self._request_once(token, method, path, **kwargs)  # stale connection
 
-    async def _request_once(self, token: str, method: str, path: str, **kwargs: Any) -> Any:
+    async def _request_once(self, token: str, method: str, path: str, base: str | None = None,
+                            **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
                    "User-Agent": USER_AGENT}
         try:
             async with self._session.request(
-                method, self._api + path, headers=headers, timeout=_TIMEOUT, **kwargs
+                method, (base or self._api) + path, headers=headers, timeout=_TIMEOUT, **kwargs
             ) as resp:
                 label = path.split("/")[3] if path.count("/") >= 3 else path
                 if resp.status in (401, 403):
-                    raise BudgetThuisAuthError(f"{label}: {resp.status}")
+                    body = (await resp.text())[:200].strip()
+                    raise BudgetThuisAuthError(
+                        f"{label}: {resp.status}" + (f" ({body})" if body else "")
+                    )
                 if resp.status != 200:
                     raise BudgetThuisError(f"{label}: {resp.status}")
                 return await resp.json(content_type=None)
@@ -465,14 +531,65 @@ class BudgetThuisApi:
         ]
         if not relation_ids:
             return []
-        picked = await self._request(
-            token, "POST", "/energy/v2/customer/productPicker", json={"relationIds": relation_ids}
-        ) or {}
+        try:
+            picked = [await self._request(
+                token, "POST", "/energy/v2/customer/productPicker",
+                json={"relationIds": relation_ids},
+            ) or {}]
+        except BudgetThuisAuthError as err:
+            # 403 for the whole list (seen live): maybe one relation is not an energy
+            # product. Ask per relation and keep the ones that answer.
+            _LOGGER.warning(
+                "Budget Thuis productPicker refused (%s); token %s; products %s; "
+                "trying each of %d relations", err, token_claims(token),
+                product_summary(person), len(relation_ids),
+            )
+            picked = []
+            for relation_id in relation_ids:
+                try:
+                    picked.append(await self._request(
+                        token, "POST", "/energy/v2/customer/productPicker",
+                        json={"relationIds": [relation_id]},
+                    ) or {})
+                except BudgetThuisAuthError as one_err:
+                    _LOGGER.warning("Budget Thuis productPicker, one relation: %s", one_err)
+            if not picked:
+                result = await self._contractees(token, person)
+                if result:
+                    return result
+                raise
         result = []
-        for contract in picked.get("contractsInfo") or []:
-            status = str(contract.get("contractStatus") or "").casefold()
-            if contract.get("contractId") is not None and status in ("", "active"):
-                result.append(str(contract["contractId"]))
+        for answer in picked:
+            for contract in answer.get("contractsInfo") or []:
+                status = str(contract.get("contractStatus") or "").casefold()
+                if contract.get("contractId") is not None and status in ("", "active"):
+                    result.append(str(contract["contractId"]))
+        return result
+
+    async def _contractees(self, token: str, person: dict[str, Any]) -> list[str]:
+        """Contracts via api.budgetthuis.nl contractees/<Klantnummer>/contracts.
+
+        That API wants the customer number (Klantnummer); contactPerson does not say
+        which of its numbers that is, so every number in it is tried once.
+        """
+        _LOGGER.warning("Budget Thuis contactPerson fields: %s", sorted(_key_paths(person)))
+        result: list[str] = []
+        for number in _numbers(person):
+            try:
+                answer = await self._request(
+                    token, "GET", f"/energy/v1/contractees/{number}/contracts",
+                    base=self._web_api,
+                ) or {}
+            except BudgetThuisError as err:
+                _LOGGER.info("Budget Thuis contractees: %s", err)
+                continue
+            for contract in answer.get("contractDetails") or []:
+                status = str(contract.get("contractStatus") or "").casefold()
+                if contract.get("contractId") is not None and status in ("", "active"):
+                    result.append(str(contract["contractId"]))
+            if result:
+                _LOGGER.info("Budget Thuis: contracts found via contractees")
+                break
         return result
 
     async def usage(self, token: str, contract_id: str, start: datetime.datetime,
