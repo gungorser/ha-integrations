@@ -94,12 +94,12 @@ class BudgetThuisSensor(SensorEntity):
     @property
     def available(self) -> bool:
         manager = budget_thuis.async_get_manager(self.hass)
-        return manager is not None and manager.month_start is not None
+        return manager is not None  # unknown until the first read; status says why
 
     @property
     def native_value(self) -> float | None:
         manager = budget_thuis.async_get_manager(self.hass)
-        return manager.month.get(self._kind) if manager else None
+        return manager.month.get(self._kind) if manager and manager.month_start else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

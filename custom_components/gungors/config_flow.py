@@ -446,6 +446,16 @@ def _budget_thuis_section() -> vol.Schema:
     )
 
 
+def _bt_status(hass) -> str:
+    """The Budget Thuis state for the form: tamam / giriş yapılıyor / hata (reason)."""
+    from .budget_thuis import async_get_manager  # noqa: PLC0415
+
+    manager = async_get_manager(hass)
+    if manager is None:
+        return "kapalı"
+    return f"{manager.status} ({manager.error})" if manager.error else manager.status
+
+
 class GungorsOptionsFlow(OptionsFlow):
     """Configure: a menu Presets / Services; Services is a menu Immich / Budget Thuis.
 
@@ -453,8 +463,9 @@ class GungorsOptionsFlow(OptionsFlow):
     Assistant does not nest sections, so a section holds its presets as prefixed fields,
     "dim_brightness_pct"). Immich is one form with a closed section per part. A new
     Budget Thuis login (first time, another e-mail, a new mailbox password or "new login")
-    mails a link; with the mailbox password gungors reads that mail itself (a progress
-    page), otherwise, or when the mail is not found, it asks for the link on the next page. Each form saves the whole options on submit.
+    mails a link; with the mailbox password the form saves at once and gungors reads that
+    mail and logs in in the background (the sensors' status shows it), otherwise it asks
+    for the link on the next page. Each form saves the whole options on submit.
     """
 
     def _options(self) -> dict[str, Any]:
@@ -591,7 +602,7 @@ class GungorsOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         placeholders = {
             "error": "",
-            "budget_thuis": "bağlı" if old_bt.get("refresh_token") else "bağlı değil",
+            "budget_thuis": _bt_status(self.hass),
         }
         if user_input is not None:
             email = (user_input.get("username") or "").strip()
@@ -613,7 +624,7 @@ class GungorsOptionsFlow(OptionsFlow):
             if not (
                 user_input.get("new_login")
                 or new_password
-                or not old_bt.get("refresh_token")
+                or not old_bt.get("login_at")
                 or email != old_bt.get("username")
             ):
                 options["budget_thuis"] = {**old_bt, **login}
@@ -621,10 +632,9 @@ class GungorsOptionsFlow(OptionsFlow):
             self._pending = options
             self._bt_login = login
             self._bt_state: dict[str, Any] = {}
-            self._bt_error = ""
-            if password:
-                self._bt_task = None
-                return await self.async_step_budget_thuis_mail()
+            if password:  # gungors logs in by mail in the background: the form closes now
+                options["budget_thuis"] = {**login, "login_at": time.time()}
+                return self.async_create_entry(data=options)
             api = BudgetThuisApi(async_get_clientsession(self.hass))
             try:
                 self._bt_state["verifier"] = await api.request_link(email)
@@ -651,55 +661,6 @@ class GungorsOptionsFlow(OptionsFlow):
             description_placeholders=placeholders,
         )
 
-    async def async_step_budget_thuis_mail(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Wait while gungors asks for the login mail and reads it over IMAP."""
-        from .budget_thuis import (  # noqa: PLC0415
-            BudgetThuisApi,
-            BudgetThuisError,
-            async_mail_login,
-        )
-
-        if self._bt_task is None:
-            api = BudgetThuisApi(async_get_clientsession(self.hass))
-            self._bt_task = self.hass.async_create_task(
-                async_mail_login(
-                    self.hass, api, self._bt_login["username"],
-                    self._bt_login["mail_password"], self._bt_state,
-                ),
-                "gungors budget thuis mail login",
-            )
-        if not self._bt_task.done():
-            return self.async_show_progress(
-                step_id="budget_thuis_mail",
-                progress_action="budget_thuis_mail",
-                progress_task=self._bt_task,
-                description_placeholders={"email": self._bt_login["username"]},
-            )
-        try:
-            self._bt_tokens = self._bt_task.result()
-        except BudgetThuisError as err:
-            _LOGGER.warning("Budget Thuis mail login: %s", err)
-            self._bt_error = str(err)
-            next_step = "budget_thuis_link" if self._bt_state.get("verifier") else "budget_thuis_failed"
-            return self.async_show_progress_done(next_step_id=next_step)
-        return self.async_show_progress_done(next_step_id="budget_thuis_done")
-
-    async def async_step_budget_thuis_failed(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        return self.async_abort(
-            reason="budget_thuis", description_placeholders={"error": self._bt_error}
-        )
-
-    async def async_step_budget_thuis_done(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        return self._bt_save(self._bt_tokens) or self.async_abort(
-            reason="budget_thuis", description_placeholders={"error": "no refresh token"}
-        )
-
     def _bt_save(self, tokens: dict[str, Any]) -> ConfigFlowResult | None:
         if not tokens.get("refresh_token"):
             return None
@@ -719,10 +680,6 @@ class GungorsOptionsFlow(OptionsFlow):
 
         errors: dict[str, str] = {}
         placeholders = {"error": "", "email": self._bt_login["username"]}
-        if self._bt_error:  # the mail was not read: say why once
-            errors["base"] = "budget_thuis"
-            placeholders["error"] = f" ({self._bt_error})"
-            self._bt_error = ""
         if user_input is not None and (user_input.get("link") or "").strip():
             api = BudgetThuisApi(async_get_clientsession(self.hass))
             try:

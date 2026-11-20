@@ -404,6 +404,9 @@ def test_mail_login_link_imap(monkeypatch) -> None:
         def select(self, box, readonly=False) -> None:
             calls["readonly"] = readonly
 
+        def store(self, num, what, flags) -> None:
+            calls["store"] = (num, what, flags)
+
         def search(self, _charset, *criteria):
             calls["criteria"] = criteria
             return "OK", [b" ".join(sorted(mails))]
@@ -414,7 +417,8 @@ def test_mail_login_link_imap(monkeypatch) -> None:
     monkeypatch.setattr(budget_thuis.imaplib, "IMAP4_SSL", FakeImap)
     link = budget_thuis.mail_login_link("a@gmail.com", "app", now)
     assert link.endswith("token=T1&returnUrl=%2Fx")
-    assert calls["host"] == "imap.gmail.com" and calls["readonly"] is True
+    assert calls["host"] == "imap.gmail.com"
+    assert calls["store"] == (b"2", "+X-GM-LABELS", "\\Trash")  # used once: to the trash
     assert calls["criteria"][-2:] == ("FROM", '"budget"')
     # only the old mail: nothing yet
     del mails[b"2"]
@@ -438,27 +442,23 @@ def fake_mail(monkeypatch) -> dict:
     return box
 
 
-async def _through_progress(hass: HomeAssistant, result: dict) -> dict:
-    assert result["type"] == "progress", result
-    await hass.async_block_till_done()
-    return await hass.config_entries.options.async_configure(result["flow_id"])
-
-
 async def test_login_by_mail_in_configure(
     hass: HomeAssistant, fake_api: FakeApi, fake_mail: dict
 ) -> None:
     entry = await _setup(hass, {"presets": {}})
+    hour = {"hours": 1, "minutes": 0, "seconds": 0}
     result = await _bt_form(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], _bt(username="a@gmail.com", mail_password="app", scan_interval={"hours": 1, "minutes": 0, "seconds": 0})
+        result["flow_id"], _bt(username="a@gmail.com", mail_password="app", scan_interval=hour)
     )
-    result = await _through_progress(hass, result)
+    # the form saves at once; the mail login runs in the background
     assert result["type"] == "create_entry", result
-    await hass.async_block_till_done()
     bt = entry.options["budget_thuis"]
-    assert bt["refresh_token"] == "R0" and bt["mail_password"] == "app"
+    assert bt["mail_password"] == "app" and bt["login_at"] and "refresh_token" not in bt
+    await hass.async_block_till_done()
     assert fake_api.links == ["a@gmail.com"] and fake_mail["password"] == "app"
-    assert float(hass.states.get("sensor.budget_thuis_elektrik").state) == 16.5
+    elec = hass.states.get("sensor.budget_thuis_elektrik")
+    assert float(elec.state) == 16.5 and elec.attributes["status"] == "tamam"
 
     # the stored password is prefilled (a password field hides it); kept as is: no new login
     result = await _bt_form(hass, entry)
@@ -467,29 +467,29 @@ async def test_login_by_mail_in_configure(
             assert marker.description["suggested_value"] == "app"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        _bt(username="a@gmail.com", mail_password="app", scan_interval={"hours": 0, "minutes": 30, "seconds": 0}),
+        _bt(username="a@gmail.com", mail_password="app",
+            scan_interval={"hours": 0, "minutes": 30, "seconds": 0}),
     )
     assert result["type"] == "create_entry"
     assert entry.options["budget_thuis"]["mail_password"] == "app"
-    assert fake_api.links == ["a@gmail.com"]
     await hass.async_block_till_done()
+    assert fake_api.links == ["a@gmail.com"]
 
-    # no mail in time: paste the link instead
+    # no mail in time: status hata with the reason; "new login" tries again at once
     fake_mail["link"] = None
     budget_thuis.MAIL_WAIT = -1
     try:
         result = await _bt_form(hass, entry)
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], _bt(username="a@gmail.com", new_login=True, scan_interval={"hours": 0, "minutes": 30, "seconds": 0})
-        )
-        result = await _through_progress(hass, result)
-        assert result["step_id"] == "budget_thuis_link"
-        assert result["errors"] == {"base": "budget_thuis"}
-        assert "gelmedi" in result["description_placeholders"]["error"]
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"link": "https://mail/link"}
+            result["flow_id"],
+            _bt(username="a@gmail.com", mail_password="app", new_login=True, scan_interval=hour),
         )
         assert result["type"] == "create_entry"
+        await hass.async_block_till_done()
+        attrs = hass.states.get("sensor.budget_thuis_elektrik").attributes
+        assert attrs["status"] == "hata" and "gelmedi" in attrs["error"]
+        assert fake_mail["reads"] >= 1
+        assert fake_api.links == ["a@gmail.com", "a@gmail.com"]
     finally:
         budget_thuis.MAIL_WAIT = 150
     await hass.async_block_till_done()

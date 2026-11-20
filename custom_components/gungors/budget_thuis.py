@@ -3,9 +3,9 @@
 Configure > Servisler > Budget Thuis logs in and sets the scan interval (default
 hourly). Budget Thuis has no password login: it mails a link. With the mailbox's
 password (Gmail: an app password) gungors reads that mail itself over IMAP (INBOX,
-read-only, mails from "budget" since the request) and follows the link; without it, or
-when no mail came within `MAIL_WAIT` seconds, the link is pasted (copied, not clicked)
-on the next page. The login's refresh token is kept; a refused one logs in again by
+read-only, mails from "budget" since the request) and follows the link, in the background
+(status `giriş yapılıyor`; the form has closed); without it the link is pasted (copied,
+not clicked) on the next page. The login's refresh token is kept; a refused one logs in again by
 mail on its own (at most every `RELOGIN_EVERY` seconds), or asks for a new login
 (status `hata`, error "yeniden giriş gerekli"). Each run reads the daily usage of the
 current month from the API the Budget Thuis app uses (unofficial):
@@ -131,6 +131,18 @@ def login_link(msg: email.message.Message) -> str | None:
     return None
 
 
+def _trash(imap: imaplib.IMAP4, address: str, num: bytes) -> None:
+    """Move a read login mail to the trash (Gmail: its Trash label; else delete + expunge)."""
+    try:
+        if imap_server(address) == "imap.gmail.com":
+            imap.store(num, "+X-GM-LABELS", "\\Trash")
+        else:
+            imap.store(num, "+FLAGS", "\\Deleted")
+            imap.expunge()
+    except imaplib.IMAP4.error as err:
+        _LOGGER.warning("Budget Thuis: login mail not deleted: %s", err)
+
+
 def mail_login_link(address: str, password: str, since: float) -> str | None:
     """Blocking (executor): the login link of the newest Budget Thuis mail since `since`."""
     day = time.gmtime(since - 86400)
@@ -138,7 +150,7 @@ def mail_login_link(address: str, password: str, since: float) -> str | None:
     try:
         with imaplib.IMAP4_SSL(imap_server(address), 993, timeout=30) as imap:
             imap.login(address, password)
-            imap.select("INBOX", readonly=True)
+            imap.select("INBOX")
             _typ, data = imap.search(None, "SINCE", since_day, "FROM", '"budget"')
             ids = data[0].split() if data and data[0] else []
             for num in reversed(ids[-10:]):
@@ -155,6 +167,7 @@ def mail_login_link(address: str, password: str, since: float) -> str | None:
                     continue
                 link = login_link(msg)
                 if link:
+                    _trash(imap, address, num)  # used once: the login mail goes away
                     return link
     except imaplib.IMAP4.error as err:
         raise BudgetThuisMailError(f"mail girişi olmadı: {err}") from err
@@ -387,11 +400,13 @@ class BudgetThuisApi:
             raise BudgetThuisError(f"login link: {err}") from err
 
     async def refresh(self, refresh_token: str) -> dict[str, Any]:
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token,
+                "client_id": CLIENT_ID}
         try:
-            tokens = await self._token(self._session, {
-                "grant_type": "refresh_token", "refresh_token": refresh_token,
-                "client_id": CLIENT_ID,
-            })
+            try:
+                tokens = await self._token(self._session, data)
+            except aiohttp.ServerDisconnectedError:  # a stale pooled connection: once more
+                tokens = await self._token(self._session, data)
         except (TimeoutError, aiohttp.ClientError) as err:
             raise BudgetThuisError(f"refresh: {err}") from err
         tokens.setdefault("refresh_token", refresh_token)
@@ -416,6 +431,14 @@ class BudgetThuisApi:
         return result
 
     async def _request(self, token: str, method: str, path: str, **kwargs: Any) -> Any:
+        try:
+            return await self._request_once(token, method, path, **kwargs)
+        except BudgetThuisError as err:
+            if not isinstance(err.__cause__, aiohttp.ServerDisconnectedError):
+                raise
+            return await self._request_once(token, method, path, **kwargs)  # stale connection
+
+    async def _request_once(self, token: str, method: str, path: str, **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
                    "User-Agent": USER_AGENT}
         try:
@@ -486,6 +509,7 @@ class BudgetThuisManager:
         self._unsub = None
         self._logged_keys = False
         self._mail_login_at = 0.0
+        self._running = False
 
     async def async_start(self) -> None:
         stored = await self._store.async_load() or {}
@@ -498,7 +522,9 @@ class BudgetThuisManager:
 
     async def async_reconfigure(self, config: dict[str, Any]) -> None:
         if config.get("login_at") != self.config.get("login_at"):
+            # a new login from Configure: its refresh token, or a mail login right away
             self._tokens = {"refresh_token": config.get("refresh_token")}
+            self._mail_login_at = 0.0
         self.config = config
         self._schedule()
         self.hass.async_create_task(self.async_run(), "gungors budget thuis")
@@ -540,7 +566,9 @@ class BudgetThuisManager:
         if not password or time.time() - self._mail_login_at < RELOGIN_EVERY:
             raise BudgetThuisAuthError(RELOGIN) from err
         self._mail_login_at = time.time()
-        _LOGGER.info("Budget Thuis: refresh token refused (%s), logging in by mail", err)
+        _LOGGER.info("Budget Thuis: logging in by mail (%s)", err)
+        self.status, self.error = "giriş yapılıyor", None
+        async_dispatcher_send(self.hass, SIGNAL_UPDATE)
         try:
             tokens = await async_mail_login(
                 self.hass, self.api, self.config["username"], password
@@ -552,6 +580,15 @@ class BudgetThuisManager:
         return tokens
 
     async def async_run(self) -> None:
+        if self._running:  # a mail login can take minutes: no second run meanwhile
+            return
+        self._running = True
+        try:
+            await self._async_run()
+        finally:
+            self._running = False
+
+    async def _async_run(self) -> None:
         now = dt_util.now()
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
