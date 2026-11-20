@@ -113,7 +113,7 @@
               "users": "Immich kullanıcıları"
             },
             "data_description": {
-              "users": "Her kullanıcı için bir ad ve o kullanıcının Immich API anahtarı (Immich > Hesap ayarları > API anahtarları). Kayıtlı anahtar yıldız olarak görünür; değiştirmezsen aynı kalır."
+              "users": "Her kullanıcı için bir ad ve o kullanıcının Immich API anahtarı (Immich > Hesap ayarları > API anahtarları). Kayıtlı anahtar gizli görünür, göz simgesiyle açılır."
             }
           },
           "people": {
@@ -159,7 +159,7 @@
             },
             "data_description": {
               "username": "Kreşin Partou'da paylaştığı fotoğraflar her gün Immich'e, aylık albümlere aktarılır. Boş bırakırsan kapalı.",
-              "password": "Kayıtlı şifre yıldız olarak görünür; değiştirmezsen aynı kalır."
+              "password": "Kayıtlı şifre gizli görünür, göz simgesiyle açılır."
             }
           }
         }

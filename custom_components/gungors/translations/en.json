@@ -113,7 +113,7 @@
               "users": "Immich users"
             },
             "data_description": {
-              "users": "A name and that user's Immich API key per user (Immich > Account settings > API keys). A stored key shows as stars; leave it unchanged to keep it."
+              "users": "A name and that user's Immich API key per user (Immich > Account settings > API keys). A stored key is hidden; the eye icon shows it."
             }
           },
           "people": {
@@ -159,7 +159,7 @@
             },
             "data_description": {
               "username": "The daycare's Partou photos are copied to Immich daily, into monthly albums. Leave empty to turn it off.",
-              "password": "The stored password shows as stars; leave it unchanged to keep it."
+              "password": "The stored password is hidden; the eye icon shows it."
             }
           }
         }

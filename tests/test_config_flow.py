@@ -265,11 +265,11 @@ async def test_immich_form_new_user_needs_a_key(hass: HomeAssistant) -> None:
     assert "kaan" in result["description_placeholders"]["error"]
 
 
-async def test_immich_form_shows_secrets_masked_and_durations(hass: HomeAssistant) -> None:
-    from custom_components.gungors.config_flow import MASK, _immich_form_values
+async def test_immich_form_holds_secrets_and_durations(hass: HomeAssistant) -> None:
+    from custom_components.gungors.config_flow import _immich_form_values
 
     values = _immich_form_values({**IMMICH, "scan_interval": 600, "faceless": {"wait_hours": 36}})
-    assert values["partou"]["password"] == MASK
-    assert values["users"]["users"][0]["key"] == MASK
+    assert values["partou"]["password"] == "pw"
+    assert values["users"]["users"][0] == {"name": "sercan", "key": "k1"}
     assert values["general"]["scan_interval"] == {"hours": 0, "minutes": 10, "seconds": 0}
     assert values["faceless"]["wait"] == {"hours": 36, "minutes": 0, "seconds": 0}
