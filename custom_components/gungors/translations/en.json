@@ -85,7 +85,8 @@
         "description": "Which service do you want to set up?",
         "menu_options": {
           "immich": "Immich: photo albums",
-          "budget_thuis": "Budget Thuis: electricity and gas usage"
+          "budget_thuis": "Budget Thuis: electricity and gas usage",
+          "immich_sync": "Sync now"
         }
       },
       "immich": {
@@ -189,6 +190,10 @@
     "error": {
       "invalid": "Invalid value",
       "budget_thuis": "Budget Thuis login failed"
+    },
+    "abort": {
+      "sync_started": "Sync started. Follow it on sensor.immich.",
+      "immich_off": "Immich is off: set an address in the Immich settings first."
     }
   },
   "selector": {

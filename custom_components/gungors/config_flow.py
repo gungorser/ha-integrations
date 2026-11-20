@@ -34,7 +34,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
-from .immich import IMMICH_SCHEMA
+from .immich import IMMICH_SCHEMA, async_get_manager
 from .presets import BUILTIN
 from .rules import NAMES, defaults_json, parse_defaults
 
@@ -457,7 +457,19 @@ class GungorsOptionsFlow(OptionsFlow):
     async def async_step_services(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="services", menu_options=["immich", "budget_thuis"])
+        return self.async_show_menu(
+            step_id="services", menu_options=["immich", "immich_sync", "budget_thuis"]
+        )
+
+    async def async_step_immich_sync(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Sync now: the same run as button.immich_sync, started in the background."""
+        manager = async_get_manager(self.hass)
+        if manager is None:
+            return self.async_abort(reason="immich_off")
+        self.hass.async_create_task(manager.async_run(force=True))
+        return self.async_abort(reason="sync_started")
 
     # --- presets
 
