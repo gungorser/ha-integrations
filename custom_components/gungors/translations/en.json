@@ -14,141 +14,175 @@
     "step": {
       "init": {
         "title": "Gungor Customizations",
+        "description": "What do you want to set up?",
         "menu_options": {
-          "presets": "Presets",
-          "services": "Services"
+          "presets": "Presets: light, climate and cover settings",
+          "services": "Services: Immich and Budget Thuis"
         }
       },
       "presets": {
         "title": "Presets",
-        "description": "Press a section title to open it, again to close it. An empty field is not applied.{error}",
+        "description": "The ready-made settings wall keys and programs use. Press a title to open it, press again to close it.{error}",
         "sections": {
           "light": {
             "name": "Light",
+            "description": "What the lights do when a wall key is pressed. An empty field is left unchanged.",
             "data": {
-              "default_state": "Default · State",
-              "default_brightness_pct": "Default · Brightness",
-              "default_rgb_color": "Default · Colour",
-              "default_color_temp_kelvin": "Default · Colour temperature",
-              "default_templates": "Default · Templates (attribute: template)",
-              "dim_state": "Dim · State",
-              "dim_brightness_pct": "Dim · Brightness",
-              "dim_rgb_color": "Dim · Colour",
-              "dim_color_temp_kelvin": "Dim · Colour temperature",
-              "dim_templates": "Dim · Templates (attribute: template)",
-              "night_state": "Night · State",
-              "night_brightness_pct": "Night · Brightness",
-              "night_rgb_color": "Night · Colour",
-              "night_color_temp_kelvin": "Night · Colour temperature",
-              "night_templates": "Night · Templates (attribute: template)"
+              "default_state": "Normal setting: on / off",
+              "default_brightness_pct": "Normal setting: brightness",
+              "default_rgb_color": "Normal setting: colour",
+              "default_color_temp_kelvin": "Normal setting: white tone",
+              "default_templates": "Normal setting: conditional values",
+              "dim_state": "Dimmed light: on / off",
+              "dim_brightness_pct": "Dimmed light: brightness",
+              "dim_rgb_color": "Dimmed light: colour",
+              "dim_color_temp_kelvin": "Dimmed light: white tone",
+              "dim_templates": "Dimmed light: conditional values",
+              "night_state": "Night light: on / off",
+              "night_brightness_pct": "Night light: brightness",
+              "night_rgb_color": "Night light: colour",
+              "night_color_temp_kelvin": "Night light: white tone",
+              "night_templates": "Night light: conditional values"
             },
             "data_description": {
-              "default_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
-              "dim_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\".",
-              "night_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "- default (single press, program end): A single press turns this on; a program's set rule returns to it.\n- dim (double press): Double press: carries only the brightness.\n- night (hold): Hold: carries only the colour."
+              "default_templates": "Advanced, optional: a Jinja template that computes a value, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". It replaces the field above.",
+              "default_color_temp_kelvin": "White instead of a colour: 2000 K warm, 6500 K cold. Fill in a colour or a white tone, not both.",
+              "dim_templates": "Advanced, optional: a Jinja template that computes a value, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". It replaces the field above.",
+              "dim_color_temp_kelvin": "White instead of a colour: 2000 K warm, 6500 K cold. Fill in a colour or a white tone, not both.",
+              "night_templates": "Advanced, optional: a Jinja template that computes a value, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". It replaces the field above.",
+              "night_color_temp_kelvin": "White instead of a colour: 2000 K warm, 6500 K cold. Fill in a colour or a white tone, not both.",
+              "default_state": "A single press and the end of a program bring the light back to this setting.",
+              "dim_brightness_pct": "Double press: only the brightness changes, the colour stays.",
+              "night_rgb_color": "Long press: only the colour changes, the brightness stays."
+            }
           },
           "climate": {
             "name": "Climate",
+            "description": "The setting thermostats return to when a program ends.",
             "data": {
-              "default_state": "Default · State",
-              "default_temperature": "Default · Temperature",
-              "default_templates": "Default · Templates (attribute: template)"
+              "default_state": "Normal setting: heating on / off",
+              "default_temperature": "Normal setting: target temperature",
+              "default_templates": "Normal setting: conditional values"
             },
             "data_description": {
-              "default_templates": "Optional. A template here wins over the field above, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\"."
-            },
-            "description": "- default (program end): A program's set rule returns to this."
+              "default_templates": "Advanced, optional: a Jinja template that computes a value, e.g. brightness_pct: \"{{ 30 if is_state('sun.sun','below_horizon') else 100 }}\". It replaces the field above."
+            }
           },
           "cover": {
             "name": "Cover",
+            "description": "Where the covers go at sunrise, at sunset and when a program ends.",
             "data": {
-              "default_current_position": "Default · Position (number or template)"
+              "default_current_position": "Normal cover position"
             },
-            "description": "- default (sunrise, sunset, program end): Applied at sunrise, sunset and when a program ends."
+            "data_description": {
+              "default_current_position": "0 closed, 100 fully open. A number or a template; the current template opens by day and closes at night."
+            }
           }
         }
       },
       "services": {
         "title": "Services",
+        "description": "Which service do you want to set up?",
         "menu_options": {
-          "immich": "Immich",
-          "budget_thuis": "Budget Thuis"
+          "immich": "Immich: photo albums",
+          "budget_thuis": "Budget Thuis: electricity and gas usage"
         }
       },
       "immich": {
         "title": "Immich",
-        "description": "Press a section title to open it, again to close it. Key and password fields show empty: leaving them empty keeps the stored value. Empty address: Immich off.{error}",
+        "description": "Sorts photos into person and trip albums automatically. Press a title to open it, press again to close it.{error}",
         "sections": {
           "general": {
             "name": "General",
             "data": {
-              "url": "Address",
-              "scan_interval": "Scan interval (0 = only the sync button)",
+              "url": "Immich address",
+              "scan_interval": "How often to check",
               "owner": "Owner of the shared albums",
-              "share_albums": "Share every album with the others"
+              "share_albums": "Share albums with all users"
+            },
+            "data_description": {
+              "url": "Leave empty to turn the Immich automation off.",
+              "scan_interval": "In seconds. 0: only when the sync button is pressed.",
+              "owner": "Person and trip albums are created in this user's account; the others are added as editors.",
+              "share_albums": "When on, every album a user owns (hand-made ones too) is shared with the other users."
             }
           },
           "users": {
-            "name": "Users and API keys",
+            "name": "Users",
             "data": {
-              "users": "Users"
+              "users": "Immich users"
             },
             "data_description": {
-              "users": "Add / remove: name and API key per Immich user (Account settings > API keys). A stored key shows empty; leave it empty to keep it."
+              "users": "A name and that user's Immich API key per user (Immich > Account settings > API keys). A stored key shows empty; leave it empty to keep it."
             }
           },
           "people": {
-            "name": "People → album",
+            "name": "Person albums",
             "data": {
-              "people": "Person in Immich: album"
+              "people": "Person and album"
+            },
+            "data_description": {
+              "people": "One line per person: person: album. Left is the name of the recognised person in Immich, right the album that collects all their photos. E.g. Kaan: Kaan"
             }
           },
           "trips": {
-            "name": "Trips",
+            "name": "Trip albums",
             "data": {
-              "distance_km": "Distance from home",
-              "advanced": "More (detail, names, min_days, ...)"
+              "distance_km": "How far from home counts as a trip",
+              "advanced": "Advanced settings"
+            },
+            "data_description": {
+              "distance_km": "The first photo taken this far from home starts a trip, the first one at home ends it. Each trip gets its own album (e.g. antalya_2025).",
+              "advanced": "Optional. min_days: shortest trip in a country (e.g. netherlands: 2 = day trips inside the Netherlands are no trips); detail: which countries use the province or city name; names: how country names are written in album names."
             }
           },
           "faceless": {
             "name": "Photos without faces",
+            "description": "Only new uploads: images without a face, not a favourite and not put in an album by hand (screenshots, labels, receipts). Videos are never touched.",
             "data": {
-              "album": "Album name",
-              "wait_hours": "Wait",
-              "home": "At home",
-              "trip": "On a trip"
+              "home": "Taken at home",
+              "trip": "Taken on a trip",
+              "wait_hours": "Wait before deciding"
             },
             "data_description": {
-              "home": "A new photo without faces, taken outside a trip",
-              "trip": "A new photo without faces, taken on a trip"
+              "home": "What happens to a photo without faces taken outside a trip.",
+              "trip": "What happens to a photo without faces taken on a trip. Into the trip album: it joins that trip's album even without faces.",
+              "wait_hours": "Hours. Waits this long after the upload so Immich can finish face detection."
             }
           },
           "partou": {
             "name": "Partou",
             "data": {
-              "username": "E-mail (empty: Partou off)",
-              "password": "Password",
-              "after": "Daily from"
+              "username": "Partou e-mail",
+              "password": "Partou password",
+              "after": "Fetch daily after"
+            },
+            "data_description": {
+              "username": "The daycare's Partou photos are copied to Immich daily, into monthly albums. Leave empty to turn it off.",
+              "password": "The stored password shows empty; leave it empty to keep it."
             }
           }
         }
       },
       "budget_thuis": {
         "title": "Budget Thuis",
-        "description": "Electricity, gas and return delivery: the month so far as sensors. Status: {budget_thuis}. No password: a new login mails you a link to paste on the next page. Empty e-mail: off.{error}",
+        "description": "This month's electricity, gas and returned electricity totals as sensors. Status: {budget_thuis}.{error}",
         "data": {
-          "username": "E-mail",
-          "new_login": "Log in again (mail a new link)",
-          "scan_interval": "Scan interval"
+          "username": "Budget Thuis e-mail",
+          "new_login": "Log in again",
+          "scan_interval": "How often to update"
+        },
+        "data_description": {
+          "username": "Budget Thuis has no password: saving mails a login link to this address, which you paste on the next page. Leave empty to turn it off.",
+          "new_login": "Turn on when the connection is lost: a new login link is mailed.",
+          "scan_interval": "In seconds. 3600 = hourly."
         }
       },
       "budget_thuis_link": {
         "title": "Budget Thuis: login link",
         "description": "A mail was sent to {email}. Do NOT click the login link: right-click it, copy the link and paste it here. (If you clicked it and the browser stopped at budgetthuis://login_success?code=..., paste that.){error}",
         "data": {
-          "link": "Login link"
+          "link": "Login link from the mail"
         }
       }
     },
@@ -173,9 +207,9 @@
     "faceless_action": {
       "options": {
         "delete": "Delete (cannot be undone)",
-        "trash": "Move to the trash (30 days to restore)",
-        "keep": "Leave it, no album",
-        "album": "Move to the album"
+        "trash": "Move to the trash (recoverable for 30 days)",
+        "keep": "Leave it as it is, in no album",
+        "album": "Into the trip album"
       }
     }
   },

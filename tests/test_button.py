@@ -330,9 +330,11 @@ async def test_rule_limit_warns(hass: HomeAssistant, calls, freezer: FrozenDateT
     await press(hass, "1_double")
     await hass.async_block_till_done()
     ons = lamp_calls(calls, "turn_on")
-    assert ons[0]["brightness"] == round(5 * 255 / 100)
+    # The blinks run as their own task, so their order against the clamped call varies.
     reds = [d for d in ons if tuple(d.get("rgb_color") or ()) == (255, 0, 0)]
+    clamped = [d for d in ons if d not in reds]
     assert len(reds) == 2
+    assert clamped and all(d["brightness"] == round(5 * 255 / 100) for d in clamped)
 
 
 # --- climate ---------------------------------------------------------------------

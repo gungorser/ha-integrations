@@ -200,8 +200,7 @@ def _immich_input(**changes) -> dict:
         "users": {"users": [{"name": "sercan", "key": ""}, {"name": "melike", "key": ""}]},
         "people": {"people": {"Kaan": "Kaan"}},
         "trips": {"distance_km": 60, "advanced": {"min_days": {"netherlands": 2}}},
-        "faceless": {"home": "trash", "trip": "album", "album": "check_before_delete",
-                     "wait_hours": 24},
+        "faceless": {"home": "trash", "trip": "album", "wait_hours": 24},
         "partou": {"username": "a@b.c", "after": "18:00:00"},
     }
     for key, value in changes.items():

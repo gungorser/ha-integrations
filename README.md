@@ -292,17 +292,21 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   first photo and is renamed once at its end if the name changed and nobody renamed it.
 - Faceless: images uploaded after the first run, `wait_hours` after upload, with Immich's face
   detection queue empty and no face found, not a favourite, not archived and in no album of their
-  own: `faceless.home` (outside trips) or `faceless.trip` (trip photos) decides, both
-  `album` by default: `album` -> the user's `faceless.album` (`check_before_delete`), `keep` ->
-  left as it is, `trash` -> the Immich trash (restorable for 30 days), `delete` -> deleted for
-  good. Configure > Immich has a dropdown for each. Videos are never touched.
+  own: `faceless.home` (outside trips: `keep` by default, `trash`, `delete`) or `faceless.trip`
+  (trip photos: `album` by default, `keep`, `trash`, `delete`) decides. `album` -> into the trip
+  album like any trip photo, `keep` -> left as it is in no album (a trip photo stays out of the
+  trip album), `trash` -> the Immich trash (restorable for 30 days), `delete` -> deleted for
+  good. Unless `faceless.trip` is `album`, a new image joins its trip album only after the
+  faceless check (a face found, or skipped). Configure > Immich has a dropdown for each. Videos
+  are never touched. Before 1.25.0 faceless photos went to a `check_before_delete` album (and
+  `home: album` reads as `keep` now); that album is left as it is.
 - `select.immich` is the mode (restored): `Kapalı`, `Deneme` (plans only; nothing written),
   `Albüm` (writes; the old `Albüm + çöp` restores as `Albüm`). `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
   per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.
   A run every `scan_interval` (600 s; `0`: no timer), on a mode change, on
   `button.immich_sync` and on `gungors.immich_run`.
 - `share_albums: true`: every album a user owns (also ones made by hand or by the phone app) is
-  shared with the other users as editors; the faceless albums stay private.
+  shared with the other users as editors; the old faceless albums stay private.
 - Each asset is added to an album once (`.storage/gungors.immich`): one removed by hand stays out;
   a faceless decision is final.
 - Partou (`partou:` with `username`, `password`, optional `albums: {Kaan: kaan_partou}`, `after:
