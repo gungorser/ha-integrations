@@ -31,7 +31,6 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
-from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
@@ -323,7 +322,6 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                 ),
                 {"collapsed": True},
             ),
-            vol.Optional("sync_now", default=False): selector.BooleanSelector(),
         }
     )
 
@@ -534,18 +532,23 @@ class GungorsOptionsFlow(OptionsFlow):
 
     # --- services
 
-    def _sync_after_save(self) -> None:
-        """Start the Immich run a moment after the save, once the new options are applied."""
-
-        @callback
-        def start(_now: Any) -> None:
-            manager = async_get_manager(self.hass)
-            if manager is not None:
-                self.hass.async_create_task(manager.async_run(force=True))
-
-        async_call_later(self.hass, 3, start)
-
     async def async_step_immich(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Immich: a menu, the settings form first and "Sync now" last."""
+        return self.async_show_menu(step_id="immich", menu_options=["immich_settings", "immich_sync"])
+
+    async def async_step_immich_sync(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Sync now: the same run as button.immich_sync, started in the background."""
+        manager = async_get_manager(self.hass)
+        if manager is None:
+            return self.async_abort(reason="immich_off")
+        self.hass.async_create_task(manager.async_run(force=True))
+        return self.async_abort(reason="sync_started")
+
+    async def async_step_immich_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         options = self._options()
         immich = options.get("immich") or {}
         errors: dict[str, str] = {}
@@ -561,11 +564,9 @@ class GungorsOptionsFlow(OptionsFlow):
                     options.pop("immich", None)
                 else:
                     options["immich"] = conf
-                if user_input.get("sync_now") and conf is not None:
-                    self._sync_after_save()
                 return self.async_create_entry(data=options)
         return self.async_show_form(
-            step_id="immich",
+            step_id="immich_settings",
             data_schema=self.add_suggested_values_to_schema(
                 _immich_schema(immich),
                 user_input if user_input is not None else _immich_form_values(immich),
