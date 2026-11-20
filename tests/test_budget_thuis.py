@@ -291,7 +291,7 @@ async def test_login_by_link_in_configure(hass: HomeAssistant, fake_api: FakeApi
     # only the interval: no new mail
     result = await _bt_form(hass, entry)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], _bt(username="a@b.c", scan_interval=3600)
+        result["flow_id"], _bt(username="a@b.c", scan_interval={"hours": 1, "minutes": 0, "seconds": 0})
     )
     assert result["type"] == "create_entry"
     assert fake_api.links == ["a@b.c"]
