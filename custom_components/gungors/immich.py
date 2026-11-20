@@ -619,6 +619,7 @@ class ImmichManager:
         self._state: dict[str, Any] = {}
         self._apis: dict[str, ImmichApi] = {}
         self._user_ids: dict[str, str] = {}
+        self._accounts: dict[str, str | None] = {}
         self._index: dict[str, dict[str, Point]] = {}
         self._last_full: datetime.datetime | None = None
         self._last_scan: datetime.datetime | None = None
@@ -642,6 +643,7 @@ class ImmichManager:
             for user, key in self.config["users"].items()
         }
         self._user_ids = {}
+        self._accounts = {}
         self._index = {}
         self._last_full = None
         if self._unsub:
@@ -704,6 +706,11 @@ class ImmichManager:
             if self.config.get("partou"):
                 summary["partou"] = await self._run_partou(now, force)
             await self._refresh_index(now)
+            # Which Immich account each key is, and how many of its own assets it sees.
+            summary["users"] = {
+                user: {"hesap": self._accounts.get(user), "foto": len(self._index.get(user, {}))}
+                for user in self._apis
+            }
             summary["people"] = await self._run_people()
             trips, summary["trips"] = await self._run_trips()
             summary["faceless"] = await self._run_faceless(now, trips)
@@ -725,7 +732,9 @@ class ImmichManager:
     async def _ensure_users(self) -> None:
         for user, api in self._apis.items():
             if user not in self._user_ids:
-                self._user_ids[user] = (await api.me())["id"]
+                me = await api.me()
+                self._user_ids[user] = me["id"]
+                self._accounts[user] = me.get("email") or me.get("name")
 
     async def _refresh_index(self, now: datetime.datetime) -> None:
         """All assets with EXIF per user: full daily, else changed since the last scan."""
@@ -886,7 +895,9 @@ class ImmichManager:
                 new += await self._add(album_id, user, ids - held)
             lines.append(
                 f"{record['name']}: {trip.start.date()}..{trip.end.date()}, "
-                f"{len(trip.all_assets())} foto/video, +{new}"
+                f"{len(trip.all_assets())} foto/video ("
+                + ", ".join(f"{u} {len(ids)}" for u, ids in sorted(trip.assets.items()))
+                + f"), +{new}"
                 + ("" if trip.closed else ", sürüyor")
             )
         return trips, lines

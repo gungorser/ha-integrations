@@ -442,7 +442,8 @@ async def test_partner_assets_are_not_counted_twice(setup) -> None:
     manager.mode = MODE_DRY
     await manager.async_run()
     assert manager.summary["people"] == {"Kaan": 1}
-    assert manager.summary["trips"][0].endswith("2 foto/video, +2, sürüyor")
+    assert manager.summary["trips"][0].endswith("2 foto/video (melike 1, sercan 1), +2, sürüyor")
+    assert manager.summary["users"] == {"sercan": {"hesap": None, "foto": 2}, "melike": {"hesap": None, "foto": 2}}
 
 
 def test_min_days_drops_day_trips_in_the_home_country() -> None:
