@@ -329,8 +329,12 @@ Budget Thuis app: login with the app's OAuth2 PKCE flow (client `mobile`, no sec
 (also a self-posting confirm page) to `budgetthuis://login_success?code=` -> `/connect/token`.
 Mail reading: IMAP over SSL on the address's server (`imap.gmail.com` for Gmail, else
 `imap.<domain>`), the address and its app password, INBOX read-only, mails `FROM "budget"` sent
-after the request; the link is the `accounts.*budget*` URL with a query, else a URL that says
-`inloglink`/`login`/`token` (the hosts are logged when none matches). Only the refresh token
+after the request; the link is the "Direct inloggen" URL
+(`mijn.budgetthuis.nl/autologin/<strategy>/?token=&email=`), else a URL that says
+`inloglink`/`login`/`token` (the hosts are logged when none matches). That link starts the
+website's login (client `onlineReact`), so its `token`, `email` and `strategy` are sent to
+`/connect/authorize` with the app's client and PKCE challenge instead. Login errors are
+logged at warning level. Only the refresh token
 is kept (entry options at login, then `.storage/gungors.budget_thuis` as it rotates); a refused
 one logs in again by mail when the app password is stored (at most every 6 h), otherwise, or
 when that fails, sets `status: hata`, `error: yeniden giriş gerekli`; contracts via

@@ -113,10 +113,12 @@ def login_link(msg: email.message.Message) -> str | None:
             continue
         text = payload.decode(part.get_content_charset() or "utf-8", "replace")
         urls += [unescape(u).rstrip(").,;") for u in _URL_RE.findall(text)]
-    for url in urls:  # the accounts site with a token in the query
+    for url in urls:  # "Direct inloggen" (mijn.*/autologin/...?token=) or an accounts link
         parsed = urlparse(url)
         host = parsed.hostname or ""
-        if host.startswith("accounts.") and "budget" in host and parsed.query:
+        if "budget" in host and "token=" in parsed.query and (
+            "autologin" in parsed.path or host.startswith("accounts.")
+        ):
             return url
     for url in urls:  # a wrapped (click tracking) link that says what it is
         if any(word in url.lower() for word in ("inloglink", "inloggen", "login", "token")):
@@ -310,12 +312,37 @@ class BudgetThuisApi:
             raise BudgetThuisError(f"login link: {err}") from err
         return verifier
 
+    def app_login_url(self, link: str, verifier: str) -> str:
+        """The mailed link -> the app's own authorize request carrying its login token.
+
+        The mail's "Direct inloggen" link (mijn.budgetthuis.nl/autologin/<strategy>/?token=
+        &email=) starts the website's login (client onlineReact), which never ends at the
+        app's redirect. Its token and e-mail go to /connect/authorize as extra parameters,
+        so they are sent with the app's client and PKCE challenge instead. Other links
+        (an accounts link, the budgetthuis:// end address) stay as they are.
+        """
+        parsed = urlparse(link)
+        query = parse_qs(parsed.query)
+        if "autologin" not in parsed.path or not query.get("token"):
+            return link
+        strategy = [p for p in parsed.path.split("/") if p][-1]
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        params = {
+            "client_id": CLIENT_ID, "response_type": "code", "redirect_uri": REDIRECT_URI,
+            "scope": SCOPE, "label": LABEL,
+            "code_challenge": challenge.rstrip(b"=").decode(), "code_challenge_method": "S256",
+            "token": query["token"][0], "strategy": query.get("strategy", [strategy])[0],
+        }
+        if query.get("email"):
+            params["email"] = query["email"][0]
+        return f"{self._accounts}/connect/authorize?" + urlencode(params)
+
     async def login_with_link(self, link: str, verifier: str) -> dict[str, Any]:
         """The link from the mail (or the budgetthuis://login_success?code=... it ends at) -> tokens."""
         link = link.strip()
         try:
             async with self._login_session() as s:
-                url = link
+                url = self.app_login_url(link, verifier)
                 for _hop in range(12):
                     if url.startswith(REDIRECT_URI):
                         break
@@ -328,7 +355,8 @@ class BudgetThuisApi:
                     form = _FORM_RE.search(html)
                     if resp.status != 200 or form is None:
                         raise BudgetThuisAuthError(
-                            f"giriş linki geçersiz veya süresi dolmuş ({resp.status})"
+                            f"giriş linki geçersiz veya süresi dolmuş ({resp.status}, "
+                            f"{urlparse(url).hostname}{urlparse(url).path})"
                         )
                     fields = {
                         a["name"]: a.get("value", "")
@@ -341,7 +369,8 @@ class BudgetThuisApi:
                     ) as post:
                         if post.status not in _REDIRECTS:
                             raise BudgetThuisAuthError(
-                                f"giriş linki geçersiz veya süresi dolmuş ({post.status})"
+                                f"giriş linki geçersiz veya süresi dolmuş ({post.status}, "
+                                f"{urlparse(url).hostname}{urlparse(url).path})"
                             )
                         url = urljoin(url, _location(post, "login link"))
                 else:

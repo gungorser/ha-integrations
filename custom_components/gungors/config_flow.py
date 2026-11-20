@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import logging
 import time
 from typing import Any
 
@@ -38,6 +39,8 @@ from .const import DOMAIN
 from .immich import IMMICH_SCHEMA, async_get_manager
 from .presets import BUILTIN
 from .rules import NAMES, defaults_json, parse_defaults
+
+_LOGGER = logging.getLogger(__name__)
 
 TITLE = "Gungor Customizations"
 DEFAULT_BT_INTERVAL = 3600  # Budget Thuis: hourly
@@ -626,6 +629,7 @@ class GungorsOptionsFlow(OptionsFlow):
             try:
                 self._bt_state["verifier"] = await api.request_link(email)
             except BudgetThuisError as err:
+                _LOGGER.warning("Budget Thuis login: %s", err)
                 errors["base"] = "budget_thuis"
                 placeholders["error"] = str(err)
             else:
@@ -676,6 +680,7 @@ class GungorsOptionsFlow(OptionsFlow):
         try:
             self._bt_tokens = self._bt_task.result()
         except BudgetThuisError as err:
+            _LOGGER.warning("Budget Thuis mail login: %s", err)
             self._bt_error = str(err)
             next_step = "budget_thuis_link" if self._bt_state.get("verifier") else "budget_thuis_failed"
             return self.async_show_progress_done(next_step_id=next_step)
@@ -723,6 +728,7 @@ class GungorsOptionsFlow(OptionsFlow):
             try:
                 tokens = await api.login_with_link(user_input["link"], self._bt_state["verifier"])
             except BudgetThuisError as err:
+                _LOGGER.warning("Budget Thuis login: %s", err)
                 errors["base"] = "budget_thuis"
                 placeholders["error"] = str(err)
             else:

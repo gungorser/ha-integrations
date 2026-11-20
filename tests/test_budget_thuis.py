@@ -66,6 +66,14 @@ def _accounts_app() -> web.Application:
     async def authorize(request: web.Request) -> web.Response:
         state["challenge"] = request.query["code_challenge"]
         assert request.query["client_id"] == "mobile"
+        if "token" in request.query:  # the mailed autologin token, sent with the app client
+            assert request.query["strategy"] == "general_auto_login"
+            assert request.query["email"] == "YUBiLmM="
+            assert request.query["redirect_uri"] == "budgetthuis://login_success"
+            if request.query["token"] != "good":
+                raise web.HTTPFound("/automatisch-inloggen-mislukt")
+            raise web.HTTPFound("/connect/authorize/callback?x=1&y=2", headers={
+                "Set-Cookie": "auth=yes; Path=/"})
         raise web.HTTPFound("/inloggen?" + urlencode({"ReturnUrl": "/connect/authorize/callback?x=1"}))
 
     async def inloggen(request: web.Request) -> web.Response:
@@ -124,6 +132,9 @@ def _accounts_app() -> web.Application:
             return web.json_response({"access_token": "A2", "expires_in": 3600})
         return web.json_response({"error": "invalid_grant"}, status=400)
 
+    async def failed(request: web.Request) -> web.Response:
+        return web.Response(text="Inloggen mislukt")
+
     app = web.Application()
     app["state"] = state
     app.router.add_get("/connect/authorize", authorize)
@@ -133,6 +144,7 @@ def _accounts_app() -> web.Application:
     app.router.add_get("/inloglink", mail_link)
     app.router.add_post("/inloglink/bevestig", confirm)
     app.router.add_get("/connect/authorize/callback", callback)
+    app.router.add_get("/automatisch-inloggen-mislukt", failed)
     app.router.add_post("/connect/token", token)
     return app
 
@@ -151,6 +163,12 @@ async def test_login_link_and_refresh(hass: HomeAssistant, socket_enabled) -> No
         # the end address works too
         tokens = await api.login_with_link("budgetthuis://login_success?code=abc", verifier)
         assert tokens["refresh_token"] == "R1"
+        # the mail's "Direct inloggen" link: its token goes to the app's own authorize
+        auto = "https://mijn.budgetthuis.nl/autologin/general_auto_login/?token={}&email=YUBiLmM="
+        tokens = await api.login_with_link(auto.format("good"), verifier)
+        assert tokens["refresh_token"] == "R1"
+        with pytest.raises(BudgetThuisAuthError, match="automatisch-inloggen-mislukt"):
+            await api.login_with_link(auto.format("old"), verifier)
         refreshed = await api.refresh("R1")
         assert refreshed["access_token"] == "A2" and refreshed["refresh_token"] == "R1"
         with pytest.raises(BudgetThuisAuthError):
@@ -316,6 +334,17 @@ MAIL = (
     '<a href="https://accounts.budgetthuis.nl/inloglink?token=T1&amp;returnUrl=%2Fx">Inloggen</a>'
 )
 
+REAL_MAIL = (  # the shape of the real "Uw persoonlijke inloglink" mail (2026-11-20)
+    "From: Budget Thuis <noreply@budgetthuis.nl>\r\nSubject: Uw persoonlijke inloglink\r\n"
+    "Content-Type: text/html; charset=utf-8\r\n\r\n"
+    '<a href="https://www.budgetthuis.nl/app">Download app</a>'
+    '<a href="https://mijn.budgetthuis.nl/autologin/general_auto_login/?token=Q2Z=&amp;'
+    'email=YUBiLmM=">Direct inloggen</a>'
+    '<a href="https://www.budgetthuis.nl/combikorting?utm_term=mail-klik">x</a>'
+    '<a href="https://mijn.budgetthuis.nl">MijnBudget</a>'
+    '<img src="https://links.budgetthuis.nl/wf/open?upn=u001.abc">'
+)
+
 
 def test_login_link_from_mail() -> None:
     import email  # noqa: PLC0415
@@ -329,6 +358,19 @@ def test_login_link_from_mail() -> None:
         "of https://www.budgetthuis.nl/contact"
     )
     assert budget_thuis.login_link(tracked) == "https://click.mail.example/ls/login?u=1"
+    real = email.message_from_string(REAL_MAIL)
+    link = budget_thuis.login_link(real)
+    assert link == (
+        "https://mijn.budgetthuis.nl/autologin/general_auto_login/?token=Q2Z=&email=YUBiLmM="
+    )
+    api = BudgetThuisApi(None, "https://acc")
+    url = api.app_login_url(link, "verifier")
+    query = parse_qs(urlparse(url).query)
+    assert url.startswith("https://acc/connect/authorize?")
+    assert query["client_id"] == ["mobile"] and query["token"] == ["Q2Z="]
+    assert query["email"] == ["YUBiLmM="] and query["strategy"] == ["general_auto_login"]
+    assert query["code_challenge_method"] == ["S256"]
+    assert api.app_login_url("budgetthuis://login_success?code=a", "v").startswith("budgetthuis:")
     assert budget_thuis.imap_server("x@gmail.com") == "imap.gmail.com"
     assert budget_thuis.imap_server("x@ziggo.nl") == "imap.ziggo.nl"
 
