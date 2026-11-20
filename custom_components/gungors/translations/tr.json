@@ -85,8 +85,7 @@
         "description": "Hangi servisi ayarlamak istiyorsun?",
         "menu_options": {
           "immich": "Immich: fotoğraf albümleri",
-          "budget_thuis": "Budget Thuis: elektrik ve gaz tüketimi",
-          "immich_sync": "Şimdi senkronize et"
+          "budget_thuis": "Budget Thuis: elektrik ve gaz tüketimi"
         }
       },
       "immich": {
@@ -163,6 +162,12 @@
               "password": "Kayıtlı şifre gizli görünür, göz simgesiyle açılır."
             }
           }
+        },
+        "data": {
+          "sync_now": "Kaydettikten sonra şimdi senkronize et"
+        },
+        "data_description": {
+          "sync_now": "İşaretleyip Gönder'e basınca kaydeder ve senkronizasyonu hemen başlatır. Kutu bir sonraki açılışta boş gelir."
         }
       },
       "budget_thuis": {
@@ -197,9 +202,7 @@
       "budget_thuis_mail": "{email} adresine giriş maili istendi, gungors maili bekliyor ve okuyor. Bu iki dakikayı bulabilir."
     },
     "abort": {
-      "budget_thuis": "Budget Thuis girişi olmadı: {error}",
-      "sync_started": "Senkronizasyon başlatıldı. sensor.immich'ten izleyebilirsin.",
-      "immich_off": "Immich kapalı: önce Immich ayarlarına bir adres gir."
+      "budget_thuis": "Budget Thuis girişi olmadı: {error}"
     }
   },
   "selector": {

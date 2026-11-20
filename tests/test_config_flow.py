@@ -1,6 +1,8 @@
 """Config entry and options flow: presets and Immich in the UI, imported from YAML."""
 from __future__ import annotations
 
+import datetime
+
 import pytest
 import voluptuous_serialize
 
@@ -9,7 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv, issue_registry as ir
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.gungors.const import DOMAIN
 from custom_components.gungors.presets import preset
@@ -275,7 +278,7 @@ async def test_immich_form_holds_secrets_and_durations(hass: HomeAssistant) -> N
     assert values["faceless"]["wait"] == {"hours": 36, "minutes": 0, "seconds": 0}
 
 
-async def test_sync_now_menu_item(hass: HomeAssistant, monkeypatch) -> None:
+async def test_sync_now_checkbox_saves_and_starts_the_run(hass: HomeAssistant, monkeypatch) -> None:
     calls = []
 
     class Manager:
@@ -283,12 +286,15 @@ async def test_sync_now_menu_item(hass: HomeAssistant, monkeypatch) -> None:
             calls.append(force)
 
     entry = await _entry(hass, {"presets": {}, "immich": dict(IMMICH)})
-    monkeypatch.setattr("custom_components.gungors.config_flow.async_get_manager", lambda h: Manager())
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    for step in ("services", "immich_sync"):
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"next_step_id": step}
-        )
-    assert result["type"] is FlowResultType.ABORT and result["reason"] == "sync_started"
+    monkeypatch.setattr(
+        "custom_components.gungors.config_flow.async_get_manager", lambda h: Manager()
+    )
+    result = await _open(hass, entry, "services", "immich")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {**_immich_input(), "sync_now": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert "sync_now" not in entry.options["immich"]
+    async_fire_time_changed(hass, dt_util.utcnow() + datetime.timedelta(seconds=5))
     await hass.async_block_till_done()
     assert calls == [True]
