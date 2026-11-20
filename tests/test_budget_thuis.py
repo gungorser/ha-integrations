@@ -305,3 +305,168 @@ async def test_login_by_link_in_configure(hass: HomeAssistant, fake_api: FakeApi
     assert "budget_thuis" not in entry.options
     assert budget_thuis.async_get_manager(hass) is None
     assert hass.states.get("sensor.budget_thuis_elektrik").state == "unavailable"
+
+
+MAIL = (
+    "From: Budget Thuis <noreply@budgetthuis.nl>\r\n"
+    "To: a@gmail.com\r\nSubject: Je inloglink\r\n"
+    "Date: {date}\r\nMIME-Version: 1.0\r\n"
+    "Content-Type: text/html; charset=utf-8\r\n\r\n"
+    '<a href="https://www.budgetthuis.nl/privacy">privacy</a>'
+    '<a href="https://accounts.budgetthuis.nl/inloglink?token=T1&amp;returnUrl=%2Fx">Inloggen</a>'
+)
+
+
+def test_login_link_from_mail() -> None:
+    import email  # noqa: PLC0415
+
+    msg = email.message_from_string(MAIL.format(date="Fri, 20 Nov 2026 08:00:00 +0100"))
+    assert budget_thuis.login_link(msg) == (
+        "https://accounts.budgetthuis.nl/inloglink?token=T1&returnUrl=%2Fx"
+    )
+    tracked = email.message_from_string(
+        "Content-Type: text/plain\r\n\r\nKlik: https://click.mail.example/ls/login?u=1 "
+        "of https://www.budgetthuis.nl/contact"
+    )
+    assert budget_thuis.login_link(tracked) == "https://click.mail.example/ls/login?u=1"
+    assert budget_thuis.imap_server("x@gmail.com") == "imap.gmail.com"
+    assert budget_thuis.imap_server("x@ziggo.nl") == "imap.ziggo.nl"
+
+
+def test_mail_login_link_imap(monkeypatch) -> None:
+    import email.utils  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    now = time.time()
+    mails = {
+        b"1": MAIL.format(date=email.utils.formatdate(now - 3600)).replace("T1", "OLD"),
+        b"2": MAIL.format(date=email.utils.formatdate(now + 5)),
+    }
+    calls: dict = {}
+
+    class FakeImap:
+        def __init__(self, host, port, timeout=None) -> None:
+            calls["host"] = host
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a) -> None:
+            pass
+
+        def login(self, user, password) -> None:
+            if password != "app":
+                raise budget_thuis.imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+            calls["user"] = user
+
+        def select(self, box, readonly=False) -> None:
+            calls["readonly"] = readonly
+
+        def search(self, _charset, *criteria):
+            calls["criteria"] = criteria
+            return "OK", [b" ".join(sorted(mails))]
+
+        def fetch(self, num, _what):
+            return "OK", [(b"x", mails[num].encode())]
+
+    monkeypatch.setattr(budget_thuis.imaplib, "IMAP4_SSL", FakeImap)
+    link = budget_thuis.mail_login_link("a@gmail.com", "app", now)
+    assert link.endswith("token=T1&returnUrl=%2Fx")
+    assert calls["host"] == "imap.gmail.com" and calls["readonly"] is True
+    assert calls["criteria"][-2:] == ("FROM", '"budget"')
+    # only the old mail: nothing yet
+    del mails[b"2"]
+    assert budget_thuis.mail_login_link("a@gmail.com", "app", now) is None
+    with pytest.raises(budget_thuis.BudgetThuisMailError):
+        budget_thuis.mail_login_link("a@gmail.com", "wrong", now)
+
+
+@pytest.fixture
+def fake_mail(monkeypatch) -> dict:
+    """mail_login_link: returns `box["link"]`; no waiting."""
+    box: dict = {"link": "https://mail/link", "reads": 0}
+
+    def read(address, password, since):
+        box["reads"] += 1
+        box["password"] = password
+        return box["link"]
+
+    monkeypatch.setattr(budget_thuis, "mail_login_link", read)
+    monkeypatch.setattr(budget_thuis, "MAIL_POLL", 0)
+    return box
+
+
+async def _through_progress(hass: HomeAssistant, result: dict) -> dict:
+    assert result["type"] == "progress", result
+    await hass.async_block_till_done()
+    return await hass.config_entries.options.async_configure(result["flow_id"])
+
+
+async def test_login_by_mail_in_configure(
+    hass: HomeAssistant, fake_api: FakeApi, fake_mail: dict
+) -> None:
+    entry = await _setup(hass, {"presets": {}})
+    result = await _bt_form(hass, entry)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], _bt(username="a@gmail.com", mail_password="app", scan_interval={"hours": 1, "minutes": 0, "seconds": 0})
+    )
+    result = await _through_progress(hass, result)
+    assert result["type"] == "create_entry", result
+    await hass.async_block_till_done()
+    bt = entry.options["budget_thuis"]
+    assert bt["refresh_token"] == "R0" and bt["mail_password"] == "app"
+    assert fake_api.links == ["a@gmail.com"] and fake_mail["password"] == "app"
+    assert float(hass.states.get("sensor.budget_thuis_elektrik").state) == 16.5
+
+    # the stored password is prefilled (a password field hides it); kept as is: no new login
+    result = await _bt_form(hass, entry)
+    for marker in result["data_schema"].schema:
+        if marker.schema == "mail_password":
+            assert marker.description["suggested_value"] == "app"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        _bt(username="a@gmail.com", mail_password="app", scan_interval={"hours": 0, "minutes": 30, "seconds": 0}),
+    )
+    assert result["type"] == "create_entry"
+    assert entry.options["budget_thuis"]["mail_password"] == "app"
+    assert fake_api.links == ["a@gmail.com"]
+    await hass.async_block_till_done()
+
+    # no mail in time: paste the link instead
+    fake_mail["link"] = None
+    budget_thuis.MAIL_WAIT = -1
+    try:
+        result = await _bt_form(hass, entry)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], _bt(username="a@gmail.com", new_login=True, scan_interval={"hours": 0, "minutes": 30, "seconds": 0})
+        )
+        result = await _through_progress(hass, result)
+        assert result["step_id"] == "budget_thuis_link"
+        assert result["errors"] == {"base": "budget_thuis"}
+        assert "gelmedi" in result["description_placeholders"]["error"]
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"link": "https://mail/link"}
+        )
+        assert result["type"] == "create_entry"
+    finally:
+        budget_thuis.MAIL_WAIT = 150
+    await hass.async_block_till_done()
+
+
+async def test_refused_token_logs_in_again_by_mail(
+    hass: HomeAssistant, fake_api: FakeApi, fake_mail: dict
+) -> None:
+    await _setup(hass, {"presets": {}, "budget_thuis": {**BT, "mail_password": "app"}})
+    fake_api.dead = True
+    fake_api.refused = True
+    manager = budget_thuis.async_get_manager(hass)
+    await manager.async_run()
+    assert fake_mail["reads"] == 1 and fake_api.links == ["a@b.c"]
+    assert hass.states.get("sensor.budget_thuis_elektrik").attributes["status"] == "tamam"
+
+    # not again within RELOGIN_EVERY
+    manager._tokens = {}
+    await manager.async_run()
+    attrs = hass.states.get("sensor.budget_thuis_elektrik").attributes
+    assert attrs["status"] == "hata" and "yeniden giriş" in attrs["error"]
+    assert fake_mail["reads"] == 1

@@ -432,6 +432,9 @@ def _budget_thuis_section() -> vol.Schema:
             vol.Optional("username"): selector.TextSelector(
                 selector.TextSelectorConfig(type=selector.TextSelectorType.EMAIL)
             ),
+            vol.Optional("mail_password"): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+            ),
             vol.Optional("new_login", default=False): selector.BooleanSelector(),
             vol.Optional(
                 "scan_interval", default=_duration(DEFAULT_BT_INTERVAL)
@@ -446,8 +449,9 @@ class GungorsOptionsFlow(OptionsFlow):
     Presets is one form with a closed section per domain (Light, Climate, Cover; Home
     Assistant does not nest sections, so a section holds its presets as prefixed fields,
     "dim_brightness_pct"). Immich is one form with a closed section per part. A new
-    Budget Thuis login (first time, another e-mail or "new login") mails a link and asks
-    for it on the next page. Each form saves the whole options on submit.
+    Budget Thuis login (first time, another e-mail, a new mailbox password or "new login")
+    mails a link; with the mailbox password gungors reads that mail itself (a progress
+    page), otherwise, or when the mail is not found, it asks for the link on the next page. Each form saves the whole options on submit.
     """
 
     def _options(self) -> dict[str, Any]:
@@ -589,42 +593,118 @@ class GungorsOptionsFlow(OptionsFlow):
         if user_input is not None:
             email = (user_input.get("username") or "").strip()
             interval = max(300, _seconds(user_input.get("scan_interval"), DEFAULT_BT_INTERVAL))
+            typed = (user_input.get("mail_password") or "").strip()
+            # the form holds the stored password (hidden): only a different one is new
+            new_password = (
+                typed if typed not in ("", MASK, old_bt.get("mail_password")) else ""
+            )
             if not email:
                 options.pop("budget_thuis", None)
                 return self.async_create_entry(data=options)
+            password = new_password or (
+                old_bt.get("mail_password") if email == old_bt.get("username") else ""
+            )
+            login = {"username": email, "scan_interval": interval}
+            if password:
+                login["mail_password"] = password
             if not (
                 user_input.get("new_login")
+                or new_password
                 or not old_bt.get("refresh_token")
                 or email != old_bt.get("username")
             ):
-                options["budget_thuis"] = {**old_bt, "scan_interval": interval}
+                options["budget_thuis"] = {**old_bt, **login}
                 return self.async_create_entry(data=options)
+            self._pending = options
+            self._bt_login = login
+            self._bt_state: dict[str, Any] = {}
+            self._bt_error = ""
+            if password:
+                self._bt_task = None
+                return await self.async_step_budget_thuis_mail()
             api = BudgetThuisApi(async_get_clientsession(self.hass))
             try:
-                self._bt_verifier = await api.request_link(email)
+                self._bt_state["verifier"] = await api.request_link(email)
             except BudgetThuisError as err:
                 errors["base"] = "budget_thuis"
                 placeholders["error"] = str(err)
             else:
-                self._pending = options
-                self._bt_login = {"username": email, "scan_interval": interval}
                 return await self.async_step_budget_thuis_link()
         suggested = {
-            **{k: old_bt[k] for k in ("username",) if k in old_bt},
+            **{k: old_bt[k] for k in ("username", "mail_password") if k in old_bt},
             **(
                 {"scan_interval": _duration(old_bt["scan_interval"])}
                 if "scan_interval" in old_bt
                 else {}
             ),
         }
+        if user_input is not None:
+            suggested = dict(user_input)
         return self.async_show_form(
             step_id="budget_thuis",
-            data_schema=self.add_suggested_values_to_schema(
-                _budget_thuis_section(), user_input if user_input is not None else suggested
-            ),
+            data_schema=self.add_suggested_values_to_schema(_budget_thuis_section(), suggested),
             errors=errors,
             description_placeholders=placeholders,
         )
+
+    async def async_step_budget_thuis_mail(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Wait while gungors asks for the login mail and reads it over IMAP."""
+        from .budget_thuis import (  # noqa: PLC0415
+            BudgetThuisApi,
+            BudgetThuisError,
+            async_mail_login,
+        )
+
+        if self._bt_task is None:
+            api = BudgetThuisApi(async_get_clientsession(self.hass))
+            self._bt_task = self.hass.async_create_task(
+                async_mail_login(
+                    self.hass, api, self._bt_login["username"],
+                    self._bt_login["mail_password"], self._bt_state,
+                ),
+                "gungors budget thuis mail login",
+            )
+        if not self._bt_task.done():
+            return self.async_show_progress(
+                step_id="budget_thuis_mail",
+                progress_action="budget_thuis_mail",
+                progress_task=self._bt_task,
+                description_placeholders={"email": self._bt_login["username"]},
+            )
+        try:
+            self._bt_tokens = self._bt_task.result()
+        except BudgetThuisError as err:
+            self._bt_error = str(err)
+            next_step = "budget_thuis_link" if self._bt_state.get("verifier") else "budget_thuis_failed"
+            return self.async_show_progress_done(next_step_id=next_step)
+        return self.async_show_progress_done(next_step_id="budget_thuis_done")
+
+    async def async_step_budget_thuis_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self.async_abort(
+            reason="budget_thuis", description_placeholders={"error": self._bt_error}
+        )
+
+    async def async_step_budget_thuis_done(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self._bt_save(self._bt_tokens) or self.async_abort(
+            reason="budget_thuis", description_placeholders={"error": "no refresh token"}
+        )
+
+    def _bt_save(self, tokens: dict[str, Any]) -> ConfigFlowResult | None:
+        if not tokens.get("refresh_token"):
+            return None
+        options = self._pending
+        options["budget_thuis"] = {
+            **self._bt_login,
+            "refresh_token": tokens["refresh_token"],
+            "login_at": time.time(),
+        }
+        return self.async_create_entry(data=options)
 
     async def async_step_budget_thuis_link(
         self, user_input: dict[str, Any] | None = None
@@ -634,25 +714,23 @@ class GungorsOptionsFlow(OptionsFlow):
 
         errors: dict[str, str] = {}
         placeholders = {"error": "", "email": self._bt_login["username"]}
+        if self._bt_error:  # the mail was not read: say why once
+            errors["base"] = "budget_thuis"
+            placeholders["error"] = f" ({self._bt_error})"
+            self._bt_error = ""
         if user_input is not None and (user_input.get("link") or "").strip():
             api = BudgetThuisApi(async_get_clientsession(self.hass))
             try:
-                tokens = await api.login_with_link(user_input["link"], self._bt_verifier)
+                tokens = await api.login_with_link(user_input["link"], self._bt_state["verifier"])
             except BudgetThuisError as err:
                 errors["base"] = "budget_thuis"
                 placeholders["error"] = str(err)
             else:
-                if not tokens.get("refresh_token"):
-                    errors["base"] = "budget_thuis"
-                    placeholders["error"] = "no refresh token"
-                else:
-                    options = self._pending
-                    options["budget_thuis"] = {
-                        **self._bt_login,
-                        "refresh_token": tokens["refresh_token"],
-                        "login_at": time.time(),
-                    }
-                    return self.async_create_entry(data=options)
+                result = self._bt_save(tokens)
+                if result is not None:
+                    return result
+                errors["base"] = "budget_thuis"
+                placeholders["error"] = "no refresh token"
         return self.async_show_form(
             step_id="budget_thuis_link",
             data_schema=vol.Schema({vol.Optional("link"): selector.TextSelector()}),

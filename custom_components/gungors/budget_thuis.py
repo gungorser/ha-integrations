@@ -1,10 +1,14 @@
 """Budget Thuis (Budget Energie): electricity, gas and return delivery as sensors.
 
-Configure > Servisler > Budget Thuis logs in (Budget Thuis has no password login: it
-mails a link; paste that link, not clicked, into the second step) and sets the scan
-interval (default hourly). The login's refresh token is kept; a refused one asks for a
-new login (status `hata`, error "yeniden giriş gerekli"). Each run reads the daily
-usage of the current month from the API the Budget Thuis app uses (unofficial):
+Configure > Servisler > Budget Thuis logs in and sets the scan interval (default
+hourly). Budget Thuis has no password login: it mails a link. With the mailbox's
+password (Gmail: an app password) gungors reads that mail itself over IMAP (INBOX,
+read-only, mails from "budget" since the request) and follows the link; without it, or
+when no mail came within `MAIL_WAIT` seconds, the link is pasted (copied, not clicked)
+on the next page. The login's refresh token is kept; a refused one logs in again by
+mail on its own (at most every `RELOGIN_EVERY` seconds), or asks for a new login
+(status `hata`, error "yeniden giriş gerekli"). Each run reads the daily usage of the
+current month from the API the Budget Thuis app uses (unofficial):
 
 - login: OAuth2 authorization code + PKCE (client `mobile`, no secret): authorize ->
   /inloglink-aanvragen (e-mail) -> the mailed link -> budgetthuis://login_success?code=
@@ -21,9 +25,14 @@ last day with data and its value. Readings lag a day or two.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime
+import email
+from email import policy as email_policy
+from email.utils import parsedate_to_datetime
 import hashlib
+import imaplib
 import logging
 import re
 import secrets
@@ -63,6 +72,12 @@ _REDIRECTS = (301, 302, 303, 307, 308)
 _TIMEOUT = aiohttp.ClientTimeout(total=60)
 _PERIOD_FMT = "%Y-%m-%dT%H:%M:%S.000"
 
+MAIL_WAIT = 150  # seconds to wait for the login mail
+MAIL_POLL = 10
+RELOGIN_EVERY = 6 * 3600
+_URL_RE = re.compile(r"""https?://[^\s"'<>]+""", re.IGNORECASE)
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
 KINDS = ("elektrik", "gaz", "teruglevering")
 RELOGIN = "yeniden giriş gerekli: Yapılandır > Servisler > Budget Thuis"
 
@@ -73,6 +88,99 @@ class BudgetThuisError(Exception):
 
 class BudgetThuisAuthError(BudgetThuisError):
     """Wrong login, or a token the server refused."""
+
+
+class BudgetThuisMailError(BudgetThuisError):
+    """The login mail could not be read (mailbox login, no mail in time)."""
+
+
+def imap_server(address: str) -> str:
+    """The IMAP server of a mail address (gmail.com -> imap.gmail.com)."""
+    domain = address.rsplit("@", 1)[-1].strip().lower()
+    if domain in ("gmail.com", "googlemail.com"):
+        return "imap.gmail.com"
+    return f"imap.{domain}"
+
+
+def login_link(msg: email.message.Message) -> str | None:
+    """The login link in a Budget Thuis mail (None when there is none)."""
+    urls: list[str] = []
+    for part in msg.walk():
+        if part.get_content_maintype() != "text":
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        text = payload.decode(part.get_content_charset() or "utf-8", "replace")
+        urls += [unescape(u).rstrip(").,;") for u in _URL_RE.findall(text)]
+    for url in urls:  # the accounts site with a token in the query
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if host.startswith("accounts.") and "budget" in host and parsed.query:
+            return url
+    for url in urls:  # a wrapped (click tracking) link that says what it is
+        if any(word in url.lower() for word in ("inloglink", "inloggen", "login", "token")):
+            return url
+    if urls:
+        _LOGGER.warning(
+            "Budget Thuis mail: no login link among the hosts %s",
+            sorted({urlparse(u).hostname or "" for u in urls}),
+        )
+    return None
+
+
+def mail_login_link(address: str, password: str, since: float) -> str | None:
+    """Blocking (executor): the login link of the newest Budget Thuis mail since `since`."""
+    day = time.gmtime(since - 86400)
+    since_day = f"{day.tm_mday:02d}-{_MONTHS[day.tm_mon - 1]}-{day.tm_year}"
+    try:
+        with imaplib.IMAP4_SSL(imap_server(address), 993, timeout=30) as imap:
+            imap.login(address, password)
+            imap.select("INBOX", readonly=True)
+            _typ, data = imap.search(None, "SINCE", since_day, "FROM", '"budget"')
+            ids = data[0].split() if data and data[0] else []
+            for num in reversed(ids[-10:]):
+                _typ, parts = imap.fetch(num, "(RFC822)")
+                raw = next((p[1] for p in parts or [] if isinstance(p, tuple)), None)
+                if not raw:
+                    continue
+                msg = email.message_from_bytes(raw, policy=email_policy.default)
+                try:
+                    sent = parsedate_to_datetime(str(msg["Date"])).timestamp()
+                except (TypeError, ValueError):
+                    continue
+                if sent < since - 120:  # an older mail: its link is used up
+                    continue
+                link = login_link(msg)
+                if link:
+                    return link
+    except imaplib.IMAP4.error as err:
+        raise BudgetThuisMailError(f"mail girişi olmadı: {err}") from err
+    except OSError as err:
+        raise BudgetThuisMailError(f"mail sunucusu: {err}") from err
+    return None
+
+
+async def async_mail_login(
+    hass: HomeAssistant, api: BudgetThuisApi, address: str, password: str,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Ask for the login mail, read its link over IMAP and log in -> tokens.
+
+    `state["verifier"]` gets the code verifier as soon as the mail is asked for, so a
+    link pasted by hand still works when the mail is not found.
+    """
+    since = time.time()
+    verifier = await api.request_link(address)
+    if state is not None:
+        state["verifier"] = verifier
+    while True:
+        await asyncio.sleep(MAIL_POLL)
+        link = await hass.async_add_executor_job(mail_login_link, address, password, since)
+        if link:
+            return await api.login_with_link(link, verifier)
+        if time.time() - since > MAIL_WAIT:
+            raise BudgetThuisMailError(f"giriş maili {MAIL_WAIT} saniyede gelmedi")
 
 
 def kind_of(key: str) -> str | None:
@@ -348,6 +456,7 @@ class BudgetThuisManager:
         self._tokens: dict[str, Any] = {}
         self._unsub = None
         self._logged_keys = False
+        self._mail_login_at = 0.0
 
     async def async_start(self) -> None:
         stored = await self._store.async_load() or {}
@@ -386,15 +495,32 @@ class BudgetThuisManager:
     async def _token(self) -> str:
         if self._tokens.get("access_token") and self._tokens.get("expires_at", 0) > time.time() + 60:
             return self._tokens["access_token"]
-        if not self._tokens.get("refresh_token"):
-            raise BudgetThuisAuthError(RELOGIN)
         try:
+            if not self._tokens.get("refresh_token"):
+                raise BudgetThuisAuthError("no refresh token")
             tokens = await self.api.refresh(self._tokens["refresh_token"])
         except BudgetThuisAuthError as err:
-            raise BudgetThuisAuthError(RELOGIN) from err
+            tokens = await self._mail_login(err)
         self._tokens = tokens
         await self._store.async_save({"login_at": self.config.get("login_at"), "tokens": tokens})
         return tokens["access_token"]
+
+    async def _mail_login(self, err: BudgetThuisAuthError) -> dict[str, Any]:
+        """A refused refresh token: log in again by mail when the mailbox is known."""
+        password = self.config.get("mail_password")
+        if not password or time.time() - self._mail_login_at < RELOGIN_EVERY:
+            raise BudgetThuisAuthError(RELOGIN) from err
+        self._mail_login_at = time.time()
+        _LOGGER.info("Budget Thuis: refresh token refused (%s), logging in by mail", err)
+        try:
+            tokens = await async_mail_login(
+                self.hass, self.api, self.config["username"], password
+            )
+        except BudgetThuisError as mail_err:
+            raise BudgetThuisAuthError(f"{RELOGIN} ({mail_err})") from mail_err
+        if not tokens.get("refresh_token"):
+            raise BudgetThuisAuthError(RELOGIN)
+        return tokens
 
     async def async_run(self) -> None:
         now = dt_util.now()
@@ -404,7 +530,7 @@ class BudgetThuisManager:
             try:
                 days = await self._read(await self._token(), start, end)
             except BudgetThuisAuthError as err:
-                if str(err) == RELOGIN:
+                if str(err).startswith(RELOGIN):
                     raise
                 self._tokens.pop("access_token", None)  # refused: refresh once
                 days = await self._read(await self._token(), start, end)
