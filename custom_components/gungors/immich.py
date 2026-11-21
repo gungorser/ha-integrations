@@ -711,7 +711,7 @@ class ImmichManager:
                 user: {"hesap": self._accounts.get(user), "foto": len(self._index.get(user, {}))}
                 for user in self._apis
             }
-            summary["people"] = await self._run_people()
+            summary["people"], summary["people_users"] = await self._run_people()
             trips, summary["trips"] = await self._run_trips()
             summary["faceless"] = await self._run_faceless(now, trips)
             if self.config["share_albums"]:
@@ -800,16 +800,20 @@ class ImmichManager:
         self._state["added"][album_id] = sorted(self._added(album_id) | done)
         return len(new)
 
-    async def _run_people(self) -> dict[str, int]:
+    async def _run_people(self) -> tuple[dict[str, int], dict[str, dict[str, str]]]:
+        """New assets per person album, and per user what was found (for the sensor)."""
         result: dict[str, int] = {}
+        found_by: dict[str, dict[str, str]] = {}
         for person, album_name in self.config["people"].items():
             album_id = await self._album(f"person:{person}", album_name, self.owner, True)
             new = 0
+            found_by[album_name] = {}
             for user, api in self._apis.items():
+                # People are per Immich account; names match without case or outer spaces.
                 ids = [
                     p["id"]
                     for p in await api.people()
-                    if (p.get("name") or "").casefold() == person.casefold()
+                    if (p.get("name") or "").strip().casefold() == person.strip().casefold()
                 ]
                 assets: set[str] = set()
                 for person_id in ids:
@@ -817,8 +821,11 @@ class ImmichManager:
                     assets |= {a["id"] for a in self._own(user, found)}
                 assets -= self._partou_ids()
                 new += await self._add(album_id, user, assets)
+                found_by[album_name][user] = (
+                    f"{len(ids)} kişi, {len(assets)} foto" if ids else "kişi yok"
+                )
             result[album_name] = new
-        return result
+        return result, found_by
 
     def _held_from_trips(self) -> set[str]:
         """New images that may not join a trip album (yet): faceless `trip` is not `album`.
