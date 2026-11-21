@@ -255,7 +255,7 @@ async def test_dry_run_writes_nothing(setup) -> None:
 async def test_albums_written_once(setup) -> None:
     manager, server = setup
     server.people["sercan"] = [{"id": "pk", "name": "Kaan"}]
-    server.people["melike"] = [{"id": "mk", "name": "kaan"}]
+    server.people["melike"] = [{"id": "mk", "name": "kaan "}]
     server.asset("k1", "sercan", t(1, 1), HOME, people={"pk"})
     server.asset("k2", "melike", t(2, 1), HOME, people={"mk"})
     server.asset("a1", "sercan", t(1), ANTALYA, country="Turkey", state="Antalya")
@@ -263,6 +263,9 @@ async def test_albums_written_once(setup) -> None:
     server.asset("h1", "sercan", t(20), HOME)
     manager.mode = MODE_ALBUM
     await manager.async_run()
+    assert manager.summary["people_users"] == {
+        "Kaan": {"sercan": "1 kişi, 1 foto", "melike": "1 kişi, 1 foto"}
+    }
 
     kaan = album_named(server, "Kaan")
     assert kaan["_assets"] == {"k1", "k2"}
