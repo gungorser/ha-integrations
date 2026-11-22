@@ -24,9 +24,10 @@ picks up a change); the `defaults` attribute shows the ones in use.
 an entry's running occurrence; the `paused` attribute lists the paused entries.
 Timeless programs (no time of their own) are kept by the manager:
 `gungors.save_timeless_program` / `delete_timeless_program` change them,
-`gungors.start_program` / `stop_program` (`uid` or the name, optional `duration`)
-run them. `gungors.pin_program` pins an entry or a timeless program. The
-websocket command `gungors/programs` lists them all with their state.
+`gungors.start_program` / `stop_program` (`uid` or the name, optional `duration`,
+`start` and `no_resume`) run them. `gungors.pin_program` pins an entry or a timeless program. The
+websocket command `gungors/programs` lists them all with their state;
+`gungors/conflicts` lists what a run would pause (`uid`, optional `start`, `duration`).
 """
 from __future__ import annotations
 
@@ -104,8 +105,12 @@ async def async_setup_platform(
         ("pause_program", uid, "async_pause"),
         ("resume_program", uid, "async_resume"),
         ("pin_program", {**uid, vol.Optional("pinned", default=True): cv.boolean}, "async_pin"),
-        ("start_program", {**uid, vol.Optional("duration"): cv.positive_time_period},
-         "async_start_program"),
+        ("start_program", {
+            **uid,
+            vol.Optional("duration"): cv.positive_time_period,
+            vol.Optional("start"): cv.datetime,
+            vol.Optional("no_resume"): vol.All(cv.ensure_list, [cv.string]),
+        }, "async_start_program"),
         ("stop_program", uid, "async_stop_program"),
         ("save_timeless_program", {
             vol.Optional("uid"): cv.string,
@@ -117,6 +122,7 @@ async def async_setup_platform(
         platform.async_register_entity_service(service, schema, method)
     if not hass.data.setdefault(DOMAIN, {}).get(DATA_WS):
         websocket_api.async_register_command(hass, ws_programs)
+        websocket_api.async_register_command(hass, ws_conflicts)
         hass.data[DOMAIN][DATA_WS] = True
 
 
@@ -127,6 +133,27 @@ def ws_programs(
 ) -> None:
     """Every program entry and timeless program with its state (program card)."""
     connection.send_result(msg["id"], {"programs": async_get_manager(hass).programs()})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "gungors/conflicts",
+    vol.Required("uid"): cv.string,
+    vol.Optional("start"): cv.datetime,
+    vol.Optional("duration"): cv.positive_time_period,
+})
+@callback
+def ws_conflicts(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The entry occurrences a run of a timeless program would pause (program card)."""
+    manager = async_get_manager(hass)
+    try:
+        uid = manager.timeless_uid(msg["uid"])
+        found = manager.conflicts(uid, msg.get("start"), msg.get("duration"))
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "invalid", str(err))
+        return
+    connection.send_result(msg["id"], {"conflicts": found})
 
 
 def _parse_event(event: dict[str, Any]) -> Event:
@@ -259,9 +286,15 @@ class ProgramCalendar(CalendarEntity):
     async def async_pin(self, uid: str, pinned: bool = True) -> None:
         await self._manager.async_pin(uid, pinned)
 
-    async def async_start_program(self, uid: str, duration: timedelta | None = None) -> None:
+    async def async_start_program(
+        self,
+        uid: str,
+        duration: timedelta | None = None,
+        start: datetime | None = None,
+        no_resume: list[str] | None = None,
+    ) -> None:
         manager = self._manager
-        await manager.async_start(manager.timeless_uid(uid), duration)
+        await manager.async_start(manager.timeless_uid(uid), duration, start, no_resume)
 
     async def async_stop_program(self, uid: str) -> None:
         manager = self._manager

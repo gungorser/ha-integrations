@@ -237,15 +237,20 @@ climate:
   gungors, not in the calendar: `gungors.save_timeless_program` (`summary`, `description` as
   above but without `start`/`end`, optional `uid` to change one) and
   `gungors.delete_timeless_program` (`uid`). `gungors.start_program` (`uid` or the name,
-  optional `duration`, 24 h when not given) adds a run: a one-off calendar entry from now
-  whose description carries `timeless: <uid>`; `gungors.stop_program` ends it now. A stop,
-  the run's end or deleting the program removes that entry from the calendar, so a timeless
-  program has at most one entry, while it runs; starting a running one does nothing. A change to the program applies to its running run at once.
+  optional `duration`, 24 h when not given; optional `start`, now when not given or past;
+  optional `no_resume`, entry uids) adds a run: a one-off calendar entry from `start`
+  whose description carries `timeless: <uid>`; `gungors.stop_program` ends it now (or
+  cancels a run waiting to start). A stop, the run's end or deleting the program removes
+  that entry from the calendar, so a timeless program has at most one entry, while it runs
+  or waits; starting a running one does nothing, starting a waiting one replaces it. A change to the program applies to its running run at once.
   Runs are not checked for conflicts on saving: while a run is active it pauses every
   running entry it conflicts with (a shared entity and an attribute both can't hold), also
   one that starts later, and resumes them when it ends or is paused; the newest run wins
   over an older one the same way. An entry the user pauses meanwhile stays paused; one the
-  user resumes is not paused again (it then keeps the entity as the earlier one).
+  user resumes is not paused again (it then keeps the entity as the earlier one). The
+  entries in `no_resume` are not resumed when the run ends (stop or duration; a pause of
+  the run still resumes them): their occurrence stays paused until its own end, as if
+  the user had paused it ("ended early for that day").
 - Preheat: a thermostat with `- program: {preheat: {rate: 1.5}}` (°C per hour; `max`
   how early at most, 3 h when not given) is at a program's set temperature (`eq`, or the
   `min` of a range) by the program's start. (target - room temperature) / rate before the
@@ -265,7 +270,11 @@ climate:
 - Websocket `gungors/programs`: every entry (a series once) and timeless program with
   `state` (`running`, `paused`, `scheduled`, `preheating`, `done`, `idle`, `invalid`), the current or next
   `start`/`end`, `all_day`, `pinned`, `preheat`, `paused_by` (the timeless program that paused it) and, for a
-  timeless one, `run` (its running entry's uid, for pause/resume).
+  timeless one, `run` (its running entry's uid, for pause/resume). A timeless one whose run
+  waits to start is `scheduled` with that run's `start`/`end`.
+- Websocket `gungors/conflicts` (`uid` or the name of a timeless program, optional `start`
+  and `duration` as in `start_program`): `conflicts`, the entry occurrences a run then would
+  pause (`uid`, `summary`, `start`, `end`, `paused`), for the program card's start dialog.
 
 `rules.py` (format, conflicts), `program.py` (the manager) and `features/program.py`
 (enforcement) are the full reference.

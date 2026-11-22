@@ -248,3 +248,83 @@ async def test_one_entry_per_timeless_program(
     await call(hass, "start_program", uid=uid, duration={"minutes": 5})
     assert len(manager.calendar.events) == 1
     assert manager.calendar.events[0].uid != old.uid
+
+
+async def test_start_later_lists_and_starts_at_its_time(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    await setup_all(hass)
+    lamp(hass, True, 255)
+    await hass.async_block_till_done()
+    uid = await save_sleep(hass)
+    start = dt_util.now().replace(microsecond=0) + timedelta(minutes=30)
+    await call(hass, "start_program", uid=uid, start=start.isoformat(), duration={"hours": 1})
+    item = listed(hass)["Bebek uyku"]
+    assert item["state"] == "scheduled"
+    assert dt_util.parse_datetime(item["start"]) == start
+    assert brightness(hass) == 255
+    # Starting again with another time replaces the waiting run.
+    later = start + timedelta(minutes=15)
+    await call(hass, "start_program", uid=uid, start=later.isoformat(), duration={"hours": 1})
+    assert len(async_get_manager(hass).calendar.events) == 1
+    assert dt_util.parse_datetime(listed(hass)["Bebek uyku"]["start"]) == later
+    await tick(hass, freezer, timedelta(minutes=45, seconds=2))
+    assert listed(hass)["Bebek uyku"]["state"] == "running"
+    assert brightness(hass) == 26
+    # A start in the past means now; stop cancels a waiting run too.
+    await call(hass, "stop_program", uid=uid)
+    await call(hass, "start_program", uid=uid, start=(later + timedelta(minutes=50)).isoformat())
+    assert listed(hass)["Bebek uyku"]["state"] == "scheduled"
+    await call(hass, "stop_program", uid=uid)
+    assert async_get_manager(hass).calendar.events == []
+
+
+async def test_conflicts_lists_what_a_run_would_pause(
+    hass: HomeAssistant, calls, hass_ws_client
+) -> None:
+    await setup_all(hass)
+    await add_entry(hass, "Akşam", EVENING, timedelta(hours=2), timedelta(hours=3))
+    await add_entry(hass, "Renk", {"target": LIGHT, "light": {"rgb_color": "red"}},
+                    timedelta(seconds=-1), timedelta(hours=3))
+    uid = await save_sleep(hass)
+    manager = async_get_manager(hass)
+    assert manager.conflicts(uid, duration=timedelta(hours=1)) == []
+    found = manager.conflicts(uid, duration=timedelta(hours=3))
+    assert [c["summary"] for c in found] == ["Akşam"] and found[0]["paused"] is False
+    later = dt_util.now() + timedelta(hours=4, minutes=30)
+    assert manager.conflicts(uid, start=later, duration=timedelta(hours=1)) == []
+
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "gungors/conflicts", "uid": "Bebek uyku",
+                            "duration": {"hours": 3}})
+    msg = await client.receive_json()
+    assert msg["success"] and [c["summary"] for c in msg["result"]["conflicts"]] == ["Akşam"]
+    await client.send_json({"id": 2, "type": "gungors/conflicts", "uid": "nothing"})
+    msg = await client.receive_json()
+    assert not msg["success"]
+
+
+async def test_no_resume_keeps_the_conflict_paused_after_the_run(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    await setup_all(hass)
+    await add_entry(hass, "Akşam", EVENING, timedelta(seconds=-1), timedelta(hours=3))
+    evening = next(e.uid for e in async_get_manager(hass).calendar.events if e.summary == "Akşam")
+    uid = await save_sleep(hass)
+    await call(hass, "start_program", uid=uid, duration={"minutes": 30}, no_resume=[evening])
+    assert listed(hass)["Akşam"]["state"] == "paused"
+    assert async_get_manager(hass).no_resume
+    await tick(hass, freezer, timedelta(minutes=30, seconds=2))
+    # The run ended: Akşam stays paused for this occurrence (the light is back to default).
+    items = listed(hass)
+    assert items["Akşam"]["state"] == "paused" and items["Akşam"]["paused_by"] is None
+    assert brightness(hass) != 26
+    assert async_get_manager(hass).no_resume == {}
+    # A pause by a run the user paused is still released (only the run's end keeps it).
+    await call(hass, "resume_program", uid=evening)
+    assert listed(hass)["Akşam"]["state"] == "running"
+    await call(hass, "start_program", uid=uid, no_resume=[evening])
+    assert listed(hass)["Akşam"]["state"] == "paused"
+    await call(hass, "pause_program", uid=listed(hass)["Bebek uyku"]["run"])
+    await tick(hass, freezer, timedelta(seconds=2))
+    assert listed(hass)["Akşam"]["state"] == "running"
