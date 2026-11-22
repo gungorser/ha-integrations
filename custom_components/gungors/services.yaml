@@ -92,6 +92,13 @@ start_program:
     duration:
       selector:
         duration:
+    start:
+      selector:
+        datetime:
+    no_resume:
+      selector:
+        text:
+          multiple: true
 
 stop_program:
   target:

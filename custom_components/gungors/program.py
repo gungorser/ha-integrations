@@ -22,14 +22,17 @@ are active for it now (features/program.py enforces them).
   their defaults as at an end, and resuming applies it again as at a start.
 - A timeless program (`timeless` in the store, no time of its own) is started
   and stopped on demand (`gungors.start_program` / `stop_program`): a start adds
-  a one-off entry from now for `duration` (24 h when not given) whose
-  description names the program (`timeless: <uid>`); a stop, its end or the
-  program's deletion removes that entry again, so the calendar holds at most
-  one entry per timeless program, while it runs. While a
+  a one-off entry from now (or a later `start`) for `duration` (24 h when not
+  given) whose description names the program (`timeless: <uid>`); a stop, its
+  end or the program's deletion removes that entry again, so the calendar holds
+  at most one entry per timeless program, while it runs or waits to start. While a
   run is active it pauses every running entry it conflicts with (on a shared
   entity, an attribute both can't hold) and resumes them when it ends or is
   paused itself; an entry the user pauses or resumes meanwhile is left as they
-  put it. Runs skip the conflict check on saving.
+  put it. Entries named in the start's `no_resume` are not resumed when the run
+  ends: their occurrence stays paused until its own end (ended early for that
+  day). `conflicts()` lists what a run would pause, before it starts. Runs skip
+  the conflict check on saving.
 - Preheat: thermostats also get the programs starting within PREHEAT_HORIZON
   whose climate set temperature rule they should reach by the start (entries
   with `climate: preheat: false` and timeless runs excluded); features/program.py
@@ -261,6 +264,8 @@ class ProgramManager:
         # Resumed by the user while a run conflicts: not paused again by runs.
         self.kept: set[str] = set()
         self.pinned: set[str] = set()
+        # Entries a run does not resume at its end: run entry uid -> entry uids.
+        self.no_resume: dict[str, list[str]] = {}
         # Timeless programs: uid -> {"summary", "description"}.
         self.timeless: dict[str, dict[str, str]] = {}
         self._yaml_defaults: dict[str, dict[str, Any]] = {}
@@ -285,6 +290,7 @@ class ProgramManager:
                 self.kept = set(data.get("kept", []))
                 self.pinned = set(data.get("pinned", []))
                 self.timeless = dict(data.get("timeless", {}))
+                self.no_resume = {k: list(v) for k, v in data.get("no_resume", {}).items()}
             self._loaded = True
             save = False
             if data and "defaults" in data:
@@ -397,6 +403,7 @@ class ProgramManager:
             "kept": sorted(self.kept),
             "pinned": sorted(self.pinned),
             "timeless": self.timeless,
+            "no_resume": dict(sorted(self.no_resume.items())),
             "format": FORMAT,
         }
         await self._store.async_save(data)
@@ -557,22 +564,40 @@ class ProgramManager:
                 return instance
         return None
 
-    async def async_start(self, uid: str, duration: datetime.timedelta | None = None) -> None:
-        """Run a timeless program from now; a running one is left as it is."""
+    def _run_window(
+        self, start: datetime.datetime | None, duration: datetime.timedelta | None
+    ) -> tuple[datetime.datetime, datetime.datetime]:
+        """A run's start (now, or a later time) and end."""
+        now = dt_util.now().replace(microsecond=0)
+        start = now if start is None else max(dt_util.as_local(start).replace(microsecond=0), now)
+        duration = duration or DEFAULT_RUN
+        if duration < datetime.timedelta(minutes=1):
+            raise HomeAssistantError("The duration must be at least a minute")
+        return start, start + duration
+
+    async def async_start(
+        self,
+        uid: str,
+        duration: datetime.timedelta | None = None,
+        start: datetime.datetime | None = None,
+        no_resume: list[str] | None = None,
+    ) -> None:
+        """Run a timeless program from now or `start`; a running one is left as it is.
+
+        A run waiting to start is replaced. `no_resume`: entries the run pauses that
+        stay paused when it ends.
+        """
         if uid not in self.timeless:
             raise HomeAssistantError(f"No timeless program '{uid}'")
         if self._run_of(uid) is not None:
             return
-        duration = duration or DEFAULT_RUN
-        if duration < datetime.timedelta(minutes=1):
-            raise HomeAssistantError("The duration must be at least a minute")
+        start, end = self._run_window(start, duration)
         item = self.timeless[uid]
         program = self._parse_timeless(item["summary"], item["description"])
-        start = dt_util.now().replace(microsecond=0)
         event = Event(
             summary=item["summary"],
             dtstart=start.replace(tzinfo=None),
-            dtend=(start + duration).replace(tzinfo=None),
+            dtend=end.replace(tzinfo=None),
             description=dump_program(replace(program, timeless=uid)),
         )
 
@@ -582,7 +607,35 @@ class ProgramManager:
             calendar.events.append(event)
             return event
 
+        if no_resume:
+            self.no_resume[event.uid] = sorted(set(no_resume))
         await self.async_change(add)
+
+    def conflicts(
+        self,
+        uid: str,
+        start: datetime.datetime | None = None,
+        duration: datetime.timedelta | None = None,
+    ) -> list[dict[str, Any]]:
+        """The entry occurrences a run of timeless program `uid` would pause."""
+        if uid not in self.timeless:
+            raise HomeAssistantError(f"No timeless program '{uid}'")
+        start, end = self._run_window(start, duration)
+        item = self.timeless[uid]
+        program = self._parse_timeless(item["summary"], item["description"])
+        run = Instance("", None, item["summary"], start, end, replace(program, timeless=uid))
+        return [
+            {
+                "uid": other.uid,
+                "summary": other.summary,
+                "start": other.start.isoformat(),
+                "end": other.end.isoformat(),
+                "paused": self._key(other) in self.paused,
+            }
+            for other in sorted(self.instances(start, end), key=lambda i: (i.start, i.uid))
+            if other.program is not None and other.program.timeless is None
+            and self._instances_conflict(run, other)
+        ]
 
     async def async_stop(self, uid: str) -> None:
         """End the run of a timeless program now: its entry leaves the calendar."""
@@ -651,8 +704,7 @@ class ProgramManager:
             found[event.uid] = instance
         for instance in found.values():
             if instance.program is not None and instance.program.timeless:
-                if instance.start <= now:
-                    runs[instance.program.timeless] = instance
+                runs[instance.program.timeless] = instance  # running, or waiting to start
 
         preheating = self.preheating()
 
@@ -974,7 +1026,7 @@ class ProgramManager:
         Also ends the pauses of occurrences that ended. True when anything changed.
         """
         keys = {self._key(i) for i in running}
-        before = (set(self.paused), dict(self.paused_by), set(self.kept))
+        before = (set(self.paused), dict(self.paused_by), set(self.kept), dict(self.no_resume))
         # A pause ends with its occurrence (one paused while preheating lasts until its end).
         self.paused &= keys | {self._key(i) for i in coming}
         self.kept &= keys
@@ -989,7 +1041,9 @@ class ProgramManager:
         for _ in range(5):
             if not self._run_pause_pass(by_key, pausing):
                 break
-        return before != (self.paused, self.paused_by, self.kept)
+        runs = {e.uid for e in self.calendar.events}
+        self.no_resume = {k: v for k, v in self.no_resume.items() if k in runs}
+        return before != (self.paused, self.paused_by, self.kept, self.no_resume)
 
     def _run_pause_pass(
         self, by_key: dict[str, Instance], pausing: Callable[[str], bool]
@@ -1003,8 +1057,13 @@ class ProgramManager:
             for key, by in list(self.paused_by.items()):
                 if not pausing(by):
                     del self.paused_by[key]
-                    self.paused.discard(key)
                     changed = changed_any = True
+                    run_uid = by.split("|", 1)[0]
+                    if by not in by_key and key.split("|", 1)[0] in self.no_resume.get(run_uid, ()):
+                        # The run ended and the user chose not to get this one back:
+                        # it stays paused, as if paused by them, until its own end.
+                        continue
+                    self.paused.discard(key)
         # Pause: the newest run wins over every other occurrence it conflicts with.
         runs = sorted(
             (i for k, i in by_key.items() if pausing(k)), key=lambda i: i.start, reverse=True
