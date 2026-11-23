@@ -116,20 +116,25 @@ def test_set_flag_and_eq_only() -> None:
     )
     assert program.rules == {
         "on": Constraint(eq=True),
-        "brightness": Constraint(min=50, set=True),
-        "color_temp": Constraint(eq=3000, set=True),
+        "brightness": Constraint(min=50, on_start=True),
+        "color_temp": Constraint(eq=3000, on_start=True),
     }
     text = dump_program(program)
-    assert "brightness_pct: {min: 50, set: true}" in text
-    assert "color_temp_kelvin: {eq: 3000, set: true}" in text
+    # The older `set` is written as `on_start`.
+    assert "brightness_pct: {min: 50, on_start: true}" in text
+    assert "color_temp_kelvin: {eq: 3000, on_start: true}" in text
     assert parse_program(text) == program
     for bad in (
         "target: x\nlight: {color_temp: {min: 3000}}",
         "target: x\nclimate: {hvac_mode: {min: 1}}",
         "target: x\nlight: {brightness: {set: true}}",
         "target: x\nlight: {brightness: {min: 5, set: 1}}",
-        # A set brightness keeps the light on.
-        "target: x\nlight: {on: false, brightness: {min: 5, set: true}}",
+        # An on_start brightness turns the light on.
+        "target: x\nlight: {on: false, brightness: {min: 5, on_start: true}}",
+        "target: x\nlight: {brightness: {min: 5, allow: 0}}",
+        "target: x\nlight: {brightness: {min: 5, allow: true}}",
+        "target: x\nlight: {brightness: {min: 5, allow: soon}}",
+        "target: x\nlight: {brightness: {allow: 1}}",
     ):
         with pytest.raises(vol.Invalid):
             parse_program(bad)
@@ -414,7 +419,7 @@ async def test_light_on_and_colour_defaults(
     await setup_all(hass)
     lamp(hass, False)
     await hass.async_block_till_done()
-    await add_entry(hass, "parti", {"target": LIGHT, "rules": {"on": True, "color": {"eq": "red", "set": True}}},
+    await add_entry(hass, "parti", {"target": LIGHT, "rules": {"on": True, "color": {"eq": "red", "on_start": True}}},
                     timedelta(minutes=1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(minutes=1, seconds=2))
     state = hass.states.get(LIGHT)
@@ -455,22 +460,43 @@ async def test_colour_only_recolours_a_lit_light(
     assert not calls.of("light", "turn_on", LAMP)
 
 
-async def test_set_brightness_keeps_the_light_on(
+def test_allow_flag() -> None:
+    program = parse_program(
+        "target: x\nlight:\n  brightness_pct: {max: 25, allow: 1}\n"
+        "  state: {eq: \"on\", on_start: true, allow: 2.5}\n"
+    )
+    assert program.rules == {
+        "brightness": Constraint(max=25, allow=1),
+        "on": Constraint(eq=True, on_start=True, allow=2.5),
+    }
+    text = dump_program(program)
+    assert "brightness_pct: {max: 25, allow: 1}" in text
+    assert 'state: {eq: "on", on_start: true, allow: 2.5}' in text
+    assert parse_program(text) == program
+
+
+async def test_on_start_brightness_only_at_the_start(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
     await setup_all(hass)
     lamp(hass, False)
     await hass.async_block_till_done()
     await add_entry(hass, "okuma",
-                    {"target": LIGHT, "light": {"brightness": {"min": 50, "set": True}}},
+                    {"target": LIGHT, "light": {"brightness": {"min": 50, "on_start": True}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     # Switched on at the nearest allowed value.
     assert hass.states.get(LIGHT).state == "on"
     assert brightness(hass) == 128
-    # Turning it off (an automation): kept on.
+    # Turning it off afterwards is free (the rule was applied at the start only).
     await hass.services.async_call("light", "turn_off", {"entity_id": LIGHT}, blocking=True)
     await hass.async_block_till_done()
-    assert hass.states.get(LIGHT).state == "on"
+    await tick(hass, freezer, timedelta(seconds=11))
+    assert hass.states.get(LIGHT).state == "off"
+    # Turned on again: kept above the floor.
+    await hass.services.async_call("light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 20},
+                                   blocking=True)
+    await hass.async_block_till_done()
+    assert brightness(hass) == 128
     # The end: brightness has no default, the light's domain default applies (off).
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
     assert hass.states.get(LIGHT).state == "off"
@@ -525,15 +551,14 @@ async def test_user_request_is_refused_with_a_popup(
     await hass.async_block_till_done()
     assert brightness(hass) == 178
     assert len(popups) == 1
-    # Turning it off: a light with a brightness floor stays on at that floor, with a popup.
+    # Turning it off is allowed: an off light satisfies the rule.
     await hass.services.async_call(
         "light", "turn_off", {"entity_id": LIGHT}, blocking=True,
         context=Context(user_id=hass_admin_user.id),
     )
     await hass.async_block_till_done()
-    assert hass.states.get(LIGHT).state == "on"
-    assert brightness(hass) == 178
-    assert len(popups) == 2
+    assert hass.states.get(LIGHT).state == "off"
+    assert len(popups) == 1
 
 
 async def test_default_after_restart(hass: HomeAssistant, calls) -> None:
@@ -558,7 +583,7 @@ async def test_climate_lock(hass: HomeAssistant, calls, freezer: FrozenDateTimeF
     await setup_all(hass)
     await add_entry(
         hass, "isitma", {"target": THERMOSTAT,
-               "rules": {"hvac_mode": "heat", "temperature": {"eq": 21, "set": True}}},
+               "rules": {"hvac_mode": "heat", "temperature": {"eq": 21, "on_start": True}}},
         timedelta(minutes=1), timedelta(hours=1),
     )
     await tick(hass, freezer, timedelta(minutes=1, seconds=2))
@@ -629,7 +654,7 @@ async def test_cover_rule_and_sun(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
     await setup_all(hass)
-    await add_entry(hass, "karanlik", {"target": COVER, "rules": {"position": {"eq": 0, "set": True}}},
+    await add_entry(hass, "karanlik", {"target": COVER, "rules": {"position": {"eq": 0, "on_start": True}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     assert hass.states.get(COVER).attributes["current_position"] == 0
     await hass.services.async_call("cover", "open_cover", {"entity_id": COVER}, blocking=True)
@@ -659,7 +684,7 @@ async def test_cover_rule_and_sun(
 
 async def test_custom_defaults(hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory) -> None:
     await setup_all(hass, {"defaults": {"light": {"on": True, "brightness": 10}}})
-    await add_entry(hass, "kapali", {"target": LIGHT, "rules": {"on": {"eq": False, "set": True}}},
+    await add_entry(hass, "kapali", {"target": LIGHT, "rules": {"on": {"eq": False, "on_start": True}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     assert hass.states.get(LIGHT).state == "off"
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
@@ -675,7 +700,7 @@ async def test_pause_and_resume(
     await setup_all(hass)
     lamp(hass, False)
     await hass.async_block_till_done()
-    await add_entry(hass, "parti", {"target": LIGHT, "light": {"on": {"eq": True, "set": True}}},
+    await add_entry(hass, "parti", {"target": LIGHT, "light": {"on": {"eq": True, "on_start": True}}},
                     timedelta(minutes=1), timedelta(hours=1))
     uid = async_get_manager(hass).calendar.events[0].uid
     with pytest.raises(HomeAssistantError):  # not running yet
@@ -710,7 +735,7 @@ async def test_pause_and_resume(
     assert async_get_manager(hass).paused == set()
 
 
-async def test_old_entries_become_set_rules(hass: HomeAssistant, calls, hass_storage) -> None:
+async def test_old_entries_become_on_start_rules(hass: HomeAssistant, calls, hass_storage) -> None:
     from ical.calendar import Calendar  # noqa: PLC0415
     from ical.calendar_stream import IcsCalendarStream  # noqa: PLC0415
     from ical.event import Event  # noqa: PLC0415
@@ -730,13 +755,14 @@ async def test_old_entries_become_set_rules(hass: HomeAssistant, calls, hass_sto
     await setup_all(hass)
     event = async_get_manager(hass).calendar.events[0]
     assert parse_program(event.description).rules == {
-        "on": Constraint(eq=True, set=True),
-        "brightness": Constraint(max=40, set=True),
+        "on": Constraint(eq=True, on_start=True),
+        "brightness": Constraint(max=40, on_start=True),
     }
-    assert hass_storage["gungors.program"]["data"]["format"] == 3
-    # Written again with Home Assistant's names.
+    assert hass_storage["gungors.program"]["data"]["format"] == 4
+    # Written again with Home Assistant's names and on_start.
     assert event.description == (
-        'target: [x]\nlight:\n  state: {eq: "on", set: true}\n  brightness_pct: {max: 40, set: true}\n'
+        'target: [x]\nlight:\n  state: {eq: "on", on_start: true}\n'
+        '  brightness_pct: {max: 40, on_start: true}\n'
     )
 
 
@@ -755,7 +781,7 @@ async def test_yaml_program_defaults(
     # The defaults apply when a set rule ends.
     lamp(hass, False)
     await hass.async_block_till_done()
-    await add_entry(hass, "x", {"target": LIGHT, "light": {"color": {"eq": "red", "set": True}}},
+    await add_entry(hass, "x", {"target": LIGHT, "light": {"color": {"eq": "red", "on_start": True}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(hours=1, seconds=2))
     assert hass.states.get(LIGHT).state == "on"
@@ -832,7 +858,7 @@ async def test_template_default_follows_its_result(
     await hass.async_block_till_done()
     assert hass.states.get(COVER).attributes["current_position"] == 70
     # A set rule holding the position wins over the template.
-    await add_entry(hass, "kapali", {"target": COVER, "cover": {"current_position": {"eq": 0, "set": True}}},
+    await add_entry(hass, "kapali", {"target": COVER, "cover": {"current_position": {"eq": 0, "on_start": True}}},
                     timedelta(seconds=-1), timedelta(hours=1))
     assert hass.states.get(COVER).attributes["current_position"] == 0
     hass.states.async_set("input_boolean.misafir", "on")
@@ -878,3 +904,111 @@ async def test_series_rrule_can_change(hass: HomeAssistant, calls, hass_ws_clien
         assert len(events) == 1
         assert events[0].uid == uid
         assert events[0].rrule.as_rrule_str() == rrule
+
+
+# --- temporary allowance -----------------------------------------------------------
+
+
+async def test_allow_lets_a_user_go_against_a_rule_for_a_while(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
+) -> None:
+    from homeassistant.core import Context  # noqa: PLC0415
+
+    await setup_all(hass)
+    popups = []
+    hass.services.async_register("browser_mod", "popup", lambda call: popups.append(call.data))
+    hass.states.async_set("person.sercan", "home", {"user_id": hass_admin_user.id})
+    await add_entry(hass, "uyku", {"target": LIGHT, "light": {"state": {"eq": "off", "allow": 1}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    assert hass.states.get(LIGHT).state == "off"
+    # A user turns it on: applied as asked, back off after a minute.
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 100}, blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "on"
+    assert brightness(hass) == 255
+    assert hass.states.get(LIGHT).attributes["program_allow"]["attributes"] == ["state"]
+    assert "geçici izin verildi, 1 dk" in popups[-1]["content"]
+    # Changes within the window are free and do not lengthen it.
+    await tick(hass, freezer, timedelta(seconds=30))
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 50}, blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "on"
+    await tick(hass, freezer, timedelta(seconds=31))
+    assert hass.states.get(LIGHT).state == "off"
+    assert "program_allow" not in hass.states.get(LIGHT).attributes
+    # An automation (no user) still follows the rule.
+    await tick(hass, freezer, timedelta(seconds=11))
+    await hass.services.async_call("light", "turn_on", {"entity_id": LIGHT}, blocking=True)
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "off"
+    assert "program_allow" not in hass.states.get(LIGHT).attributes
+
+
+async def test_allow_returns_to_the_state_before(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
+) -> None:
+    from homeassistant.core import Context  # noqa: PLC0415
+
+    await setup_all(hass)
+    lamp(hass, True, 51)
+    await hass.async_block_till_done()
+    await add_entry(hass, "akşam",
+                    {"target": LIGHT, "light": {"brightness_pct": {"max": 25, "allow": 2}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    assert brightness(hass) == 51
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 100}, blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert brightness(hass) == 255
+    await tick(hass, freezer, timedelta(minutes=2, seconds=1))
+    assert brightness(hass) == 51
+
+
+async def test_allow_takes_a_wall_switch_too(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
+) -> None:
+    await setup_all(hass)
+    await add_entry(hass, "uyku", {"target": LIGHT, "light": {"state": {"eq": "off", "allow": 1}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    assert hass.states.get(LIGHT).state == "off"
+    # The lamp is switched on at the wall: kept on for the minute.
+    lamp(hass, True, 200)
+    await hass.async_block_till_done()
+    await tick(hass, freezer, timedelta(seconds=11))
+    assert hass.states.get(LIGHT).state == "on"
+    assert "program_allow" in hass.states.get(LIGHT).attributes
+    await tick(hass, freezer, timedelta(seconds=50))
+    assert hass.states.get(LIGHT).state == "off"
+
+
+async def test_allow_window_closes_with_its_program(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
+) -> None:
+    from homeassistant.core import Context  # noqa: PLC0415
+
+    await setup_all(hass)
+    await add_entry(hass, "kısa", {"target": LIGHT, "light": {"state": {"eq": "off", "allow": 5}}},
+                    timedelta(seconds=-1), timedelta(minutes=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT}, blocking=True,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    await hass.async_block_till_done()
+    assert "program_allow" in hass.states.get(LIGHT).attributes
+    await tick(hass, freezer, timedelta(minutes=1))
+    assert "program_allow" not in hass.states.get(LIGHT).attributes
+    # No return when the window would have closed: the light stays as the user left it.
+    await tick(hass, freezer, timedelta(minutes=5))
+    assert hass.states.get(LIGHT).state == "on"

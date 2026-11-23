@@ -18,7 +18,7 @@ are active for it now (features/program.py enforces them).
   occurrence gets its real times from its own day's sun (occurrence_times), and
   everything here (conflicts, starts and ends, the calendar) uses those.
 - A running occurrence can be paused (`gungors.pause_program`): until it is
-  resumed or ends it counts as not active, so its `set` attributes return to
+  resumed or ends it counts as not active, so its `on_start` attributes return to
   their defaults as at an end, and resuming applies it again as at a start.
 - A timeless program (`timeless` in the store, no time of its own) is started
   and stopped on demand (`gungors.start_program` / `stop_program`): a start adds
@@ -34,7 +34,7 @@ are active for it now (features/program.py enforces them).
   day). `conflicts()` lists what a run would pause, before it starts. Runs skip
   the conflict check on saving.
 - Preheat: thermostats also get the programs starting within PREHEAT_HORIZON
-  whose climate set temperature rule they should reach by the start (entries
+  whose climate on_start temperature rule they should reach by the start (entries
   with `climate: preheat: false` and timeless runs excluded); features/program.py
   opens the window. An occurrence being preheated can be paused like a running
   one; its pause lasts until its end.
@@ -42,7 +42,7 @@ are active for it now (features/program.py enforces them).
   program card lists the pinned ones first.
 - A default can be a template (the covers' built-in one follows the sun:
   open while it is up); whenever its result changes, the entities whose default
-  it is take the new value (unless a set rule holds that attribute).
+  it is take the new value (unless an on_start rule holds that attribute).
 - The defaults come from the `default` presets (presets.py, `gungors: presets:`)
   over the older calendar `defaults:` over the built-in ones; `gungors.reload`
   picks up a change. Defaults stored by
@@ -103,8 +103,9 @@ _LOGGER = logging.getLogger(__name__)
 DATA_MANAGER = "program"
 STORAGE_KEY = f"{DOMAIN}.program"
 STORAGE_VERSION = 1
-# Entry format: 2 = rules carry the set/let flag; 3 = Home Assistant's attribute names.
-FORMAT = 3
+# Entry format: 2 = rules carry the set/let flag; 3 = Home Assistant's attribute names;
+# 4 = `set` written as `on_start` (rules may carry `allow`).
+FORMAT = 4
 CHECK_HORIZON = datetime.timedelta(days=366)
 # Refresh at least this often (an entry far in the future, a missed timer).
 MAX_SLEEP = datetime.timedelta(hours=1)
@@ -472,6 +473,7 @@ class ProgramManager:
 
         Format 2: rules are `let` unless marked `set`; earlier entries all become `set`.
         Format 3: Home Assistant's attribute names (the description is written again).
+        Format 4: `set: true` is written as `on_start: true` (written again too).
         """
         for event in self.calendar.events:
             try:
@@ -480,7 +482,7 @@ class ProgramManager:
                 continue
             if old < 2:
                 program = replace(
-                    program, rules={a: replace(c, set=True) for a, c in program.rules.items()}
+                    program, rules={a: replace(c, on_start=True) for a, c in program.rules.items()}
                 )
             event.description = dump_program(program)
         _LOGGER.info("program entries migrated from format %s to %s", old, FORMAT)
@@ -973,7 +975,7 @@ class ProgramManager:
                     self._notify_skip(instance, clash, entity_id)
                     continue
                 accepted.append((instance, rules))
-        # Programs a thermostat may preheat for: their climate set temperature rules.
+        # Programs a thermostat may preheat for: their climate on_start temperature rules.
         upcoming: dict[str, list[tuple[Instance, dict]]] = {e: [] for e in self.entities}
         for instance in sorted(coming, key=lambda i: (i.start, i.uid)):
             assert instance.program is not None
@@ -983,7 +985,7 @@ class ProgramManager:
                 a: c for a, c in instance.program.rules.items()
                 if a in ("temperature", "hvac_mode") and DOMAINS[a] == "climate"
             }
-            if "temperature" not in rules or not rules["temperature"].set:
+            if "temperature" not in rules or not rules["temperature"].on_start:
                 continue
             for entity_id in self.resolve(instance.program):
                 if entity_id.startswith("climate.") and entity_id in upcoming:

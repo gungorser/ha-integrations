@@ -185,7 +185,7 @@ rules grouped by domain:
 target: [Salon, light.melike]
 light:
   state: "on"
-  brightness_pct: {min: 50, set: true}
+  brightness_pct: {min: 50, on_start: true, allow: 1}
 climate:
   temperature: {max: 21}
 ```
@@ -200,7 +200,7 @@ climate:
   entry's stored time then only marks the day; the calendar, conflicts and the card all use
   the real times.
 - `light`, `climate`, `cover`: one rule per attribute, a value (`eq`) or `{min, max}`, plus
-  `set: true` for a set rule (`{eq: 21, set: true}`). Attributes, named as in Home Assistant:
+  the flags `on_start: true` and `allow: <minutes>` (`{eq: 21, on_start: true, allow: 30}`). Attributes, named as in Home Assistant:
   light `state` (`"on"`/`"off"`), `brightness_pct`, `rgb_color` (`[r, g, b]` or a name),
   `color_temp_kelvin`; climate `state` (the HVAC mode, `heat`/`off`), `temperature`; cover
   `current_position`. `min`/`max` only for brightness_pct, temperature and current_position.
@@ -208,29 +208,40 @@ climate:
   `brightness`, `color`, `color_temp`, `hvac_mode`, `position` and the older form with every
   attribute under one `rules:` key are still read; saved entries were rewritten once with
   the new names.)
-- `let` (the default) only limits: an off light or heating satisfies it. `set` also brings
-  the device into the rule: a set brightness, colour or colour temperature keeps the light
-  on, a set temperature keeps the heating on.
+- Every rule keeps the device from leaving it; an off light or heating satisfies it (an
+  exact `state` rule aside). `on_start` also brings the device into the rule when the
+  program starts: a brightness, colour or colour temperature rule turns the light on, a
+  temperature rule turns the heating on, a one-sided limit moves to that limit. Only at the
+  start: turning the light or heating off afterwards is free. (The older `set: true` reads
+  as `on_start: true`; saved entries were rewritten once.)
+- `allow: <minutes>`: a user's request, a wall button or the device itself (a wall switch)
+  may go against the rule. The request is applied as given (the user gets a popup that it
+  is temporary) and an allowance window opens: the allowing rules are lifted for that many
+  minutes (further changes are free, the window does not grow), then the device returns to
+  the state it had before, brought into the rules. Automations still follow the rule.
+  Several programs' rules on one attribute allow only when all do (the shortest time). The
+  window closes without a return when its rules end (end, pause) and is forgotten over a
+  restart. The entity attribute `program_allow` (`attributes`, `until`) shows an open
+  window.
 - An entry that two programs' rules can't both hold on an entity while they overlap is
   refused with an error (also from Home Assistant's calendar dialog), as is an unreadable one.
 - While active: a user's request (dashboard, app, a script they run) that breaks a rule is
-  refused and a browser_mod popup on their browsers says so, offering the nearest allowed
-  value. Automations, wall switches and dials, and the state at the start are brought to
+  brought to the nearest allowed value and a browser_mod popup on their browsers says so. Automations, wall switches and dials, and the state at the start are brought to
   the nearest allowed value without asking.
-- When a set rule ends the device returns to its defaults (calendar `defaults`,
+- When an on_start rule ends the device returns to its defaults (calendar `defaults`,
   overridable per entity with `- program: {<n>: <value>}`: light `state: "off"`,
   `rgb_color: [255, 255, 255]`; climate `state: "off"`; cover `current_position:
   "{{ 100 if is_state('sun.sun', 'above_horizon') else 0 }}"`, merged per domain with the
   calendar's YAML `defaults:`, which are the only place to change them: edit the YAML, then
-  `gungors.reload`; the program card's defaults tab only shows them); let rules just lift.
+  `gungors.reload`; the program card's defaults tab only shows them); other rules just lift.
   A default may be a template: it is rendered when
   applied and applied again whenever its result changes (the cover one at sunrise and
-  sunset), unless a set rule holds the attribute. Defaults never lock. (The older cover
+  sunset), unless an on_start rule holds the attribute. Defaults never lock. (The older cover
   `position: sun` reads as the sun template; entries saved before the set/let flag were
-  turned into set rules once.)
+  turned into on_start rules once.)
 
 - `gungors.pause_program` / `gungors.resume_program` (target `calendar.program`, field
-  `uid`): a paused running occurrence counts as ended (its set rules return the device to
+  `uid`): a paused running occurrence counts as ended (its on_start rules return the device to
   its defaults) until it is resumed, which applies it again as at a start, or until it ends. The
   calendar's `paused` attribute lists the paused entries' uids.
 - Timeless programs (`baby sleep`: no time of their own, started when needed) are kept by
@@ -252,13 +263,13 @@ climate:
   the run still resumes them): their occurrence stays paused until its own end, as if
   the user had paused it ("ended early for that day").
 - Preheat: a thermostat with `- program: {preheat: {rate: 1.5}}` (°C per hour; `max`
-  how early at most, 3 h when not given) is at a program's set temperature (`eq`, or the
+  how early at most, 3 h when not given) is at a program's on_start temperature (`eq`, or the
   `min` of a range) by the program's start. (target - room temperature) / rate before the
   start the program's temperature rule applies as if it had started: requests are brought
   to it like any rule, and it goes before the temperature rules of programs running then.
   Once open the window stays open until the start (also over a restart); pausing the
   program (`gungors.pause_program` works on it then, the pause lasts until its end) or
-  deleting it closes it and the heating returns as at a set rule's end. Programs with
+  deleting it closes it and the heating returns as at an on_start rule's end. Programs with
   `climate: preheat: false` and timeless runs are not preheated for. The thermostat's
   `preheat` attribute is the plan (`target`, `at`, `start`, `rate`, `active`),
   `preheat_last` the latest outcome (`reached`, `late_min`); the calendar's `preheating`

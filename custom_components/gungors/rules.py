@@ -5,7 +5,7 @@ An entry's description holds the program as YAML, the rules grouped by domain::
     target: [Salon, light.melike]   # area ids/names and entity ids
     light:
       state: "on"              # a plain value is `eq`
-      brightness_pct: {min: 50, set: true}
+      brightness_pct: {min: 50, on_start: true, allow: 1}
       rgb_color: [255, 0, 0]   # or a colour name
     climate:
       temperature: {min: 19, max: 22}
@@ -28,16 +28,24 @@ climate `state` (the HVAC mode: heat/off), `temperature`; cover
 under one `rules:` key are still read.
 
 A rule is a constraint on one attribute: `eq`, `min` and/or `max`; `min`/`max`
-only for the numeric attributes brightness_pct, temperature and current_position. A rule is
-`let` (the default) or `set` (`set: true`): a `let` rule only limits changes (an
-off light or heating satisfies it), a `set` rule also brings the device into it
-(a set brightness, colour or colour temperature rule keeps the light on, a set
-temperature rule keeps the heating on), and at the end of the program only a
-`set` rule's attributes return to their defaults. A rule only touches the
-targeted entities of its domain. Two programs conflict on an entity when they
-overlap in time and the same attribute's constraints can't hold together
-(`color` and `color_temp` count as one attribute: a light can't follow both;
-a set rule's implied `on: true` / `hvac_mode: heat` counts too).
+only for the numeric attributes brightness_pct, temperature and current_position.
+Every rule keeps the device from leaving it (an off light or heating satisfies
+any rule but an exact `state` one). Two flags shape a rule further:
+
+- `on_start: true`: when the program starts the device is brought into the rule
+  (a brightness, colour or colour temperature rule turns the light on, a
+  temperature rule turns the heating on); afterwards it only keeps the device
+  from leaving it, so turning the light or heating off is free. At the end of the
+  program only an `on_start` rule's attributes return to their defaults. The
+  older `set: true` reads as `on_start: true`.
+- `allow: <minutes>`: a user, a wall button or the device itself may go against
+  the rule for that long; then the device returns to the state it had before.
+
+A rule only touches the targeted entities of its domain. Two programs conflict
+on an entity when they overlap in time and the same attribute's constraints
+can't hold together (`color` and `color_temp` count as one attribute: a light
+can't follow both; an `on_start` rule's implied `on: true` / `hvac_mode: heat`
+counts too).
 """
 from __future__ import annotations
 
@@ -111,16 +119,20 @@ def external(attr: str, value: Any) -> Any:
 # Attributes that are one dimension for conflicts.
 SAME_DIMENSION = {"color": "color", "color_temp": "color"}
 TOLERANCE = 0.05
+# Longest temporary allowance of a rule (minutes).
+ALLOW_MAX = 1440
 
 
 @dataclass(frozen=True)
 class Constraint:
-    """eq, or a range [min, max] (either end open); `set`: the system applies it."""
+    """eq, or a range [min, max] (either end open); `on_start`: applied when the
+    program starts; `allow`: minutes a request may go against it."""""
 
     eq: Any = None
     min: float | None = None
     max: float | None = None
-    set: bool = False
+    on_start: bool = False
+    allow: float | None = None
 
     def bounds(self) -> tuple[float, float]:
         if self.eq is not None:
@@ -152,8 +164,10 @@ class Constraint:
             }
         else:
             result = {k: v for k, v in (("min", self.min), ("max", self.max)) if v is not None}
-        if self.set:
-            result["set"] = True
+        if self.on_start:
+            result["on_start"] = True
+        if self.allow is not None:
+            result["allow"] = int(self.allow) if float(self.allow).is_integer() else self.allow
         return result
 
 
@@ -227,14 +241,30 @@ def _constraint(attr: str, value: Any) -> Constraint:
 
 
 def _constraint_of(attr: str, value: Any) -> Constraint:
-    if isinstance(value, dict) and "set" in value:
+    if isinstance(value, dict) and {"set", "on_start", "allow"} & set(value):
         value = dict(value)
-        flag = value.pop("set")
-        if not isinstance(flag, bool):
-            raise vol.Invalid(f"{attr}: set is true or false")
+        flags: dict[str, Any] = {}
+        for key in ("set", "on_start"):
+            if key in value:
+                flag = value.pop(key)
+                if not isinstance(flag, bool):
+                    raise vol.Invalid(f"{attr}: {key} is true or false")
+                flags["on_start"] = flags.get("on_start", False) or flag
+        if "allow" in value:
+            minutes = value.pop("allow")
+            if minutes is not None:
+                try:
+                    if isinstance(minutes, bool):
+                        raise TypeError
+                    minutes = float(minutes)
+                except (TypeError, ValueError) as err:
+                    raise vol.Invalid(f"{attr}: allow is a number of minutes") from err
+                if not 0 < minutes <= ALLOW_MAX:
+                    raise vol.Invalid(f"{attr}: allow is more than 0 and at most {ALLOW_MAX} minutes")
+            flags["allow"] = minutes
         if not value:
-            raise vol.Invalid(f"{attr}: a value (eq, min or max) besides set")
-        return replace(_constraint_of(attr, value), set=flag)
+            raise vol.Invalid(f"{attr}: a value (eq, min or max) besides on_start/allow")
+        return replace(_constraint_of(attr, value), **flags)
     if attr == "color":
         if isinstance(value, dict):
             if set(value) != {"eq"}:
@@ -286,7 +316,7 @@ def _constraint_of(attr: str, value: Any) -> Constraint:
     return result
 
 
-# A set rule on these keeps the device on: attr -> (attribute, value) it implies.
+# An on_start rule on these turns the device on at the start: attr -> (attribute, value) it implies.
 IMPLIES: dict[str, tuple[str, Any]] = {
     "brightness": ("on", True),
     "color": ("on", True),
@@ -296,13 +326,13 @@ IMPLIES: dict[str, tuple[str, Any]] = {
 
 
 def implied(rules: dict[str, Constraint]) -> dict[str, Constraint]:
-    """Rules plus what their set rules imply (`on: true`, `hvac_mode: heat`)."""
+    """Rules plus what their on_start rules imply (`on: true`, `hvac_mode: heat`)."""
     result = dict(rules)
     for attr, constraint in rules.items():
-        if constraint.set and attr in IMPLIES:
+        if constraint.on_start and attr in IMPLIES:
             other, value = IMPLIES[attr]
             if other not in result:
-                result[other] = Constraint(eq=value, set=True)
+                result[other] = Constraint(eq=value, on_start=True)
     return result
 
 
@@ -375,11 +405,11 @@ def parse_program(description: str | None) -> Program:
     if "color" in parsed and "color_temp" in parsed:
         raise vol.Invalid("rgb_color and color_temp_kelvin can't be in the same program")
     for attr, constraint in parsed.items():
-        if constraint.set and attr in IMPLIES:
+        if constraint.on_start and attr in IMPLIES:
             other, value = IMPLIES[attr]
             if other in parsed and parsed[other].eq != value:
                 raise vol.Invalid(
-                    f"set {NAMES[attr]} keeps {NAMES[other]} at {_scalar(external(other, value))}"
+                    f"on_start {NAMES[attr]} keeps {NAMES[other]} at {_scalar(external(other, value))}"
                 )
     return Program(
         target=tuple(t.strip() for t in target), rules=parsed,
