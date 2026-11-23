@@ -22,7 +22,7 @@ TRV = "climate.salon_climate"
 THERMOSTAT = "climate.salon_thermostat"
 SENSOR = "sensor.salon_temperature"
 CALENDAR = "calendar.program"
-RULE = {"temperature": {"min": 21, "set": True}}
+RULE = {"temperature": {"min": 21, "on_start": True}}
 
 
 def trv(hass: HomeAssistant, mode: str = "off", temperature: float = 18) -> None:
@@ -168,10 +168,11 @@ async def test_the_window_is_part_of_the_program(
                                    {"entity_id": THERMOSTAT, "temperature": 18}, blocking=True)
     await hass.async_block_till_done()
     assert calls.of("climate", "set_temperature", TRV)[-1]["temperature"] == 21
+    # Turning it off is free: the rule turned the heating on at the window's start only.
     await hass.services.async_call("climate", "set_hvac_mode",
                                    {"entity_id": THERMOSTAT, "hvac_mode": "off"}, blocking=True)
     await hass.async_block_till_done()
-    assert thermostat(hass)[0] == "heat"
+    assert thermostat(hass)[0] == "off"
 
 
 async def test_window_goes_before_a_running_program(
@@ -179,7 +180,7 @@ async def test_window_goes_before_a_running_program(
 ) -> None:
     await setup(hass, temperature=17)
     await add_entry(hass, "gündüz", {"target": THERMOSTAT,
-                                      "climate": {"temperature": {"max": 18, "set": True}}},
+                                      "climate": {"temperature": {"max": 18, "on_start": True}}},
                     timedelta(minutes=1), timedelta(hours=1, minutes=2))
     await walk(hass, freezer, timedelta(minutes=2))
     assert thermostat(hass) == ("heat", 18)

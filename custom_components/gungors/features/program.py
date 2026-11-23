@@ -9,35 +9,42 @@ While programs are active the entity follows their rules:
 - A request a user makes (a dashboard, the app, a script they run) is not
   refused. It is brought to the nearest allowed value (brightness 49 with
   `min 50` -> 50, a cover at 100 with `max 60` -> 60) and the user gets a popup
-  saying so. Two cases keep the device in its rule instead of turning it off:
-  a light turned off while its brightness has a floor (`min 50`) stays on at
-  that floor, and a heating turned off while a temperature rule holds stays on.
+  saying so.
 - A cover stop is ignored while its position lies outside its `position` rule
   (the program is moving it back into range), with a popup saying so. It is
   accepted again once the position is in range, when the position is unknown,
   or when the program has given up correcting the device.
 - Other requests (automations, other features) and the device changing by itself
   (a wall switch or dimmer, the thermostat dial) are brought to the nearest
-  allowed value without asking; so is the state when a rule starts.
-- A `let` rule only shapes what applies in the current state: an off light or
-  heating satisfies it, `color: red` recolours a lit light. A `set` rule also
-  brings the device into it: a set brightness, colour or colour temperature rule
-  keeps the light on, a set temperature rule keeps the heating on.
-- A `set` rule with only a min or only a max limit moves the device to that
-  limit when it starts, whatever the current value (a cover at 0 with `max 20
-  set` goes to 20; a light at 100 with `min 50 set` goes to 50). A `set` range
-  (min and max) moves the device only when it is outside the range, to the
-  nearest end of it.
-- When a `set` rule ends, the device returns to its defaults, except what other
-  set rules still hold (light off and white, heating off, covers by the sun:
-  open by day, closed at night). `let` rules just lift.
+  allowed value without asking.
+- A rule only shapes what applies in the current state: an off light or heating
+  satisfies it (an exact `state` rule aside), `color: red` recolours a lit light.
+- An `on_start` rule also brings the device into it when it starts: a
+  brightness, colour or colour temperature rule turns the light on, a
+  temperature rule turns the heating on. A one-sided limit moves the device to
+  that limit whatever the current value (a cover at 0 with `max 20` goes to 20; a
+  light at 100 with `min 50` goes to 50); a range (min and max) moves it only when
+  it is outside, to the nearest end. Afterwards the rule only keeps the device
+  from leaving it; a request from outside the program (a user, a button, an
+  automation) ends the start move.
+- An `allow: <minutes>` rule lets a user's request, a wall button or the device
+  itself go against it: the request is applied as given (no popup but a note that
+  it is temporary) and a window opens for the rules that allow it. Within the
+  window those rules are lifted (further changes are free; the window does not
+  grow). When it closes the device returns to the state it had before the
+  window, brought into the rules. Automations still follow the rules. The window
+  closes without a return when its rules end (the program ends or pauses) and is
+  forgotten over a restart.
+- When an `on_start` rule ends, the device returns to its defaults, except what
+  other on_start rules still hold (light off and white, heating off, covers by
+  the sun: open by day, closed at night). Other rules just lift.
 - A template default (the covers' sun one) is applied again whenever its result
-  changes, unless a set rule holds the attribute. Defaults are applied at those
-  moments only; they never lock anything.
+  changes, unless an on_start rule holds the attribute. Defaults are applied at
+  those moments only; they never lock anything.
 
 Preheat (climate): `- program: {preheat: {rate: 1.5, max: {hours: 3}}}` (rate in
 °C per hour; max 3 h when not given). The thermostat then reaches the set
-temperature rule of a coming program (`eq`, or the `min` of a range) by its start:
+on_start temperature rule of a coming program (`eq`, or the `min` of a range) by its start:
 
 - From (target - room temperature) / rate before the start (at most `max`), the
   program's temperature rule (and the heating it implies) applies as if the
@@ -47,7 +54,7 @@ temperature rule of a coming program (`eq`, or the `min` of a range) by its star
 - The window, once open, stays open until the start (latched, also over a
   restart), so the room warming up does not end it. It closes early when the
   program is deleted or paused (the pause lasts until its end); the heating then
-  returns as when a set rule ends.
+  returns as when an on_start rule ends.
 - Programs with `climate: preheat: false` and timeless runs are not preheated for.
 
 Attribute `program`: the active programs of this entity (summary, start, end,
@@ -55,8 +62,9 @@ rules; a preheat window shows with `preheat: true`). `preheat`: the plan for the
 next program (`uid`, `summary`, `target`, `at` its start, `start` the planned or
 actual window start, `rate`, `active`), or None. `preheat_last`: how the latest
 window ended (`target`, `at`, `opened`, `reached` the time the room got there or
-None, `late_min` minutes after the start, negative when early).
-The attributes `set` rules hold survive a restart, so a program that
+None, `late_min` minutes after the start, negative when early). `program_allow`: an
+open allowance window (`attributes`, `until`), only while one is open.
+The attributes `on_start` rules hold survive a restart, so a program that
 ended while Home Assistant was down still restores the defaults.
 """
 from __future__ import annotations
@@ -83,6 +91,7 @@ from homeassistant.helpers.template import Template
 from homeassistant.util import color as color_util, dt as dt_util
 
 from ..core import SOURCE_REMOTE, Feature, Request, register
+from .button import TAG as BUTTON_TAG
 from ..rules import (
     DOMAINS,
     NAMES,
@@ -90,7 +99,6 @@ from ..rules import (
     attr_of,
     default_value,
     external,
-    implied,
     is_template,
     parse_defaults,
 )
@@ -118,8 +126,8 @@ PREHEAT_SCHEMA = vol.Schema({
 })
 # Rules a preheat window brings forward (and takes over from running programs).
 PREHEAT_ATTRS = ("temperature", "hvac_mode")
-# How close (in the rule's unit) a device must be to a set rule's limit to count as there.
-_LIMIT_TOLERANCE = {"position": 0.5, "brightness": 0.5, "temperature": 0.05}
+# How close (in the rule's unit) a device must be to an on_start rule's target to count as there.
+_LIMIT_TOLERANCE = {"position": 0.5, "brightness": 0.5, "temperature": 0.05, "color_temp": 50}
 
 _COLOR_MODES = {ColorMode.HS, ColorMode.XY, ColorMode.RGB, ColorMode.RGBW, ColorMode.RGBWW}
 _COLOR_KEYS = (
@@ -129,24 +137,35 @@ _COLOR_KEYS = (
 
 
 def _merge(rule_sets: list[dict[str, Constraint]]) -> dict[str, Constraint]:
-    """The combined constraint per attribute of non-conflicting rule sets."""
+    """The combined constraint per attribute of non-conflicting rule sets.
+
+    `on_start` when any rule has it; `allow` only when every rule allows (the
+    shortest allowance).
+    """
     merged: dict[str, Constraint] = {}
     for rules in rule_sets:
-        for attr, constraint in implied(rules).items():
+        for attr, constraint in rules.items():
             current = merged.get(attr)
-            flag = constraint.set or (current is not None and current.set)
-            if current is None or (current.eq is None and constraint.eq is not None):
-                merged[attr] = replace(constraint, set=flag)
+            if current is None:
+                merged[attr] = constraint
+                continue
+            flags = {
+                "on_start": constraint.on_start or current.on_start,
+                "allow": min(current.allow, constraint.allow)
+                if current.allow is not None and constraint.allow is not None else None,
+            }
+            if current.eq is None and constraint.eq is not None:
+                merged[attr] = replace(constraint, **flags)
             elif current.eq is None:
                 lows = [v for v in (current.min, constraint.min) if v is not None]
                 highs = [v for v in (current.max, constraint.max) if v is not None]
                 merged[attr] = Constraint(
                     min=max(lows) if lows else None,
                     max=min(highs) if highs else None,
-                    set=flag,
+                    **flags,
                 )
-            elif flag != current.set:
-                merged[attr] = replace(current, set=flag)
+            else:
+                merged[attr] = replace(current, **flags)
     return merged
 
 
@@ -171,6 +190,15 @@ def _finite(constraint: Constraint, fallback: float | None) -> float | None:
     return None
 
 
+def _start_target(constraint: Constraint, current: float | None) -> float | None:
+    """Where an on_start rule moves its device: the exact value, a one-sided limit,
+    or into a range (nearest end; the top when the value is unknown)."""
+    if constraint.eq is not None:
+        return float(constraint.eq)
+    limit = _limit(constraint)
+    return limit if limit is not None else _finite(constraint, current)
+
+
 def _limit(constraint: Constraint) -> float | None:
     """The limit a one-sided rule moves its device to; None for a range or an exact value."""
     if constraint.eq is not None or (constraint.min is not None and constraint.max is not None):
@@ -184,7 +212,22 @@ def _limit(constraint: Constraint) -> float | None:
 
 def _constraint_fields(constraint: Constraint) -> dict[str, Any]:
     """A constraint as the keyword arguments that rebuild it (restore data)."""
-    return {"eq": constraint.eq, "min": constraint.min, "max": constraint.max, "set": constraint.set}
+    return {
+        "eq": constraint.eq, "min": constraint.min, "max": constraint.max,
+        "on_start": constraint.on_start, "allow": constraint.allow,
+    }
+
+
+def _restored(fields: dict[str, Any]) -> dict[str, Any]:
+    """Saved constraint fields (the older `set` reads as `on_start`)."""
+    fields = dict(fields)
+    if "set" in fields:
+        fields["on_start"] = fields.pop("set")
+    return fields
+
+
+def _minutes(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:g}"
 
 
 def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
@@ -195,8 +238,8 @@ def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
 
 
 def _preheat_target(constraint: Constraint | None) -> float | None:
-    """The temperature a preheat aims at: a set rule's exact value or its floor."""
-    if constraint is None or not constraint.set:
+    """The temperature a preheat aims at: an on_start rule's exact value or its floor."""
+    if constraint is None or not constraint.on_start:
         return None
     if constraint.eq is not None:
         return float(constraint.eq)
@@ -241,8 +284,8 @@ class Program(Feature):
 
     # [{uid, summary, start, end, rules: {attr: Constraint}}] for this entity
     _prog_active: list[dict[str, Any]] = []
-    _prog_set: set[str] = set()  # attributes set rules hold (for the defaults)
-    # attributes whose set rule just started and whose device has not reached its limit yet
+    _prog_set: set[str] = set()  # attributes on_start rules hold (for the defaults)
+    # attributes whose on_start rule just started and whose device has not reached it yet
     _prog_pending: set[str] = set()
     _prog_sent_at = -COOLDOWN
     _prog_recheck = None
@@ -258,6 +301,9 @@ class Program(Feature):
     _prog_preheat_last: dict[str, Any] | None = None
     _prog_follow: dict[str, Any] | None = None
     _prog_plan: dict[str, Any] | None = None
+    # The open allowance window: {attrs, minutes, until, restore, unsub}.
+    _prog_allow: dict[str, Any] | None = None
+    _prog_lift: frozenset[str] = frozenset()  # attributes lifted for a trial clamp
 
     @property
     def _prog_domain(self) -> str:
@@ -289,15 +335,20 @@ class Program(Feature):
         defaults = self._prog_defaults_given
         self._prog_active = self._prog_effective()
         self._prog_last, self._prog_repeats = None, 0
-        rules = self._prog_rules()
-        held = {a for a, c in rules.items() if c.set}
+        rules = self._prog_rules(lifted=False)
+        allow = self._prog_allow
+        if allow is not None and not all(
+            a in rules and rules[a].allow is not None for a in allow["attrs"]
+        ):
+            self._prog_allow_cancel()  # its rules ended: no return
+        held = {a for a, c in rules.items() if c.on_start}
         ended = [a for a in self._prog_set if a not in held]
         started = held - self._prog_set
         self._prog_set = held
         self._prog_pending = (self._prog_pending & held) | started
         self.async_write_ha_state()
         if ended:
-            # The device returns to its defaults (a set brightness ending: light off).
+            # The device returns to its defaults (an on_start brightness ending: light off).
             await self.gw_program_apply_defaults(list(DOMAINS), defaults)
         await self._prog_enforce(force=True)
 
@@ -444,11 +495,18 @@ class Program(Feature):
     # --- chain ---------------------------------------------------------------
 
     async def gw_request(self, request: Request) -> bool:
-        if request.from_device or not self._prog_active:
+        if not self._prog_active:
+            return await super().gw_request(request)
+        if request.from_device:
+            before = self._prog_snapshot()
+            clean = not self._prog_domain_correction()
             accepted = await super().gw_request(request)
-            if request.from_device and self._prog_active:
-                self.hass.async_create_task(self._prog_enforce())
+            if clean and self._prog_allow is None:
+                self._prog_allow_device(before)
+            self.hass.async_create_task(self._prog_enforce())
             return accepted
+        if TAG not in request.tags:
+            self._prog_pending = set()  # someone else acts: the start move is over
         user = self._prog_user(request)
         if user is not None and self._prog_domain == "cover" and request.data.get("stop"):
             if self._prog_stop_blocked():
@@ -458,21 +516,133 @@ class Program(Feature):
                 return False
             return await super().gw_request(request)
         original = dict(request.data)
-        if user is not None:
-            request.data = self._prog_user_adjust(dict(request.data))
-        data = self._prog_clamp(dict(request.data))
+        data = self._prog_clamp(dict(original))
+        allowed = None
+        if data != original and (user is not None or BUTTON_TAG in request.tags):
+            allowed = self._prog_allow_request(original, data)
+            if allowed is not None:
+                data = allowed["data"]
         if data is None:
             _LOGGER.info("%s: %s rejected by a program", self.entity_id, request.data)
             request.adjusted = True
             return False
         if data != original:
             request.adjusted = True
-        if data != request.data:
-            _LOGGER.debug("%s: program clamped %s to %s", self.entity_id, request.data, data)
+            _LOGGER.debug("%s: program clamped %s to %s", self.entity_id, original, data)
         if user is not None and data != original:
             self.hass.async_create_task(self._prog_inform(user, "istek kurala göre ayarlandı"))
+        elif user is not None and allowed is not None:
+            self.hass.async_create_task(self._prog_inform(
+                user, f"geçici izin verildi, {_minutes(allowed['minutes'])} dk sonra kurala dönecek"
+            ))
         request.data = data
         return await super().gw_request(request)
+
+    # --- temporary allowance -------------------------------------------------
+
+    def _prog_allowable(self) -> tuple[frozenset[str], float] | None:
+        """The attributes whose rules allow going against them now, and for how long."""
+        rules = self._prog_rules()
+        allowing = {a: c.allow for a, c in rules.items() if c.allow is not None}
+        if not allowing:
+            return None
+        return frozenset(allowing), min(allowing.values())
+
+    def _prog_lifted(self, attrs: frozenset[str], func):
+        """`func()` with the rules of `attrs` lifted."""
+        self._prog_lift = attrs
+        try:
+            return func()
+        finally:
+            self._prog_lift = frozenset()
+
+    def _prog_allow_request(
+        self, original: dict[str, Any], clamped: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """A request against an allowing rule: open the window, {data, minutes}; or None."""
+        if self._prog_allow is not None:
+            return None
+        allowable = self._prog_allowable()
+        if allowable is None:
+            return None
+        attrs, minutes = allowable
+        data = self._prog_lifted(attrs, lambda: self._prog_clamp(dict(original)))
+        if data == clamped:
+            return None  # the rules that refused it don't allow
+        self._prog_allow_open(attrs, minutes, self._prog_snapshot())
+        return {"data": data, "minutes": minutes}
+
+    def _prog_allow_device(self, before: dict[str, Any]) -> None:
+        """The device went against an allowing rule (a wall switch): open the window."""
+        correction = self._prog_domain_correction()
+        allowable = self._prog_allowable()
+        if not correction or allowable is None:
+            return
+        attrs, minutes = allowable
+        if self._prog_lifted(attrs, self._prog_domain_correction) != correction:
+            self._prog_allow_open(attrs, minutes, before)
+
+    def _prog_allow_open(
+        self, attrs: frozenset[str], minutes: float, restore: dict[str, Any]
+    ) -> None:
+        until = dt_util.now() + datetime.timedelta(minutes=minutes)
+        unsub = async_call_later(self.hass, minutes * 60, self._prog_allow_expired)
+        self._prog_allow = {
+            "attrs": attrs, "minutes": minutes, "until": until, "restore": restore, "unsub": unsub,
+        }
+        _LOGGER.info(
+            "%s: %s allowed against the program for %s min (back to %s)",
+            self.entity_id, ", ".join(NAMES[a] for a in sorted(attrs)), _minutes(minutes), restore,
+        )
+        self.async_write_ha_state()
+
+    def _prog_allow_cancel(self) -> None:
+        allow, self._prog_allow = self._prog_allow, None
+        if allow is not None:
+            allow["unsub"]()
+
+    @callback
+    def _prog_allow_expired(self, _now) -> None:
+        allow, self._prog_allow = self._prog_allow, None
+        if allow is None:
+            return
+        self.hass.async_create_task(self._prog_allow_return(allow["restore"]))
+
+    async def _prog_allow_return(self, restore: dict[str, Any]) -> None:
+        """The window closed: back to the state before it, brought into the rules.
+
+        Counts as a correction: the device gets the cooldown to report it before
+        the rules are checked again.
+        """
+        _LOGGER.info("%s: allowance over, back to %s", self.entity_id, restore)
+        self._prog_last, self._prog_repeats = None, 0
+        if restore and self.available:
+            self._prog_sent_at = time.monotonic()
+            await self.gw_request(Request(dict(restore), tags={TAG}))
+        self._prog_schedule_recheck()
+        self.async_write_ha_state()
+
+    def _prog_snapshot(self) -> dict[str, Any]:
+        """The device's state as a request that brings it back."""
+        domain = self._prog_domain
+        if domain == "light":
+            if not self.is_on:
+                return {"on": False}
+            data: dict[str, Any] = {"on": True}
+            if self.brightness is not None and self._prog_supports("brightness"):
+                data["brightness"] = self.brightness
+            if self.color_mode == ColorMode.COLOR_TEMP and self.color_temp_kelvin:
+                data["color_temp_kelvin"] = self.color_temp_kelvin
+            elif self.color_mode in _COLOR_MODES and self.hs_color is not None:
+                data["hs_color"] = tuple(self.hs_color)
+            return data
+        if domain == "climate":
+            data = {"hvac_mode": self.hvac_mode}
+            if self.hvac_mode == HVACMode.HEAT and self.target_temperature is not None:
+                data["temperature"] = self.target_temperature
+            return data
+        position = self.current_cover_position
+        return {"position": position} if position is not None else {}
 
     # --- enforcement ---------------------------------------------------------
 
@@ -495,6 +665,7 @@ class Program(Feature):
 
     async def async_will_remove_from_hass(self) -> None:
         self._prog_cancel_recheck()
+        self._prog_allow_cancel()
         if self._prog_preheat_conf() is not None:
             from ..program import async_get_manager  # noqa: PLC0415
 
@@ -560,28 +731,6 @@ class Program(Feature):
             return None
         return context.user_id
 
-    def _prog_user_adjust(self, data: dict[str, Any]) -> dict[str, Any]:
-        """A user's request turned to fit the rules before it is clamped.
-
-        A light turned off while its brightness has a floor stays on (at the
-        clamped brightness); heating turned off while a temperature rule holds
-        stays on. Rules that allow the off state are left as they are.
-        """
-        rules = self._prog_rules()
-        if self._prog_domain == "light" and data.get("on") is False and "on" not in rules:
-            floor = rules["brightness"].bounds()[0] if "brightness" in rules else 0
-            if floor > 0 and self.is_on:
-                return {**data, "on": True}
-        if (
-            self._prog_domain == "climate"
-            and data.get("hvac_mode") == HVACMode.OFF
-            and "hvac_mode" not in rules
-            and "temperature" in rules
-            and self.hvac_mode != HVACMode.OFF
-        ):
-            return {**data, "hvac_mode": HVACMode.HEAT}
-        return data
-
     def _prog_stop_blocked(self) -> bool:
         """A stop is ignored while the cover is outside its position rule.
 
@@ -621,12 +770,19 @@ class Program(Feature):
 
     # --- rules per domain ----------------------------------------------------
 
-    def _prog_rules(self) -> dict[str, Constraint]:
-        """Combined constraints the entity supports."""
+    def _prog_rules(self, lifted: bool = True) -> dict[str, Constraint]:
+        """Combined constraints the entity supports; `lifted`: without those an
+        allowance lifts now."""
         rules = _merge([p["rules"] for p in self._prog_active])
         domain = self._prog_domain
+        off: set[str] = set()
+        if lifted:
+            off = set(self._prog_lift)
+            if self._prog_allow is not None:
+                off |= self._prog_allow["attrs"]
         return {
-            a: c for a, c in rules.items() if DOMAINS[a] == domain and self._prog_supports(a)
+            a: c for a, c in rules.items()
+            if DOMAINS[a] == domain and a not in off and self._prog_supports(a)
         }
 
     def _prog_supports(self, attr: str) -> bool:
@@ -655,6 +811,10 @@ class Program(Feature):
         start = self._prog_start_correction(self._prog_rules())
         if start is not None:
             return start
+        return self._prog_domain_correction()
+
+    def _prog_domain_correction(self) -> dict[str, Any] | None:
+        """The move that brings the current state into the rules, None if it holds."""
         domain = self._prog_domain
         if domain == "light":
             return self._prog_correct_light()
@@ -662,18 +822,29 @@ class Program(Feature):
             return self._prog_correct_climate()
         return self._prog_correct_cover()
 
-    # set rules that start: move to their limit
+    # on_start rules that start: move into them
 
     def _prog_start_correction(self, rules: dict[str, Constraint]) -> dict[str, Any] | None:
-        """The move a started one-sided set rule asks for: once, to its limit."""
+        """The move a started on_start rule asks for, until the device is there."""
         pending: set[str] = set()
         move: dict[str, Any] | None = None
         for attr in sorted(self._prog_pending):
             constraint = rules.get(attr)
-            target = _limit(constraint) if constraint is not None else None
-            if target is None:
-                continue  # the rule ended, or it is a range: nothing to move to
+            if constraint is None or attr in ("on", "hvac_mode"):
+                continue  # the rule ended (or is lifted); exact states are kept anyway
+            if attr == "color":
+                if self.is_on and self._prog_color_matches(constraint.eq):
+                    continue
+                pending.add(attr)
+                if move is None:
+                    move = self._prog_clamp_light(
+                        {"on": True, "rgb_color": tuple(constraint.eq)}, rules
+                    )
+                continue
             current = self._prog_current(attr)
+            target = _start_target(constraint, current)
+            if target is None:
+                continue
             if current is not None and abs(current - target) <= _LIMIT_TOLERANCE[attr]:
                 continue  # already there
             pending.add(attr)
@@ -688,7 +859,11 @@ class Program(Feature):
         if attr == "brightness":
             return self._prog_brightness_pct()
         if attr == "temperature":
-            return self.target_temperature
+            return self.target_temperature if self.hvac_mode == HVACMode.HEAT else None
+        if attr == "color_temp":
+            if self.is_on and self.color_mode == ColorMode.COLOR_TEMP:
+                return self.color_temp_kelvin
+            return None
         return None
 
     def _prog_moving(self) -> bool:
@@ -708,6 +883,8 @@ class Program(Feature):
             if self.hvac_mode != HVACMode.HEAT:
                 data["hvac_mode"] = HVACMode.HEAT
             return self._prog_clamp_climate(data, rules)
+        if attr == "color_temp":
+            return self._prog_clamp_light({"on": True, "color_temp_kelvin": int(target)}, rules)
         return None
 
     def _prog_default_request(self, wanted: dict[str, Any]) -> dict[str, Any] | None:
@@ -890,7 +1067,8 @@ class Program(Feature):
             if isinstance(window, dict) and {"uid", "at", "rules", "target"} <= set(window):
                 try:
                     window["rules"] = {
-                        a: Constraint(**c) for a, c in window["rules"].items() if a in PREHEAT_ATTRS
+                        a: Constraint(**_restored(c)) for a, c in window["rules"].items()
+                        if a in PREHEAT_ATTRS
                     }
                     self._prog_window = window
                 except TypeError:
@@ -923,6 +1101,11 @@ class Program(Feature):
             }
             for p in self._prog_active
         ]
+        if self._prog_allow is not None:
+            attrs["program_allow"] = {
+                "attributes": sorted(NAMES[a] for a in self._prog_allow["attrs"]),
+                "until": self._prog_allow["until"].isoformat(),
+            }
         if self._prog_preheat_conf() is not None:
             attrs["preheat"] = getattr(self, "_prog_plan", None)
             attrs["preheat_last"] = self._prog_preheat_last
