@@ -611,3 +611,150 @@ async def test_old_trash_mode_restores_as_album(setup) -> None:
     assert manager.mode == MODE_ALBUM
     assert manager.config["faceless"]["home"] == "keep"
     assert manager.config["faceless"]["trip"] == "album"
+
+
+# --- faces in videos -----------------------------------------------------------------------------
+
+from custom_components.gungors import immich as immich_module  # noqa: E402
+from custom_components.gungors.video_faces import (  # noqa: E402
+    best_score,
+    frame_times,
+    parse_duration,
+    pick_face,
+)
+
+
+def test_frame_times_and_duration() -> None:
+    assert parse_duration("0:00:25.500000") == 25.5
+    assert parse_duration("1:02:03") == 3723
+    assert parse_duration(None) == 0
+    assert frame_times(0, 3, 10) == [0.0]
+    assert len(frame_times(25.5, 3, 10)) == 9
+    times = frame_times(120, 3, 10)
+    assert len(times) == 10 and times[0] == 6.0 and times[-1] == 114.0
+
+
+def test_best_score_uses_references_close_in_time() -> None:
+    old = (t(1, 1, 2024), [1.0, 0.0])
+    new = (t(1, 7, 2025), [0.0, 1.0])
+    face = [[0.0, 1.0]]
+    assert best_score(face, [old, new], t(10, 7, 2025), 120) == 1.0
+    assert best_score(face, [old, new], t(10, 1, 2024), 120) == 0.0
+    assert best_score(face, [old], t(10, 7, 2025), 120) == 0.0  # none close: all count
+    assert best_score([], [old], None, 120) is None
+
+
+def test_pick_face_by_overlap() -> None:
+    faces = [{"box": (0.0, 0.0, 0.2, 0.2), "embedding": [1.0]},
+             {"box": (0.5, 0.5, 0.9, 0.9), "embedding": [2.0]}]
+    assert pick_face(faces, (0.55, 0.5, 0.9, 0.95)) == [2.0]
+    assert pick_face(faces, (0.3, 0.3, 0.4, 0.4)) is None
+
+
+class FakeMl:
+    """Image bytes -> faces: `thumb-<asset>` and `frame-<asset>` from the test's tables."""
+
+    faces_by_image: dict[bytes, list[dict[str, Any]]] = {}
+    calls = 0
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    async def faces(self, image: bytes):
+        FakeMl.calls += 1
+        return FakeMl.faces_by_image.get(image, [])
+
+
+@pytest.fixture
+async def video_setup(setup, monkeypatch, tmp_path):
+    manager, server = setup
+    manager.config = IMMICH_SCHEMA(
+        {"url": "http://immich", "users": {"sercan": "k1", "melike": "k2"},
+         "owner": "sercan", "people": {"Kaan": "Kaan"}, "trips": {"min_assets": 1},
+         "videos": {"ml_url": "http://ml", "per_run": 2, "maybe": 0.3}}
+    )
+    FakeMl.faces_by_image = {}
+    FakeMl.calls = 0
+    monkeypatch.setattr(immich_module, "MlApi", FakeMl)
+    monkeypatch.setattr(immich_module, "ML_PAUSE", 0)
+    monkeypatch.setattr(immich_module, "ffmpeg_command", lambda: ["ffmpeg"])
+
+    async def extract_frame(command, path, at):
+        with open(path, "rb") as handle:
+            return b"frame-" + handle.read()
+
+    monkeypatch.setattr(immich_module, "extract_frame", extract_frame)
+    box = {"boundingBoxX1": 10, "boundingBoxY1": 10, "boundingBoxX2": 50, "boundingBoxY2": 50,
+           "imageWidth": 100, "imageHeight": 100}
+
+    async def faces(self, asset_id):
+        if asset_id in self.s.assets and "pk" in self.s.assets[asset_id]["_people"]:
+            return [{"person": {"id": "pk", "name": "Kaan"}, **box}]
+        return [{}] * self.s.faces.get(asset_id, 0)
+
+    async def thumbnail(self, asset_id):
+        return b"thumb-" + asset_id.encode()
+
+    async def download(self, asset_id, path, max_bytes, hass):
+        with open(path, "wb") as handle:
+            handle.write(asset_id.encode())
+        return True
+
+    monkeypatch.setattr(FakeApi, "faces", faces, raising=False)
+    monkeypatch.setattr(FakeApi, "thumbnail", thumbnail, raising=False)
+    monkeypatch.setattr(FakeApi, "download", download, raising=False)
+    server.people["sercan"] = [{"id": "pk", "name": "Kaan"}]
+    server.asset("k1", "sercan", t(1, 1), HOME, people={"pk"})
+    FakeMl.faces_by_image[b"thumb-k1"] = [{"box": (0.1, 0.1, 0.5, 0.5), "embedding": [1.0, 0.0]}]
+    return manager, server
+
+
+def kaan_face(x: float) -> list[dict[str, Any]]:
+    import math
+    return [{"box": (0, 0, 1, 1), "embedding": [x, math.sqrt(1 - x * x)]}]
+
+
+async def test_video_faces_dry_run_then_album(video_setup) -> None:
+    manager, server = video_setup
+    server.asset("v1", "sercan", t(2, 1), kind="VIDEO", duration="0:00:09.000")
+    server.asset("v2", "melike", t(3, 1), kind="VIDEO", duration="0:00:09.000")
+    server.asset("v3", "sercan", t(4, 1), kind="VIDEO", duration="0:00:09.000")
+    server.asset("hidden", "sercan", t(5, 1), kind="VIDEO", visibility="hidden")
+    server.asset("known", "sercan", t(6, 1), kind="VIDEO", people={"pk"})
+    FakeMl.faces_by_image[b"frame-v1"] = kaan_face(0.9)
+    FakeMl.faces_by_image[b"frame-v2"] = kaan_face(0.4)
+    FakeMl.faces_by_image[b"frame-v3"] = kaan_face(0.1)
+
+    manager.mode = MODE_DRY
+    await manager.async_run()
+    videos = manager.summary["videos"]
+    assert server.writes == 0
+    assert videos["referans"] == {"Kaan": 1}
+    assert videos["bekleyen"] == 3  # hidden motion part and the known video left out
+    assert videos["taranan"] == 2   # per_run: the two newest (v3, v2)
+    assert manager._state["videos"]["v3"]["Kaan"] == 0.1
+
+    await manager.async_run()
+    videos = manager.summary["videos"]
+    assert videos["taranan"] == 3 and videos["bekleyen"] == 1
+    assert videos["eşleşen"] == {"Kaan": 1}
+    assert videos["aday"] == {"Kaan_aday": 1}
+    assert videos["skorlar"]["Kaan"] == {"0.1": 1, "0.4": 1, "0.9": 1}
+    assert server.writes == 0
+
+    manager.mode = MODE_ALBUM
+    calls = FakeMl.calls
+    await manager.async_run()
+    assert FakeMl.calls == calls  # nothing scanned twice
+    assert album_named(server, "Kaan")["_assets"] == {"k1", "known", "v1"}
+    assert album_named(server, "Kaan_aday")["_assets"] == {"v2"}
+
+
+async def test_video_faces_wait_for_references(video_setup, monkeypatch) -> None:
+    manager, server = video_setup
+    monkeypatch.setattr(immich_module, "REFS_PER_RUN", 0)
+    server.asset("v1", "sercan", t(2, 1), kind="VIDEO")
+    manager.mode = MODE_DRY
+    await manager.async_run()
+    assert manager.summary["videos"]["durum"] == "referans yüzler hazırlanıyor"
+    assert manager.summary["videos"]["taranan"] == 0
