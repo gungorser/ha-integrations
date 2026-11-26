@@ -314,6 +314,31 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                 ),
                 {"collapsed": True},
             ),
+            vol.Required("videos"): section(
+                vol.Schema(
+                    {
+                        vol.Optional("ml_url"): selector.TextSelector(
+                            selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
+                        ),
+                        vol.Optional("per_run", default=3): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=1, max=50, step=1, mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
+                        vol.Optional("match", default=0.5): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=0, max=1, step=0.01, mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
+                        vol.Optional("maybe", default=0): selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=0, max=1, step=0.01, mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
+                    }
+                ),
+                {"collapsed": True},
+            ),
             vol.Required("partou"): section(
                 vol.Schema(
                     {
@@ -359,6 +384,10 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
                 if "wait_hours" in (conf.get("faceless") or {})
                 else {}
             ),
+        },
+        "videos": {
+            k: v for k, v in (conf.get("videos") or {}).items()
+            if k in ("ml_url", "per_run", "match", "maybe")
         },
         "partou": {
             **{k: partou[k] for k in ("username", "after") if k in partou},
@@ -408,6 +437,17 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
         "trip": faceless.get("trip") or "album",
         "wait_hours": _seconds(faceless.get("wait"), 24 * 3600) / 3600,
     }
+    videos_in = user_input.get("videos") or {}
+    ml_url = (videos_in.get("ml_url") or "").strip()
+    if ml_url:
+        conf["videos"] = {
+            # keys without a form field (frames, every, ref_per_month, ...) are kept
+            **(old.get("videos") or {}),
+            "ml_url": ml_url,
+            "per_run": int(videos_in.get("per_run", 3)),
+            "match": float(videos_in.get("match", 0.5)),
+            "maybe": float(videos_in.get("maybe", 0)),
+        }
     partou_in = user_input.get("partou") or {}
     username = (partou_in.get("username") or "").strip()
     if username:

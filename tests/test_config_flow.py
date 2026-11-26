@@ -204,6 +204,7 @@ def _immich_input(**changes) -> dict:
         "people": {"people": {"Kaan": "Kaan"}},
         "trips": {"distance_km": 60, "advanced": {"min_days": {"netherlands": 2}}},
         "faceless": {"home": "trash", "trip": "album", "wait": {"hours": 24, "minutes": 0, "seconds": 0}},
+        "videos": {"per_run": 3, "match": 0.5, "maybe": 0},
         "partou": {"username": "a@b.c", "password": "********", "after": "18:00:00"},
     }
     for key, value in changes.items():
@@ -298,3 +299,21 @@ async def test_sync_now_checkbox_saves_and_starts_the_run(hass: HomeAssistant, m
     async_fire_time_changed(hass, dt_util.utcnow() + datetime.timedelta(seconds=5))
     await hass.async_block_till_done()
     assert calls == [True]
+
+
+async def test_immich_form_video_scan(hass: HomeAssistant) -> None:
+    entry = await _entry(hass, {"presets": {}, "immich": {**IMMICH, "videos": {"ml_url": "http://ml", "frames": 6}}})
+    result = await _open(hass, entry, "services", "immich")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        _immich_input(videos={"ml_url": "http://ml2", "per_run": 5, "match": 0.55, "maybe": 0.4}),
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["immich"]["videos"] == {
+        "ml_url": "http://ml2", "frames": 6, "per_run": 5, "match": 0.55, "maybe": 0.4
+    }
+    result = await _open(hass, entry, "services", "immich")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], _immich_input(videos={"ml_url": ""})
+    )
+    assert "videos" not in entry.options["immich"]

@@ -324,6 +324,22 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   faceless check (a face found, or skipped). Configure > Immich has a dropdown for each. Videos
   are never touched. Before 1.25.0 faceless photos went to a `check_before_delete` album (and
   `home: album` reads as `keep` now); that album is left as it is.
+- Faces in videos (`videos:` with `ml_url`, Configure > Immich > Videolarda yüz; `video_faces.py`):
+  Immich looks for faces on one preview frame of a video, so a video without the person in that
+  frame never reaches the person album. gungors takes up to `frames` (10) frames per video, one
+  every `every` (3) seconds or spread evenly (ffmpeg in HA, `nice -n 19`, one thread), sends them
+  to Immich's machine-learning server (`/predict`, the same `buffalo_l` face model; ha-configs
+  `immich-ml` host, LAN only) and compares every face with reference faces of each person: up to
+  `ref_per_month` (3) per month from the person's photos (the face Immich assigned, matched by
+  box), `REFS_PER_RUN` (12) made per run, videos wait until all are made. A video's score is the
+  best cosine similarity against the references within `ref_days` (120) of its date (all of them
+  when none is that close). Score >= `match` (0.5) -> the person album; >= `maybe` (0 = off) ->
+  `<album>_aday` for review. Up to `per_run` (3) videos per run, newest first, a pause between
+  model calls; each video is scanned once (score in `.storage`), videos Immich already found for
+  every person, hidden motion-photo parts, Partou uploads and files over `max_mb` (500) are left
+  out, a video failing `VIDEO_TRIES` (3) times too. `Deneme` scans and reports but writes no
+  album. `sensor.immich` `videos`: `referans`, `bekleyen`, `taranan`, `yüzsüz`, `eşleşen`, `aday`,
+  `skorlar` (videos per 0.1 score bucket and person), `hata`.
 - `select.immich` is the mode (restored): `Kapalı`, `Deneme` (plans only; nothing written),
   `Albüm` (writes; the old `Albüm + çöp` restores as `Albüm`). `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
   per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.

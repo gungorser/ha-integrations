@@ -150,6 +150,22 @@
               "wait": "Yüklendikten sonra bu kadar beklenir ki Immich yüz tanımayı bitirsin."
             }
           },
+          "videos": {
+            "name": "Videolarda yüz",
+            "description": "Immich videoda yüzü tek bir karede arar; o karede kişi yoksa video kişi albümüne girmez. Bu tarama her videodan birkaç kare alıp Immich'in kendi yüz modeline sorar (dışarıya bir şey gitmez). Her turda birkaç video, sırayla ve düşük öncelikle.",
+            "data": {
+              "ml_url": "Immich makine öğrenmesi adresi",
+              "per_run": "Her turda en fazla kaç video",
+              "match": "Kişi sayılması için benzerlik",
+              "maybe": "Aday albümü için benzerlik"
+            },
+            "data_description": {
+              "ml_url": "Ör. https://immich-ml.gungors.duckdns.org. Boş bırakırsan video taraması kapalı.",
+              "per_run": "Az olursa iş zamana yayılır, makine yorulmaz.",
+              "match": "0 ile 1 arası. Bunun üstündeki videolar kişinin albümüne girer.",
+              "maybe": "Bunun üstünde ama eşiğin altında kalan videolar <albüm>_aday albümüne girer, sen bakarsın. 0: aday albümü yok."
+            }
+          },
           "partou": {
             "name": "Partou",
             "data": {

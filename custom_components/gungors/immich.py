@@ -18,6 +18,11 @@ gungors:
       wait_hours: 24
       home: keep                # keep | trash | delete (outside trips)
       trip: album               # album | keep | trash | delete (trip photos)
+    videos:                     # faces on several video frames (video_faces.py)
+      ml_url: http://immich-machine-learning:3003
+      per_run: 3                # videos per run
+      match: 0.5                # similarity -> person album
+      maybe: 0                  # similarity -> <album>_aday (0: off)
     partou:                     # daycare photos -> Immich (partou.py)
       username: !secret partou_email
       password: !secret partou_password
@@ -65,6 +70,9 @@ or `gungors.immich_run`:
 - `share_albums: true`: every album a user owns (also ones made by hand or by the
   phone app) is shared with the other users as editors; the old faceless albums stay
   private.
+- Videos (`videos: ml_url:`): faces on several frames of each video, scored against reference
+  faces of each person through Immich's machine-learning server (`video_faces.py`); a few
+  videos per run.
 - An asset is added to an album once: one removed by hand is not added again.
 """
 from __future__ import annotations
@@ -74,8 +82,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 import datetime
 import logging
+import asyncio
 import math
+import os
 import re
+import shutil
+import tempfile
 import unicodedata
 from typing import Any
 
@@ -92,6 +104,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .partou import DEFAULT_URL as PARTOU_URL, PartouApi, PartouError, exif_time, file_name, item_day
+from .video_faces import MlApi, MlError, best_score, extract_frame, face_box, ffmpeg_command, frame_times, parse_duration, pick_face
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +136,10 @@ MONTHS = ["ocak", "subat", "mart", "nisan", "mayis", "haziran", "temmuz", "agust
           "ekim", "kasim", "aralik"]
 
 PAGE_SIZE = 1000
+VIDEO_MATCH = 0.5        # cosine similarity a video face needs to count as the person
+REFS_PER_RUN = 12        # reference faces made per run (one model call each)
+VIDEO_TRIES = 3          # a video that fails this often is left out
+ML_PAUSE = 1.0           # seconds between model calls: the ML server shares one CPU
 ADD_CHUNK = 500
 FULL_SCAN_EVERY = datetime.timedelta(hours=24)
 INCREMENTAL_MARGIN = datetime.timedelta(hours=1)
@@ -209,6 +226,25 @@ IMMICH_SCHEMA = vol.Schema(
                 vol.Required("password"): cv.string,
                 vol.Optional("albums", default={}): {cv.string: cv.string},
                 vol.Optional("after", default="18:00"): cv.time,
+            }
+        ),
+        vol.Optional("videos", default={}): vol.Schema(
+            {
+                vol.Optional("ml_url"): cv.url,  # empty: no video face scan
+                vol.Optional("per_run", default=3): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Optional("frames", default=10): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Optional("every", default=3.0): vol.All(vol.Coerce(float), vol.Range(min=0.5)),
+                vol.Optional("match", default=VIDEO_MATCH): vol.All(
+                    vol.Coerce(float), vol.Range(min=0, max=1)
+                ),
+                vol.Optional("maybe", default=0.0): vol.All(
+                    vol.Coerce(float), vol.Range(min=0, max=1)
+                ),
+                vol.Optional("ref_per_month", default=3): vol.All(
+                    vol.Coerce(int), vol.Range(min=1)
+                ),
+                vol.Optional("ref_days", default=120): vol.Coerce(float),
+                vol.Optional("max_mb", default=500): vol.Coerce(float),
             }
         ),
         vol.Optional("faceless", default={}): vol.Schema(
@@ -581,6 +617,47 @@ class ImmichApi:
     async def faces(self, asset_id: str) -> list[dict[str, Any]]:
         return await self.request("GET", "/faces", params={"id": asset_id})
 
+    async def thumbnail(self, asset_id: str) -> bytes:
+        """The preview image (JPEG) of an asset."""
+        try:
+            async with self._session.get(
+                f"{self._base}/assets/{asset_id}/thumbnail",
+                params={"size": "preview"},
+                headers=self._headers,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status >= 400:
+                    raise ImmichError(f"thumbnail {asset_id}: {resp.status}")
+                return await resp.read()
+        except aiohttp.ClientError as err:
+            raise ImmichError(f"thumbnail {asset_id}: {err}") from err
+
+    async def download(self, asset_id: str, path: str, max_bytes: int, hass: HomeAssistant) -> bool:
+        """The original file to `path`; False when it is larger than `max_bytes`."""
+        try:
+            async with self._session.get(
+                f"{self._base}/assets/{asset_id}/original",
+                headers=self._headers,
+                timeout=aiohttp.ClientTimeout(total=900),
+            ) as resp:
+                if resp.status >= 400:
+                    raise ImmichError(f"original {asset_id}: {resp.status}")
+                if (resp.content_length or 0) > max_bytes:
+                    return False
+                handle = await hass.async_add_executor_job(open, path, "wb")
+                size = 0
+                try:
+                    async for chunk in resp.content.iter_chunked(1 << 20):
+                        size += len(chunk)
+                        if size > max_bytes:
+                            return False
+                        await hass.async_add_executor_job(handle.write, chunk)
+                finally:
+                    await hass.async_add_executor_job(handle.close)
+                return True
+        except aiohttp.ClientError as err:
+            raise ImmichError(f"original {asset_id}: {err}") from err
+
     async def trash(self, ids: list[str], force: bool = False) -> None:
         """To the trash; `force` deletes for good."""
         await self.request("DELETE", "/assets", json={"ids": ids, "force": force})
@@ -626,12 +703,14 @@ class ImmichManager:
         self._unsub = None
         self._running = False
         self._partou_writing = False  # Partou writes in every mode but `Kapalı`
+        # person -> user -> (Immich person ids, assets with that person); from the people run
+        self._people_found: dict[str, dict[str, tuple[list[str], list[dict[str, Any]]]]] = {}
 
     # lifecycle
 
     async def async_start(self) -> None:
         self._state = await self._store.async_load() or {}
-        for key in ("albums", "added", "faceless", "partou"):
+        for key in ("albums", "added", "faceless", "partou", "video_refs", "videos"):
             self._state.setdefault(key, {})
         self._state.setdefault("trips", [])
         self._apply_config()
@@ -714,6 +793,8 @@ class ImmichManager:
             summary["people"], summary["people_users"] = await self._run_people()
             trips, summary["trips"] = await self._run_trips()
             summary["faceless"] = await self._run_faceless(now, trips)
+            if self.config["videos"].get("ml_url"):
+                summary["videos"] = await self._run_videos()
             if self.config["share_albums"]:
                 summary["shared"] = await self._run_share()
             if self.writing:
@@ -808,6 +889,7 @@ class ImmichManager:
             album_id = await self._album(f"person:{person}", album_name, self.owner, True)
             new = 0
             found_by[album_name] = {}
+            self._people_found[person] = {}
             for user, api in self._apis.items():
                 # People are per Immich account; names match without case or outer spaces.
                 ids = [
@@ -816,9 +898,12 @@ class ImmichManager:
                     if (p.get("name") or "").strip().casefold() == person.strip().casefold()
                 ]
                 assets: set[str] = set()
+                found_assets: list[dict[str, Any]] = []
                 for person_id in ids:
-                    found = await api.search({"personIds": [person_id]})
-                    assets |= {a["id"] for a in self._own(user, found)}
+                    found = self._own(user, await api.search({"personIds": [person_id]}))
+                    found_assets.extend(a for a in found if a["id"] not in assets)
+                    assets |= {a["id"] for a in found}
+                self._people_found[person][user] = (ids, found_assets)
                 assets -= self._partou_ids()
                 new += await self._add(album_id, user, assets)
                 found_by[album_name][user] = (
@@ -1070,3 +1155,197 @@ class ImmichManager:
     def _decide(self, asset_id: str, decision: str) -> None:
         if self.writing:
             self._state["faceless"][asset_id] = decision
+
+    # videos (faces on more than Immich's one preview frame; video_faces.py)
+
+    async def _run_videos(self) -> dict[str, Any]:
+        """Reference faces first, then up to `per_run` new videos; matches into person albums."""
+        conf = self.config["videos"]
+        ml = MlApi(async_get_clientsession(self.hass), conf["ml_url"])
+        result: dict[str, Any] = {}
+        try:
+            refs_done = await self._video_refs(ml)
+            result["referans"] = {
+                p: len(self._state["video_refs"].get(p, {}).get("refs", []))
+                for p in self.config["people"]
+            }
+            pending = await self._pending_videos()
+            result["bekleyen"] = len(pending)
+            if refs_done and pending:
+                command = ffmpeg_command()
+                for user, asset in pending[: conf["per_run"]]:
+                    await self._scan_video(ml, command, user, asset)
+                    await self._store.async_save(self._state)
+            elif not refs_done:
+                result["durum"] = "referans yüzler hazırlanıyor"
+        except MlError as err:
+            _LOGGER.warning("Video face scan failed: %s", err)
+            result["hata"] = str(err)
+        await self._store.async_save(self._state)
+        scanned = {k: v for k, v in self._state["videos"].items() if "faces" in v}
+        result["taranan"] = len(scanned)
+        result["yüzsüz"] = sum(1 for v in scanned.values() if not v["faces"])
+        result["eşleşen"], result["aday"], result["skorlar"] = await self._video_albums(scanned)
+        return result
+
+    async def _video_refs(self, ml: MlApi) -> bool:
+        """Up to `ref_per_month` reference faces per person and month; True when complete."""
+        conf = self.config["videos"]
+        budget = REFS_PER_RUN
+        for person in self.config["people"]:
+            record = self._state["video_refs"].setdefault(person, {"refs": [], "tried": []})
+            tried = set(record["tried"])
+            have = Counter(r["t"][:7] for r in record["refs"])
+            for user, (ids, assets) in self._people_found.get(person, {}).items():
+                months: dict[str, list[dict[str, Any]]] = {}
+                for asset in sorted(assets, key=lambda a: a.get("fileCreatedAt") or ""):
+                    if asset.get("type") == "IMAGE" and asset.get("fileCreatedAt"):
+                        months.setdefault(asset["fileCreatedAt"][:7], []).append(asset)
+                for month, items in months.items():
+                    # spread over the month: every n-th photo first
+                    step = max(1, len(items) // conf["ref_per_month"])
+                    order = items[::step] + [a for i, a in enumerate(items) if i % step]
+                    for asset in order:
+                        if have[month] >= conf["ref_per_month"]:
+                            break
+                        if asset["id"] in tried:
+                            continue
+                        if budget <= 0:
+                            return False
+                        budget -= 1
+                        tried.add(asset["id"])
+                        record["tried"].append(asset["id"])
+                        embedding = await self._ref_face(user, asset["id"], set(ids), ml)
+                        if embedding is not None:
+                            record["refs"].append({
+                                "a": asset["id"], "t": asset["fileCreatedAt"],
+                                "e": [round(v, 5) for v in embedding],
+                            })
+                            have[month] += 1
+        return True
+
+    async def _ref_face(
+        self, user: str, asset_id: str, person_ids: set[str], ml: MlApi
+    ) -> list[float] | None:
+        api = self._apis[user]
+        target = None
+        for face in await api.faces(asset_id):
+            if (face.get("person") or {}).get("id") in person_ids:
+                target = face_box(face, face.get("imageWidth"), face.get("imageHeight"))
+                break
+        if target is None:
+            return None
+        faces = await ml.faces(await api.thumbnail(asset_id))
+        await asyncio.sleep(ML_PAUSE)
+        return pick_face(faces, target)
+
+    async def _pending_videos(self) -> list[tuple[str, dict[str, Any]]]:
+        """Videos not scanned yet and not already found by Immich for every person, newest first."""
+        partou = self._partou_ids()
+        assigned = [
+            {a["id"] for _ids, assets in by_user.values() for a in assets}
+            for by_user in self._people_found.values()
+        ]
+        pending: list[tuple[str, dict[str, Any]]] = []
+        for user, api in self._apis.items():
+            for asset in self._own(user, await api.search({"type": "VIDEO"})):
+                aid = asset["id"]
+                record = self._state["videos"].get(aid) or {}
+                if (
+                    asset.get("isTrashed")
+                    or asset.get("visibility", "timeline") in ("hidden", "locked")
+                    or aid in partou
+                    or "faces" in record
+                    or "skip" in record
+                    or record.get("tries", 0) >= VIDEO_TRIES
+                    or (assigned and all(aid in found for found in assigned))
+                ):
+                    continue
+                pending.append((user, asset))
+        pending.sort(key=lambda ua: ua[1].get("fileCreatedAt") or "", reverse=True)
+        return pending
+
+    async def _scan_video(
+        self, ml: MlApi, command: list[str], user: str, asset: dict[str, Any]
+    ) -> None:
+        conf = self.config["videos"]
+        aid = asset["id"]
+        record: dict[str, Any] = {"u": user, "t": asset.get("fileCreatedAt")}
+        folder = await self.hass.async_add_executor_job(tempfile.mkdtemp, None, "gungors-video-")
+        try:
+            path = os.path.join(folder, "video")
+            if not await self._apis[user].download(
+                aid, path, int(conf["max_mb"] * 1024 * 1024), self.hass
+            ):
+                record["skip"] = "büyük"
+                self._state["videos"][aid] = record
+                return
+            faces: list[list[float]] = []
+            duration = parse_duration(asset.get("duration"))
+            for at in frame_times(duration, conf["every"], conf["frames"]):
+                frame = await extract_frame(command, path, at)
+                if frame:
+                    faces.extend(f["embedding"] for f in await ml.faces(frame))
+                    await asyncio.sleep(ML_PAUSE)
+        except (ImmichError, MlError) as err:
+            old = self._state["videos"].get(aid) or {}
+            self._state["videos"][aid] = {**record, "tries": old.get("tries", 0) + 1,
+                                          "hata": str(err)[:200]}
+            if isinstance(err, MlError):
+                raise
+            _LOGGER.warning("Video %s: %s", aid, err)
+            return
+        finally:
+            await self.hass.async_add_executor_job(shutil.rmtree, folder, True)
+        when = _parse_time(asset.get("fileCreatedAt"))
+        record["faces"] = len(faces)
+        for person in self.config["people"]:
+            refs = [
+                (t, r["e"])
+                for r in self._state["video_refs"].get(person, {}).get("refs", [])
+                if (t := _parse_time(r["t"])) is not None
+            ]
+            score = best_score(faces, refs, when, conf["ref_days"])
+            record[person] = None if score is None else round(score, 3)
+        self._state["videos"][aid] = record
+
+    async def _video_albums(
+        self, scanned: dict[str, dict[str, Any]]
+    ) -> tuple[dict[str, int], dict[str, int], dict[str, dict[str, int]]]:
+        """Scanned videos at or over `match` into the person album, `maybe` into `<album>_aday`."""
+        conf = self.config["videos"]
+        matched: dict[str, int] = {}
+        maybe: dict[str, int] = {}
+        buckets: dict[str, dict[str, int]] = {}
+        for person, album_name in self.config["people"].items():
+            assigned = {
+                a["id"]
+                for _ids, assets in self._people_found.get(person, {}).values()
+                for a in assets
+            }
+            sure: dict[str, set[str]] = {}
+            unsure: dict[str, set[str]] = {}
+            hist: Counter = Counter()
+            for aid, record in scanned.items():
+                score = record.get(person)
+                if score is None or aid in assigned or record.get("u") not in self._apis:
+                    continue
+                hist[f"{math.floor(score * 10) / 10:.1f}"] += 1
+                if score >= conf["match"]:
+                    sure.setdefault(record["u"], set()).add(aid)
+                elif conf["maybe"] and score >= conf["maybe"]:
+                    unsure.setdefault(record["u"], set()).add(aid)
+            buckets[person] = dict(sorted(hist.items()))
+            # totals (the album gets each video once; one removed by hand stays out)
+            matched[album_name] = sum(len(ids) for ids in sure.values())
+            if sure:
+                album_id = await self._album(f"person:{person}", album_name, self.owner, True)
+                for user, ids in sure.items():
+                    await self._add(album_id, user, ids)
+            if unsure:
+                name = f"{album_name}_aday"
+                album_id = await self._album(f"video_maybe:{person}", name, self.owner, True)
+                maybe[name] = sum(len(ids) for ids in unsure.values())
+                for user, ids in unsure.items():
+                    await self._add(album_id, user, ids)
+        return matched, maybe, buckets

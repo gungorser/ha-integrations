@@ -150,6 +150,22 @@
               "wait": "Waits this long after the upload so Immich can finish face detection."
             }
           },
+          "videos": {
+            "name": "Faces in videos",
+            "description": "Immich looks for faces on one frame of a video; when the person is not in that frame the video misses the person album. This scan sends a few frames of each video to Immich's own face model (nothing leaves the house), a few videos per run, one at a time, at low priority.",
+            "data": {
+              "ml_url": "Immich machine-learning address",
+              "per_run": "Videos per run at most",
+              "match": "Similarity to count as the person",
+              "maybe": "Similarity for the candidate album"
+            },
+            "data_description": {
+              "ml_url": "E.g. https://immich-ml.example.org. Empty: no video scan.",
+              "per_run": "Fewer spreads the work over time.",
+              "match": "0 to 1. Videos at or above go into the person's album.",
+              "maybe": "Videos at or above this but below the match go into <album>_aday for review. 0: no candidate album."
+            }
+          },
           "partou": {
             "name": "Partou",
             "data": {
