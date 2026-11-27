@@ -340,11 +340,14 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   model calls; each video is scanned once (score in `.storage`), videos Immich already found for
   every person, hidden motion-photo parts, Partou uploads and files over `max_mb` (500) are left
   out, a video failing `VIDEO_TRIES` (3) times too. `Deneme` scans and reports but writes no
-  album. `sensor.immich` `videos`: `referans`, `bekleyen`, `taranan`, `yüzsüz`, `eşleşen`, `aday`,
-  `skorlar` (videos per 0.1 score bucket and person), `hata`. `sensor.immich_video_kuyrugu`: videos waiting (live, after each
-  video), attributes `taranan`, `taranıyor`, `eşleşen`, `aday`. `sensor.immich` is `çalışıyor` during a run.
+  album. `sensor.immich_processing` `videos`: `referans`, `bekleyen`, `taranan`, `yüzsüz`, `eşleşen`, `aday`,
+  `skorlar` (videos per 0.1 score bucket and person), `hata`. `sensor.immich_video_queue` ("Immich video kuyruğu"): videos waiting (live, after each
+  video), attributes `taranan`, `taranıyor`, `eşleşen`, `aday`. `sensor.immich_photo_queue` ("Immich fotoğraf
+  kuyruğu"): jobs in Immich's own photo pipeline (metadata, thumbnails, face detection and
+  recognition; per queue in the attributes), polled every minute: a new photo reaches the person
+  albums after these. `sensor.immich_processing` is `çalışıyor` during a run.
 - `select.immich` is the mode (restored): `Kapalı`, `Deneme` (plans only; nothing written),
-  `Albüm` (writes; the old `Albüm + çöp` restores as `Albüm`). `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
+  `Albüm` (writes; the old `Albüm + çöp` restores as `Albüm`). `sensor.immich_processing` ("Immich işleme"; `sensor.immich` before 1.34.0, renamed in place) (`çalışıyor` / `tamam` / `hata`) carries the last run: new assets
   per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.
   A run every `scan_interval` (600 s; `0`: no timer), on a mode change, on
   `button.immich_sync`, on `gungors.immich_run` and, with `on_upload`, after uploads.
@@ -362,7 +365,7 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   all assets of the person every run. The timer keeps running (faceless `wait_hours`, missed
   calls); with `on_upload` an hour is enough. Turning it off disables the workflows. The API
   keys need `workflow.read`, `workflow.create` and `workflow.update`; a refusal shows per user
-  on `sensor.immich` `upload` (`durum`, `workflow`, `adres`, `son_yükleme`, `yeni`: calls
+  on `sensor.immich_processing` `upload` (`durum`, `workflow`, `adres`, `son_yükleme`, `yeni`: calls
   before the last run). Partou stays on its daily time.
 - `share_albums: true`: every album a user owns (also ones made by hand or by the phone app) is
   shared with the other users as editors; the old faceless albums stay private.
@@ -374,7 +377,7 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   (full size, 2400 px) are uploaded to the `owner`'s library, each Partou item once
   (`.storage`), with the EXIF capture time (videos: the portal's day at noon) and into monthly
   albums `kaan_partou_mart_2026`. This writes in every mode but `Kapalı`, also in `Deneme`.
-  The uploads stay out of the person, trip and faceless rules. `sensor.immich` `partou`: per
+  The uploads stay out of the person, trip and faceless rules. `sensor.immich_processing` `partou`: per
   child `toplam`, `yeni`, `albümler`, or `hata`.
 
 ## Budget Thuis

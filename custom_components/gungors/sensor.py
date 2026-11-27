@@ -1,4 +1,5 @@
-"""Sensor platform for the gungors integration: `sensor.immich`, the last Immich run, and the
+"""Sensor platform for the gungors integration: `sensor.immich_processing` (the last Immich run),
+the video and photo queues, and the
 Budget Thuis usage sensors (budget_thuis.py, from the config entry).
 
 State `tamam` / `hata` / `başlamadı`; attributes: the mode, the last run, new
@@ -7,6 +8,8 @@ faceless counts. In `Deneme` mode these are the plan; nothing was written.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+import logging
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -17,10 +20,12 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import budget_thuis
+from .const import DOMAIN
 from .immich import SIGNAL_UPDATE, async_get_manager
 
 
@@ -32,14 +37,32 @@ async def async_setup_platform(
 ) -> None:
     if discovery_info is None or async_get_manager(hass) is None:
         return
-    async_add_entities([ImmichSensor(), ImmichVideoQueueSensor()])
+    # English entity ids since 1.34.0 (labels stay Turkish): rename the old ones in place
+    registry = er.async_get(hass)
+    for unique_id, entity_id in RENAMED.items():
+        old = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+        if old and old != entity_id and registry.async_get(entity_id) is None:
+            registry.async_update_entity(old, new_entity_id=entity_id)
+    async_add_entities([ImmichSensor(), ImmichVideoQueueSensor(), ImmichPhotoQueueSensor()], True)
+
+
+# unique_id -> entity_id
+RENAMED = {
+    "immich_status": "sensor.immich_processing",
+    "immich_video_queue": "sensor.immich_video_queue",
+}
+# Immich queues that hold a new photo before it reaches the person albums
+PHOTO_QUEUES = ("metadataExtraction", "thumbnailGeneration", "faceDetection", "facialRecognition")
+_LOGGER = logging.getLogger(__name__)
+SCAN_INTERVAL = timedelta(minutes=1)  # the photo queue sensor
 
 
 class ImmichSensor(SensorEntity):
-    """Result (or plan) of the last Immich album run."""
+    """Result (or plan) of the last Immich album run: çalışıyor / tamam / hata."""
 
-    _attr_name = "immich"
+    _attr_name = "Immich işleme"
     _attr_unique_id = "immich_status"
+    entity_id = "sensor.immich_processing"
     _attr_icon = "mdi:image-album"
     _attr_should_poll = False
     _unrecorded_attributes = frozenset({"people", "people_users", "trips", "faceless", "error", "users"})
@@ -63,8 +86,9 @@ class ImmichSensor(SensorEntity):
 class ImmichVideoQueueSensor(SensorEntity):
     """Videos waiting for the face scan; updated after each scanned video."""
 
-    _attr_name = "immich video kuyruğu"
+    _attr_name = "Immich video kuyruğu"
     _attr_unique_id = "immich_video_queue"
+    entity_id = "sensor.immich_video_queue"
     _attr_icon = "mdi:video-account"
     _attr_native_unit_of_measurement = "video"
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -91,6 +115,41 @@ class ImmichVideoQueueSensor(SensorEntity):
         if manager is None:
             return {}
         return {k: v for k, v in manager.video_queue.items() if k != "bekleyen"}
+
+
+class ImmichPhotoQueueSensor(SensorEntity):
+    """Jobs in Immich's own photo pipeline (metadata, thumbnails, faces) not done yet.
+
+    A new photo reaches the person albums only after these; polled every minute.
+    """
+
+    _attr_name = "Immich fotoğraf kuyruğu"
+    _attr_unique_id = "immich_photo_queue"
+    entity_id = "sensor.immich_photo_queue"
+    _attr_icon = "mdi:image-multiple"
+    _attr_native_unit_of_measurement = "iş"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_should_poll = True
+    _counts: dict[str, int] | None = None
+
+    async def async_update(self) -> None:
+        manager = async_get_manager(self.hass)
+        api = manager._apis.get(manager.owner) if manager else None
+        self._counts = await api.queue_counts() if api else None
+
+    @property
+    def available(self) -> bool:
+        return self._counts is not None
+
+    @property
+    def native_value(self) -> int | None:
+        if self._counts is None:
+            return None
+        return sum(self._counts.get(q, 0) for q in PHOTO_QUEUES)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {q: (self._counts or {}).get(q, 0) for q in PHOTO_QUEUES}
 
 
 async def async_setup_entry(
