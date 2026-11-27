@@ -51,7 +51,14 @@ def iou(a: tuple[float, float, float, float], b: tuple[float, float, float, floa
 
 
 def parse_duration(value: Any) -> float:
-    """Immich `duration` ("0:01:02.345000") -> seconds; 0 when unknown."""
+    """Immich `duration` -> seconds; 0 when unknown.
+
+    Immich 3 gives milliseconds (41299), older versions "0:01:02.345000".
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return max(0.0, value / 1000)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip()) / 1000
     try:
         parts = [float(p) for p in str(value).split(":")]
     except ValueError:
