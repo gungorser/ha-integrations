@@ -34,7 +34,7 @@ into monthly albums `kaan_partou_mart_2026` (capture month). This writes in ever
 `Kapalı` (also in `Deneme`); the uploads stay out of the person, trip and faceless rules.
 
 The mode is `select.immich` (restored): `Kapalı` does nothing, `Deneme` plans
-without writing (the plan is on `sensor.immich`), `Albüm` writes (a restored
+without writing (the plan is on `sensor.immich_processing`), `Albüm` writes (a restored
 `Albüm + çöp` from before 1.21.0 reads as `Albüm`). What happens to faceless photos
 is `faceless: home:` (keep, the default; trash; delete) and `faceless: trip:` (album, the
 default: into the trip album like any trip photo; keep; trash; delete) in Configure > Immich.
@@ -704,6 +704,20 @@ class ImmichApi:
                     return True
         return False if found else None
 
+    async def queue_counts(self) -> dict[str, int] | None:
+        """Jobs per Immich queue (active + waiting + delayed); None when not readable."""
+        try:
+            queues = await self.request("GET", "/queues")
+        except ImmichError:
+            return None
+        counts: dict[str, int] = {}
+        for queue in queues or []:
+            stats = queue.get("statistics") or {}
+            counts[queue.get("name", "?")] = sum(
+                int(stats.get(k) or 0) for k in ("active", "waiting", "delayed")
+            )
+        return counts
+
     async def workflows(self) -> list[dict[str, Any]]:
         return await self.request("GET", "/workflows") or []
 
@@ -743,7 +757,7 @@ class ImmichManager:
         self._running = False
         self._partou_writing = False  # Partou writes in every mode but `Kapalı`
         self._shared_checked: set[str] = set()  # shared albums whose users were checked
-        # live video scan queue (sensor.immich_video_kuyrugu), updated after each video
+        # live video scan queue (sensor.immich_video_queue), updated after each video
         self.video_queue: dict[str, Any] = {}
         self._video_summary: dict[str, Any] = {}
         self._video_task: asyncio.Task | None = None
@@ -753,7 +767,7 @@ class ImmichManager:
         self._debounce = None
         self._waiter: asyncio.Task | None = None
         self._uploads = 0  # webhook calls since the last run
-        self._upload: dict[str, Any] = {}  # on `sensor.immich` as `upload`
+        self._upload: dict[str, Any] = {}  # on `sensor.immich_processing` as `upload`
         # person -> user -> (Immich person ids, assets with that person); from the people run
         self._people_found: dict[str, dict[str, tuple[list[str], list[dict[str, Any]]]]] = {}
 
@@ -1448,7 +1462,7 @@ class ImmichManager:
         return result
 
     def _set_queue(self, pending: int, scanning: bool, **extra: Any) -> None:
-        """Live queue for sensor.immich_video_kuyrugu (written after each video)."""
+        """Live queue for sensor.immich_video_queue (written after each video)."""
         scanned = sum(
             1 for v in self._state["videos"].values()
             if "faces" in v and (v["faces"] or v.get("v") == VIDEO_SCAN_VERSION)

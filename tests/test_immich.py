@@ -226,6 +226,9 @@ class FakeApi:
     async def face_queue_busy(self):
         return self.s.busy
 
+    async def queue_counts(self):
+        return {"faceDetection": 4, "thumbnailGeneration": 1, "smartSearch": 9}
+
     async def queues_busy(self, names):
         return self.s.queue_states.pop(0) if self.s.queue_states else self.s.busy
 
@@ -406,7 +409,10 @@ async def test_setup_from_yaml(hass: HomeAssistant, monkeypatch) -> None:
     assert await async_setup_component(hass, "gungors", config)
     await hass.async_block_till_done()
     assert hass.states.get("select.immich").state == MODE_DRY
-    assert hass.states.get("sensor.immich").state == "tamam"
+    assert hass.states.get("sensor.immich_processing").state == "tamam"
+    assert hass.states.get("sensor.immich_processing").name == "Immich işleme"
+    photos = hass.states.get("sensor.immich_photo_queue")
+    assert photos.state == "5" and photos.attributes["faceDetection"] == 4
     assert hass.services.has_service("gungors", "immich_run")
 
     await hass.services.async_call(
@@ -414,14 +420,14 @@ async def test_setup_from_yaml(hass: HomeAssistant, monkeypatch) -> None:
         blocking=True,
     )
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.immich").attributes["mode"] == MODE_ALBUM
+    assert hass.states.get("sensor.immich_processing").attributes["mode"] == MODE_ALBUM
 
-    before = hass.states.get("sensor.immich").attributes["last_run"]
+    before = hass.states.get("sensor.immich_processing").attributes["last_run"]
     await hass.services.async_call(
         "button", "press", {"entity_id": "button.immich_sync"}, blocking=True
     )
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.immich").attributes["last_run"] != before
+    assert hass.states.get("sensor.immich_processing").attributes["last_run"] != before
 
 
 async def test_scan_interval_zero_means_no_timer(hass: HomeAssistant) -> None:
@@ -957,3 +963,25 @@ async def test_start_drains_the_queue(video_setup, hass) -> None:
         await manager._video_task
     assert manager.video_queue["bekleyen"] == 0
     assert manager.video_queue["taranan"] == 5
+
+
+async def test_old_sensor_ids_are_renamed(hass: HomeAssistant, monkeypatch) -> None:
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+    from homeassistant.setup import async_setup_component  # noqa: PLC0415
+
+    registry = er.async_get(hass)
+    registry.async_get_or_create("sensor", "gungors", "immich_status", suggested_object_id="immich")
+    registry.async_get_or_create(
+        "sensor", "gungors", "immich_video_queue", suggested_object_id="immich_video_kuyrugu"
+    )
+    server = FakeImmich()
+    monkeypatch.setattr(
+        "custom_components.gungors.immich.ImmichApi",
+        lambda _session, _url, key, _user="": FakeApi(server, "sercan"),
+    )
+    config = {"gungors": {"immich": {"url": "http://immich", "users": {"sercan": "k1"}}}}
+    assert await async_setup_component(hass, "gungors", config)
+    await hass.async_block_till_done()
+    assert registry.async_get_entity_id("sensor", "gungors", "immich_status") == "sensor.immich_processing"
+    assert registry.async_get_entity_id("sensor", "gungors", "immich_video_queue") == "sensor.immich_video_queue"
+    assert hass.states.get("sensor.immich_processing") is not None
