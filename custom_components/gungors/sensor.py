@@ -32,7 +32,7 @@ async def async_setup_platform(
 ) -> None:
     if discovery_info is None or async_get_manager(hass) is None:
         return
-    async_add_entities([ImmichSensor()])
+    async_add_entities([ImmichSensor(), ImmichVideoQueueSensor()])
 
 
 class ImmichSensor(SensorEntity):
@@ -58,6 +58,39 @@ class ImmichSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         manager = async_get_manager(self.hass)
         return dict(manager.summary) if manager else {}
+
+
+class ImmichVideoQueueSensor(SensorEntity):
+    """Videos waiting for the face scan; updated after each scanned video."""
+
+    _attr_name = "immich video kuyruğu"
+    _attr_unique_id = "immich_video_queue"
+    _attr_icon = "mdi:video-account"
+    _attr_native_unit_of_measurement = "video"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_should_poll = False
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, SIGNAL_UPDATE, self.async_write_ha_state)
+        )
+
+    @property
+    def available(self) -> bool:
+        manager = async_get_manager(self.hass)
+        return bool(manager and manager.config["videos"].get("ml_url"))
+
+    @property
+    def native_value(self) -> int | None:
+        manager = async_get_manager(self.hass)
+        return manager.video_queue.get("bekleyen") if manager else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        manager = async_get_manager(self.hass)
+        if manager is None:
+            return {}
+        return {k: v for k, v in manager.video_queue.items() if k != "bekleyen"}
 
 
 async def async_setup_entry(
