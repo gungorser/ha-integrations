@@ -74,6 +74,9 @@ or `gungors.immich_run`:
   faces of each person through Immich's machine-learning server (`video_faces.py`); a few
   videos per run.
 - An asset is added to an album once: one removed by hand is not added again.
+- `on_upload: true`: an Immich workflow `gungors` per user (trigger AssetMetadataExtraction,
+  step webhook) posts to an HA webhook; gungors runs once the uploads stop and the Immich
+  queues up to face recognition are empty (workflows fire before faces are known).
 """
 from __future__ import annotations
 
@@ -94,11 +97,15 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
+from aiohttp import web
+
+from homeassistant.components import webhook
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.network import NoURLAvailableError
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -125,6 +132,16 @@ FACELESS_DELETE = "delete"  # deleted for good
 FACELESS_ACTIONS = [FACELESS_ALBUM, FACELESS_KEEP, FACELESS_TRASH, FACELESS_DELETE]
 OLD_FACELESS_ALBUM = "check_before_delete"  # the faceless album before 1.25.0 (stays private)
 FACELESS_HOME_ACTIONS = [FACELESS_KEEP, FACELESS_TRASH, FACELESS_DELETE]
+# Run on upload (`on_upload`): an Immich workflow per user posts to an HA webhook.
+WORKFLOW_NAME = "gungors"
+WORKFLOW_TRIGGER = "AssetMetadataExtraction"  # after EXIF (GPS for trips), before faces
+WORKFLOW_STEP = "immich-plugin-core#webhook"
+UPLOAD_DEBOUNCE = 120  # s after the last webhook: a bulk upload is one run
+QUEUE_POLL = 60  # s between queue checks
+QUEUE_WAIT_MAX = datetime.timedelta(minutes=30)  # then run anyway; the timer catches the rest
+QUEUE_UNREADABLE_WAIT = 600  # s to wait instead when the queues are not readable
+# Upload -> EXIF -> thumbnails -> face detection -> face recognition: all empty = faces known.
+PIPELINE_QUEUES = ("metadataExtraction", "thumbnailGeneration", "faceDetection", "facialRecognition")
 # Faceless decisions that let a trip photo into its trip album.
 TRIP_ALBUM_DECISIONS = {"face", "skip", FACELESS_ALBUM}
 
@@ -197,6 +214,7 @@ IMMICH_SCHEMA = vol.Schema(
         ),
         vol.Optional("people", default={}): {cv.string: cv.string},
         vol.Optional("share_albums", default=False): cv.boolean,
+        vol.Optional("on_upload", default=False): cv.boolean,
         vol.Optional("trips", default={}): vol.Schema(
             {
                 vol.Optional("distance_km", default=50): vol.Coerce(float),
@@ -664,15 +682,32 @@ class ImmichApi:
 
     async def face_queue_busy(self) -> bool | None:
         """True while face detection has jobs; None when the queues are not readable."""
+        return await self.queues_busy(("faceDetection",))
+
+    async def queues_busy(self, names: Iterable[str]) -> bool | None:
+        """True while any of these queues has jobs; None when none of them is readable."""
         try:
             queues = await self.request("GET", "/queues")
         except ImmichError:
             return None
+        wanted = set(names)
+        found = False
         for queue in queues or []:
-            if queue.get("name") == "faceDetection":
+            if queue.get("name") in wanted:
+                found = True
                 stats = queue.get("statistics") or {}
-                return any(stats.get(k) for k in ("active", "waiting", "delayed", "paused"))
-        return None
+                if any(stats.get(k) for k in ("active", "waiting", "delayed", "paused")):
+                    return True
+        return False if found else None
+
+    async def workflows(self) -> list[dict[str, Any]]:
+        return await self.request("GET", "/workflows") or []
+
+    async def save_workflow(self, workflow_id: str | None, body: dict[str, Any]) -> dict[str, Any]:
+        """Create the workflow, or update it when `workflow_id` is given."""
+        if workflow_id:
+            return await self.request("PUT", f"/workflows/{workflow_id}", json=body)
+        return await self.request("POST", "/workflows", json=body)
 
 
 # --- manager -------------------------------------------------------------------------------------
@@ -703,6 +738,12 @@ class ImmichManager:
         self._unsub = None
         self._running = False
         self._partou_writing = False  # Partou writes in every mode but `Kapalı`
+        # run on upload: webhook -> debounce -> wait for the Immich queues -> run
+        self._webhook_id: str | None = None
+        self._debounce = None
+        self._waiter: asyncio.Task | None = None
+        self._uploads = 0  # webhook calls since the last run
+        self._upload: dict[str, Any] = {}  # on `sensor.immich` as `upload`
         # person -> user -> (Immich person ids, assets with that person); from the people run
         self._people_found: dict[str, dict[str, tuple[list[str], list[dict[str, Any]]]]] = {}
 
@@ -717,6 +758,7 @@ class ImmichManager:
 
     def _apply_config(self) -> None:
         session = async_get_clientsession(self.hass)
+        self._stop_upload()
         self._apis = {
             user: ImmichApi(session, self.config["url"], key)
             for user, key in self.config["users"].items()
@@ -728,6 +770,9 @@ class ImmichManager:
         if self._unsub:
             self._unsub()
             self._unsub = None
+        self._upload = {}
+        if self.config.get("on_upload") or self._state.get("workflows"):
+            self.hass.async_create_task(self._async_setup_upload(), "gungors immich workflows")
         if not self.config["scan_interval"]:
             return
         self._unsub = async_track_time_interval(
@@ -746,6 +791,126 @@ class ImmichManager:
         if self._unsub:
             self._unsub()
             self._unsub = None
+        self._stop_upload()
+
+    # run on upload
+
+    @callback
+    def _stop_upload(self) -> None:
+        if self._webhook_id:
+            webhook.async_unregister(self.hass, self._webhook_id)
+            self._webhook_id = None
+        if self._debounce:
+            self._debounce()
+            self._debounce = None
+        if self._waiter and not self._waiter.done():
+            self._waiter.cancel()
+        self._waiter = None
+
+    async def _async_setup_upload(self) -> None:
+        """Webhook + one `gungors` workflow per user (on), or the workflows disabled (off)."""
+        on = bool(self.config.get("on_upload"))
+        url: str | None = None
+        if on:
+            webhook_id = self._state.get("webhook_id")
+            if not webhook_id:
+                webhook_id = self._state["webhook_id"] = webhook.async_generate_id()
+                await self._store.async_save(self._state)
+            if self._webhook_id != webhook_id:
+                webhook.async_register(
+                    self.hass, DOMAIN, "gungors immich", webhook_id, self._async_webhook,
+                    local_only=True, allowed_methods=["POST", "PUT"],
+                )
+                self._webhook_id = webhook_id
+            try:
+                url = webhook.async_generate_url(
+                    self.hass, webhook_id, allow_external=False, prefer_external=False
+                )
+            except NoURLAvailableError:
+                self._upload = {"durum": "hata", "hata": "HA'nın iç adresi bulunamadı"}
+                self.summary = {**self.summary, "upload": dict(self._upload)}
+                self._notify()
+                return
+        result: dict[str, str] = {}
+        workflows: dict[str, str] = self._state.setdefault("workflows", {})
+        for user, api in self._apis.items():
+            try:
+                result[user] = await self._save_workflow(api, on, url)
+                if on:
+                    workflows[user] = result[user]
+            except ImmichError as err:
+                text = str(err)
+                if " 403 " in text:
+                    text = "API anahtarında workflow izni yok (workflow.read/create/update)"
+                result[user] = f"hata: {text}"
+                _LOGGER.warning("Immich workflow for %s: %s", user, err)
+        if not on:
+            self._state.pop("workflows", None)
+        await self._store.async_save(self._state)
+        self._upload = {
+            "durum": "açık" if on else "kapalı",
+            "workflow": result,
+            **({"adres": url.split("/api/webhook/")[0]} if url else {}),
+        }
+        self.summary = {**self.summary, "upload": dict(self._upload)}
+        self._notify()
+
+    @staticmethod
+    async def _save_workflow(api: ImmichApi, on: bool, url: str | None) -> str:
+        existing = next(
+            (w for w in await api.workflows() if w.get("name") == WORKFLOW_NAME), None
+        )
+        if not on:
+            if existing and existing.get("enabled"):
+                await api.save_workflow(existing["id"], {"enabled": False})
+                return "kapatıldı"
+            return "yok" if existing is None else "kapalı"
+        body = {
+            "trigger": WORKFLOW_TRIGGER,
+            "name": WORKFLOW_NAME,
+            "description": "Home Assistant gungors: yeni fotoğraflarda albümleri güncelle",
+            "enabled": True,
+            "steps": [{"method": WORKFLOW_STEP, "config": {"url": url, "method": "POST"}}],
+        }
+        await api.save_workflow(existing["id"] if existing else None, body)
+        return "güncellendi" if existing else "kuruldu"
+
+    async def _async_webhook(
+        self, hass: HomeAssistant, webhook_id: str, request: web.Request
+    ) -> None:
+        """An upload: run once the uploads stop and Immich has found the faces."""
+        self._uploads += 1
+        self._upload["son_yükleme"] = dt_util.utcnow().isoformat()
+        if self._debounce:
+            self._debounce()
+        self._debounce = async_call_later(hass, UPLOAD_DEBOUNCE, self._upload_settled)
+
+    @callback
+    def _upload_settled(self, _now: Any) -> None:
+        self._debounce = None
+        if self._waiter and not self._waiter.done():
+            return  # already waiting; it runs for these uploads too
+        self._waiter = self.hass.async_create_background_task(
+            self._async_wait_and_run(), "gungors immich upload run"
+        )
+
+    async def _async_wait_and_run(self) -> None:
+        """Wait until the Immich queues are empty twice in a row (faces known), then run."""
+        api = self._apis.get(self.owner)
+        start = dt_util.utcnow()
+        idle = 0
+        while api is not None and dt_util.utcnow() - start < QUEUE_WAIT_MAX:
+            busy = await api.queues_busy(PIPELINE_QUEUES)
+            if busy is None:
+                await asyncio.sleep(QUEUE_UNREADABLE_WAIT)
+                break
+            idle = 0 if busy else idle + 1
+            if idle >= 2:
+                break
+            await asyncio.sleep(QUEUE_POLL)
+        while self._running:
+            await asyncio.sleep(QUEUE_POLL)
+        await self.async_run()
 
     async def _async_tick(self, _now: datetime.datetime) -> None:
         await self.async_run()
@@ -776,6 +941,7 @@ class ImmichManager:
         self._running = True
         now = dt_util.utcnow()
         summary: dict[str, Any] = {"mode": self.mode}
+        uploads, self._uploads = self._uploads, 0
         try:
             if "since" not in self._state:
                 # Faceless photos are only looked at from the first run on.
@@ -807,6 +973,8 @@ class ImmichManager:
         finally:
             self._running = False
         summary["last_run"] = now.isoformat()
+        if self._upload:
+            summary["upload"] = {**self._upload, "yeni": uploads}
         self.summary = summary
         self._notify()
 

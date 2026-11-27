@@ -98,13 +98,15 @@
               "url": "Immich adresi",
               "scan_interval": "Ne sıklıkla kontrol edilsin",
               "owner": "Ortak albümlerin sahibi",
-              "share_albums": "Albümleri tüm kullanıcılarla paylaş"
+              "share_albums": "Albümleri tüm kullanıcılarla paylaş",
+              "on_upload": "Yeni fotoğraf yüklenince çalış"
             },
             "data_description": {
               "url": "Boş bırakırsan Immich otomasyonu tamamen kapanır.",
               "scan_interval": "Saat, dakika, saniye. Hepsi sıfırsa sadece Senkronize düğmesine basınca çalışır.",
               "owner": "Kişi ve tatil albümleri bu kullanıcının hesabında açılır, diğer kullanıcılar düzenleyici olarak eklenir.",
-              "share_albums": "Açıksa bir kullanıcının açtığı her albüm (elle açılanlar dahil) diğer kullanıcılarla da paylaşılır."
+              "share_albums": "Açıksa bir kullanıcının açtığı her albüm (elle açılanlar dahil) diğer kullanıcılarla da paylaşılır.",
+              "on_upload": "Açıksa gungors her kullanıcının Immich hesabında \"gungors\" adlı bir workflow kurar; yeni bir fotoğraf ya da video yüklenince Home Assistant'a haber verir. gungors yüklemeler bitip Immich yüzleri tanıyınca (birkaç dakika sonra) çalışır. API anahtarlarında workflow izni gerekir. Kapatınca workflow devre dışı kalır. Zamanlayıcı yine çalışır; bu açıkken seyrek bir aralık (ör. 1 saat) yeterli."
             }
           },
           "users": {

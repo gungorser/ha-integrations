@@ -344,7 +344,23 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   `Albüm` (writes; the old `Albüm + çöp` restores as `Albüm`). `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
   per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.
   A run every `scan_interval` (600 s; `0`: no timer), on a mode change, on
-  `button.immich_sync` and on `gungors.immich_run`.
+  `button.immich_sync`, on `gungors.immich_run` and, with `on_upload`, after uploads.
+- Run on upload (`on_upload: true`, Configure > Immich > Genel "Yeni fotoğraf yüklenince
+  çalış"): gungors registers an HA webhook (local only, id in `.storage`) and, with each
+  user's API key, creates or updates a workflow named `gungors` in that user's Immich account
+  (Immich workflows are per owner): trigger `AssetMetadataExtraction` (after EXIF, so trips
+  have GPS), one step `immich-plugin-core#webhook` that POSTs to the webhook at HA's internal
+  URL. A webhook call starts a `UPLOAD_DEBOUNCE` (120 s) timer, restarted by each further call,
+  so a bulk upload is one run. Immich's workflow triggers fire before face recognition, so
+  gungors then waits until the `metadataExtraction`, `thumbnailGeneration`, `faceDetection` and
+  `facialRecognition` queues are empty on two checks in a row (`QUEUE_POLL` 60 s apart, at most
+  30 min; 10 min when the queues are not readable) and runs. A face Immich recognises later
+  (deferred faces, a manual assignment) is picked up by the next run: the person rule searches
+  all assets of the person every run. The timer keeps running (faceless `wait_hours`, missed
+  calls); with `on_upload` an hour is enough. Turning it off disables the workflows. The API
+  keys need `workflow.read`, `workflow.create` and `workflow.update`; a refusal shows per user
+  on `sensor.immich` `upload` (`durum`, `workflow`, `adres`, `son_yükleme`, `yeni`: calls
+  before the last run). Partou stays on its daily time.
 - `share_albums: true`: every album a user owns (also ones made by hand or by the phone app) is
   shared with the other users as editors; the old faceless albums stay private.
 - Each asset is added to an album once (`.storage/gungors.immich`): one removed by hand stays out;
