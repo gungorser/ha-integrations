@@ -156,6 +156,7 @@ PAGE_SIZE = 1000
 VIDEO_MATCH = 0.5        # cosine similarity a video face needs to count as the person
 REFS_PER_RUN = 12        # reference faces made per run (one model call each)
 VIDEO_TRIES = 3          # a video that fails this often is left out
+VIDEO_SCAN_VERSION = 2   # 1.30.0 read Immich 3 durations (ms) as seconds: no frames, rescan
 ML_PAUSE = 1.0           # seconds between model calls: the ML server shares one CPU
 ADD_CHUNK = 500
 FULL_SCAN_EVERY = datetime.timedelta(hours=24)
@@ -1350,7 +1351,11 @@ class ImmichManager:
             _LOGGER.warning("Video face scan failed: %s", err)
             result["hata"] = str(err)
         await self._store.async_save(self._state)
-        scanned = {k: v for k, v in self._state["videos"].items() if "faces" in v}
+        scanned = {
+            k: v for k, v in self._state["videos"].items()
+            if "faces" in v and (v["faces"] or v.get("v") == VIDEO_SCAN_VERSION)
+        }
+        result["hatalı"] = sum(1 for v in self._state["videos"].values() if "hata" in v)
         result["taranan"] = len(scanned)
         result["yüzsüz"] = sum(1 for v in scanned.values() if not v["faces"])
         result["eşleşen"], result["aday"], result["skorlar"] = await self._video_albums(scanned)
@@ -1423,7 +1428,7 @@ class ImmichManager:
                     asset.get("isTrashed")
                     or asset.get("visibility", "timeline") in ("hidden", "locked")
                     or aid in partou
-                    or "faces" in record
+                    or ("faces" in record and (record["faces"] or record.get("v") == VIDEO_SCAN_VERSION))
                     or "skip" in record
                     or record.get("tries", 0) >= VIDEO_TRIES
                     or (assigned and all(aid in found for found in assigned))
@@ -1449,12 +1454,16 @@ class ImmichManager:
                 self._state["videos"][aid] = record
                 return
             faces: list[list[float]] = []
+            frames = 0
             duration = parse_duration(asset.get("duration"))
             for at in frame_times(duration, conf["every"], conf["frames"]):
                 frame = await extract_frame(command, path, at)
                 if frame:
+                    frames += 1
                     faces.extend(f["embedding"] for f in await ml.faces(frame))
                     await asyncio.sleep(ML_PAUSE)
+            if not frames:
+                raise ImmichError(f"no frames (duration {asset.get('duration')})")
         except (ImmichError, MlError) as err:
             old = self._state["videos"].get(aid) or {}
             self._state["videos"][aid] = {**record, "tries": old.get("tries", 0) + 1,
@@ -1467,6 +1476,7 @@ class ImmichManager:
             await self.hass.async_add_executor_job(shutil.rmtree, folder, True)
         when = _parse_time(asset.get("fileCreatedAt"))
         record["faces"] = len(faces)
+        record["v"] = VIDEO_SCAN_VERSION
         for person in self.config["people"]:
             refs = [
                 (t, r["e"])

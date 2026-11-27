@@ -649,6 +649,8 @@ def test_frame_times_and_duration() -> None:
     assert parse_duration("0:00:25.500000") == 25.5
     assert parse_duration("1:02:03") == 3723
     assert parse_duration(None) == 0
+    assert parse_duration(41299) == 41.299  # Immich 3: milliseconds
+    assert parse_duration("41299") == 41.299
     assert frame_times(0, 3, 10) == [0.0]
     assert len(frame_times(25.5, 3, 10)) == 9
     times = frame_times(120, 3, 10)
@@ -863,3 +865,30 @@ async def test_upload_run_when_queues_unreadable(setup, monkeypatch) -> None:
     server.queue_states = [None]
     await manager._async_wait_and_run()
     assert runs == [True]
+
+
+async def test_video_without_frames_is_retried_and_old_empty_scans_rescanned(
+    video_setup, monkeypatch
+) -> None:
+    manager, server = video_setup
+    server.asset("v1", "sercan", t(2, 1), kind="VIDEO", duration=9000)
+    server.asset("v2", "sercan", t(3, 1), kind="VIDEO", duration=9000)
+    FakeMl.faces_by_image[b"frame-v1"] = kaan_face(0.9)
+    # 1.30.0 stored an empty scan (durations in ms read as seconds)
+    manager._state["videos"]["v1"] = {"u": "sercan", "faces": 0, "Kaan": None}
+
+    async def no_frame(command, path, at):
+        return None
+
+    real = immich_module.extract_frame
+    monkeypatch.setattr(immich_module, "extract_frame", no_frame)
+    manager.mode = MODE_DRY
+    await manager.async_run()
+    videos = manager.summary["videos"]
+    assert videos["taranan"] == 0 and videos["hatalı"] == 2
+    assert manager._state["videos"]["v2"]["tries"] == 1
+
+    monkeypatch.setattr(immich_module, "extract_frame", real)
+    await manager.async_run()
+    videos = manager.summary["videos"]
+    assert videos["taranan"] == 2 and videos["eşleşen"] == {"Kaan": 1}
