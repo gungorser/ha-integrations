@@ -743,6 +743,8 @@ class ImmichManager:
         self._running = False
         self._partou_writing = False  # Partou writes in every mode but `Kapalı`
         self._shared_checked: set[str] = set()  # shared albums whose users were checked
+        # live video scan queue (sensor.immich_video_kuyrugu), updated after each video
+        self.video_queue: dict[str, Any] = {}
         # run on upload: webhook -> debounce -> wait for the Immich queues -> run
         self._webhook_id: str | None = None
         self._debounce = None
@@ -944,6 +946,8 @@ class ImmichManager:
         if self.mode == MODE_OFF or self._running:
             return
         self._running = True
+        self.status = "çalışıyor"
+        self._notify()
         now = dt_util.utcnow()
         summary: dict[str, Any] = {"mode": self.mode}
         uploads, self._uploads = self._uploads, 0
@@ -1362,11 +1366,13 @@ class ImmichManager:
             }
             pending = await self._pending_videos()
             result["bekleyen"] = len(pending)
+            self._set_queue(len(pending), scanning=bool(refs_done and pending))
             if refs_done and pending:
                 command = ffmpeg_command()
-                for user, asset in pending[: conf["per_run"]]:
+                for done, (user, asset) in enumerate(pending[: conf["per_run"]], 1):
                     await self._scan_video(ml, command, user, asset)
                     await self._store.async_save(self._state)
+                    self._set_queue(len(pending) - done, scanning=True)
             elif not refs_done:
                 result["durum"] = "referans yüzler hazırlanıyor"
         except MlError as err:
@@ -1385,7 +1391,23 @@ class ImmichManager:
         except ImmichError as err:
             _LOGGER.warning("Video albums failed: %s", err)
             result["hata"] = str(err)
+        self._set_queue(
+            self.video_queue.get("bekleyen", 0), scanning=False,
+            taranan=result["taranan"], eşleşen=result.get("eşleşen"), aday=result.get("aday"),
+        )
         return result
+
+    def _set_queue(self, pending: int, scanning: bool, **extra: Any) -> None:
+        """Live queue for sensor.immich_video_kuyrugu (written after each video)."""
+        scanned = sum(
+            1 for v in self._state["videos"].values()
+            if "faces" in v and (v["faces"] or v.get("v") == VIDEO_SCAN_VERSION)
+        )
+        self.video_queue = {
+            **self.video_queue, "bekleyen": pending, "taranan": scanned,
+            "taranıyor": scanning, **extra,
+        }
+        self._notify()
 
     async def _video_refs(self, ml: MlApi) -> bool:
         """Up to `ref_per_month` reference faces per person and month; True when complete."""

@@ -339,7 +339,8 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   every person, hidden motion-photo parts, Partou uploads and files over `max_mb` (500) are left
   out, a video failing `VIDEO_TRIES` (3) times too. `Deneme` scans and reports but writes no
   album. `sensor.immich` `videos`: `referans`, `bekleyen`, `taranan`, `yüzsüz`, `eşleşen`, `aday`,
-  `skorlar` (videos per 0.1 score bucket and person), `hata`.
+  `skorlar` (videos per 0.1 score bucket and person), `hata`. `sensor.immich_video_kuyrugu`: videos waiting (live, after each
+  video), attributes `taranan`, `taranıyor`, `eşleşen`, `aday`. `sensor.immich` is `çalışıyor` during a run.
 - `select.immich` is the mode (restored): `Kapalı`, `Deneme` (plans only; nothing written),
   `Albüm` (writes; the old `Albüm + çöp` restores as `Albüm`). `sensor.immich` (`tamam` / `hata`) carries the last run: new assets
   per person album, the trips (name, dates, assets, new ones), the faceless counts, the error.

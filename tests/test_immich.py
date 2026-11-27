@@ -931,3 +931,14 @@ async def test_api_errors_name_the_user() -> None:
 
     with pytest.raises(ImmichError, match="^melike: GET /users/me: 401"):
         await ImmichApi(Session(), "http://immich", "k", "melike").me()
+
+
+async def test_video_queue_counts_down(video_setup) -> None:
+    manager, server = video_setup
+    for day in (2, 3, 4):
+        server.asset(f"v{day}", "sercan", t(day, 1), kind="VIDEO", duration=9000)
+    manager.mode = MODE_DRY
+    await manager.async_run()
+    assert manager.video_queue["bekleyen"] == 1  # per_run 2 of 3
+    assert manager.video_queue["taranan"] == 2
+    assert manager.video_queue["taranıyor"] is False
