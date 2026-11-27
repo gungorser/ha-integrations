@@ -595,7 +595,9 @@ class GungorsOptionsFlow(OptionsFlow):
         def start(_now: Any) -> None:
             manager = async_get_manager(self.hass)
             if manager is not None:
-                self.hass.async_create_task(manager.async_run(force=True))
+                self.hass.async_create_background_task(
+                    manager.async_run(force=True), "gungors immich run"
+                )
 
         async_call_later(self.hass, 3, start)
 

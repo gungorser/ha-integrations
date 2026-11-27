@@ -782,7 +782,9 @@ class ImmichManager:
             self._unsub = None
         self._upload = {}
         if self.config.get("on_upload") or self._state.get("workflows"):
-            self.hass.async_create_task(self._async_setup_upload(), "gungors immich workflows")
+            self.hass.async_create_background_task(
+                self._async_setup_upload(), "gungors immich workflows"
+            )
         if not self.config["scan_interval"]:
             return
         self._unsub = async_track_time_interval(
@@ -931,7 +933,8 @@ class ImmichManager:
         self.mode = MODE_ALBUM if mode == MODE_TRASH else mode
         self._notify()
         if run:
-            self.hass.async_create_task(self.async_run(), "gungors immich run")
+            # background: a run can take minutes and must not hold up HA startup
+            self.hass.async_create_background_task(self.async_run(), "gungors immich run")
 
     @property
     def owner(self) -> str:
