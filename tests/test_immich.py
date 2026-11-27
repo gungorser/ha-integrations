@@ -697,8 +697,9 @@ async def video_setup(setup, monkeypatch, tmp_path):
     manager.config = IMMICH_SCHEMA(
         {"url": "http://immich", "users": {"sercan": "k1", "melike": "k2"},
          "owner": "sercan", "people": {"Kaan": "Kaan"}, "trips": {"min_assets": 1},
-         "videos": {"ml_url": "http://ml", "per_run": 2, "maybe": 0.3}}
+         "videos": {"ml_url": "http://ml", "maybe": 0.3}}
     )
+    monkeypatch.setattr(immich_module, "VIDEO_BATCH", 2)
     FakeMl.faces_by_image = {}
     FakeMl.calls = 0
     monkeypatch.setattr(immich_module, "MlApi", FakeMl)
@@ -735,6 +736,13 @@ async def video_setup(setup, monkeypatch, tmp_path):
     return manager, server
 
 
+async def run(manager) -> None:
+    """An album run and the background video scan it starts."""
+    await manager.async_run()
+    if manager._video_task is not None:
+        await manager._video_task
+
+
 def kaan_face(x: float) -> list[dict[str, Any]]:
     import math
     return [{"box": (0, 0, 1, 1), "embedding": [x, math.sqrt(1 - x * x)]}]
@@ -752,25 +760,19 @@ async def test_video_faces_dry_run_then_album(video_setup) -> None:
     FakeMl.faces_by_image[b"frame-v3"] = kaan_face(0.1)
 
     manager.mode = MODE_DRY
-    await manager.async_run()
+    await run(manager)  # batches of 2: no per-run limit, the scan goes on until the queue is empty
     videos = manager.summary["videos"]
     assert server.writes == 0
     assert videos["referans"] == {"Kaan": 1}
-    assert videos["bekleyen"] == 3  # hidden motion part and the known video left out
-    assert videos["taranan"] == 2   # per_run: the two newest (v3, v2)
+    assert videos["taranan"] == 3 and videos["bekleyen"] == 0  # hidden and known left out
     assert manager._state["videos"]["v3"]["Kaan"] == 0.1
-
-    await manager.async_run()
-    videos = manager.summary["videos"]
-    assert videos["taranan"] == 3 and videos["bekleyen"] == 1
     assert videos["eşleşen"] == {"Kaan": 1}
     assert videos["aday"] == {"Kaan_aday": 1}
     assert videos["skorlar"]["Kaan"] == {"0.1": 1, "0.4": 1, "0.9": 1}
-    assert server.writes == 0
 
     manager.mode = MODE_ALBUM
     calls = FakeMl.calls
-    await manager.async_run()
+    await run(manager)
     assert FakeMl.calls == calls  # nothing scanned twice
     assert album_named(server, "Kaan")["_assets"] == {"k1", "known", "v1"}
     assert album_named(server, "Kaan_aday")["_assets"] == {"v2"}
@@ -781,7 +783,7 @@ async def test_video_faces_wait_for_references(video_setup, monkeypatch) -> None
     monkeypatch.setattr(immich_module, "REFS_PER_RUN", 0)
     server.asset("v1", "sercan", t(2, 1), kind="VIDEO")
     manager.mode = MODE_DRY
-    await manager.async_run()
+    await run(manager)
     assert manager.summary["videos"]["durum"] == "referans yüzler hazırlanıyor"
     assert manager.summary["videos"]["taranan"] == 0
 
@@ -886,13 +888,13 @@ async def test_video_without_frames_is_retried_and_old_empty_scans_rescanned(
     real = immich_module.extract_frame
     monkeypatch.setattr(immich_module, "extract_frame", no_frame)
     manager.mode = MODE_DRY
-    await manager.async_run()
+    await run(manager)
     videos = manager.summary["videos"]
     assert videos["taranan"] == 0 and videos["hatalı"] == 2
     assert manager._state["videos"]["v2"]["tries"] == 1
 
     monkeypatch.setattr(immich_module, "extract_frame", real)
-    await manager.async_run()
+    await run(manager)
     videos = manager.summary["videos"]
     assert videos["taranan"] == 2 and videos["eşleşen"] == {"Kaan": 1}
 
@@ -904,7 +906,7 @@ async def test_shared_album_made_by_hand_gets_the_other_users(video_setup) -> No
     server.asset("v2", "melike", t(3, 1), kind="VIDEO", duration=9000)
     FakeMl.faces_by_image[b"frame-v2"] = kaan_face(0.45)
     manager.mode = MODE_ALBUM
-    await manager.async_run()
+    await run(manager)
     assert manager.status == "tamam"
     assert server.albums["hand"]["_users"] == ["id-sercan", "id-melike"]
     assert server.albums["hand"]["_assets"] == {"v2"}
@@ -938,7 +940,20 @@ async def test_video_queue_counts_down(video_setup) -> None:
     for day in (2, 3, 4):
         server.asset(f"v{day}", "sercan", t(day, 1), kind="VIDEO", duration=9000)
     manager.mode = MODE_DRY
-    await manager.async_run()
-    assert manager.video_queue["bekleyen"] == 1  # per_run 2 of 3
-    assert manager.video_queue["taranan"] == 2
+    await run(manager)
+    assert manager.video_queue["bekleyen"] == 0
+    assert manager.video_queue["taranan"] == 3
     assert manager.video_queue["taranıyor"] is False
+
+
+async def test_start_drains_the_queue(video_setup, hass) -> None:
+    """The mode restored at start runs once; the scan then empties the queue on its own."""
+    manager, server = video_setup
+    for day in (2, 3, 4, 5, 6):
+        server.asset(f"v{day}", "sercan", t(day, 1), kind="VIDEO", duration=9000)
+    await manager.async_set_mode(MODE_DRY)  # what select.immich does when HA starts
+    await hass.async_block_till_done()
+    if manager._video_task is not None:
+        await manager._video_task
+    assert manager.video_queue["bekleyen"] == 0
+    assert manager.video_queue["taranan"] == 5

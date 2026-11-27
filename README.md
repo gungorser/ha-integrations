@@ -334,7 +334,9 @@ through the Immich API, with one API key per Immich user (faces and photos are p
   box), `REFS_PER_RUN` (12) made per run, videos wait until all are made. A video's score is the
   best cosine similarity against the references within `ref_days` (120) of its date (all of them
   when none is that close). Score >= `match` (0.5) -> the person album; >= `maybe` (0 = off) ->
-  `<album>_aday` for review. Up to `per_run` (3) videos per run, newest first, a pause between
+  `<album>_aday` for review. The scan runs in the background, apart from the album runs, until
+  no video is left (no per-run limit; started by every run, so also at every HA or gungors
+  start), newest first, albums updated every `VIDEO_BATCH` (10) videos, a pause between
   model calls; each video is scanned once (score in `.storage`), videos Immich already found for
   every person, hidden motion-photo parts, Partou uploads and files over `max_mb` (500) are left
   out, a video failing `VIDEO_TRIES` (3) times too. `Deneme` scans and reports but writes no
