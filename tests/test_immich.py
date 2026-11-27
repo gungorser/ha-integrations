@@ -399,7 +399,7 @@ async def test_setup_from_yaml(hass: HomeAssistant, monkeypatch) -> None:
     server = FakeImmich()
     monkeypatch.setattr(
         "custom_components.gungors.immich.ImmichApi",
-        lambda _session, _url, key: FakeApi(server, {"k1": "sercan", "k2": "melike"}[key]),
+        lambda _session, _url, key, _user="": FakeApi(server, {"k1": "sercan", "k2": "melike"}[key]),
     )
     config = {"gungors": {"immich": {"url": "http://immich",
                                      "users": {"sercan": "k1", "melike": "k2"}}}}
@@ -908,3 +908,26 @@ async def test_shared_album_made_by_hand_gets_the_other_users(video_setup) -> No
     assert manager.status == "tamam"
     assert server.albums["hand"]["_users"] == ["id-sercan", "id-melike"]
     assert server.albums["hand"]["_assets"] == {"v2"}
+
+
+async def test_api_errors_name_the_user() -> None:
+    from custom_components.gungors.immich import ImmichApi, ImmichError
+
+    class Resp:
+        status = 401
+
+        async def text(self):
+            return "Invalid API key"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class Session:
+        def request(self, *args, **kwargs):
+            return Resp()
+
+    with pytest.raises(ImmichError, match="^melike: GET /users/me: 401"):
+        await ImmichApi(Session(), "http://immich", "k", "melike").me()
