@@ -525,8 +525,11 @@ class ImmichError(Exception):
 class ImmichApi:
     """Minimal async Immich client for one user's API key."""
 
-    def __init__(self, session: aiohttp.ClientSession, url: str, key: str) -> None:
+    def __init__(
+        self, session: aiohttp.ClientSession, url: str, key: str, user: str = ""
+    ) -> None:
         self._session = session
+        self._user = f"{user}: " if user else ""  # errors name whose key failed
         self._base = url.rstrip("/") + "/api"
         self._headers = {"x-api-key": key, "Accept": "application/json"}
 
@@ -541,12 +544,12 @@ class ImmichApi:
             ) as resp:
                 if resp.status >= 400:
                     text = (await resp.text())[:200]
-                    raise ImmichError(f"{method} {path}: {resp.status} {text}")
+                    raise ImmichError(f"{self._user}{method} {path}: {resp.status} {text}")
                 if resp.status == 204:
                     return None
                 return await resp.json()
         except aiohttp.ClientError as err:
-            raise ImmichError(f"{method} {path}: {err}") from err
+            raise ImmichError(f"{self._user}{method} {path}: {err}") from err
 
     async def me(self) -> dict[str, Any]:
         return await self.request("GET", "/users/me")
@@ -762,7 +765,7 @@ class ImmichManager:
         session = async_get_clientsession(self.hass)
         self._stop_upload()
         self._apis = {
-            user: ImmichApi(session, self.config["url"], key)
+            user: ImmichApi(session, self.config["url"], key, user)
             for user, key in self.config["users"].items()
         }
         self._user_ids = {}
