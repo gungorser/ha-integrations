@@ -269,6 +269,7 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                         vol.Optional("url"): selector.TextSelector(
                             selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
                         ),
+                        vol.Optional("on_upload", default=False): selector.BooleanSelector(),
                         vol.Optional("scan_interval", default=_duration(600)): _duration_selector(),
                         vol.Optional("owner"): selector.SelectSelector(
                             selector.SelectSelectorConfig(
@@ -362,7 +363,7 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
     partou = conf.get("partou") or {}
     return {
         "general": {
-            **{k: conf[k] for k in ("url", "owner", "share_albums") if k in conf},
+            **{k: conf[k] for k in ("url", "owner", "share_albums", "on_upload") if k in conf},
             "scan_interval": _duration(conf.get("scan_interval", 600)),
         },
         # the form holds the real secrets (password fields hide them, with a show toggle);
@@ -421,6 +422,7 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
         "users": users,
         "scan_interval": _seconds(general.get("scan_interval"), 600),
         "share_albums": bool(general.get("share_albums", False)),
+        "on_upload": bool(general.get("on_upload", False)),
         "people": (user_input.get("people") or {}).get("people") or {},
     }
     owner = general.get("owner")

@@ -8,6 +8,9 @@
     "@gungorser"
   ],
   "config_flow": true,
+  "dependencies": [
+    "webhook"
+  ],
   "documentation": "https://github.com/gungorser/ha-integrations",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/gungorser/ha-integrations/issues",
@@ -15,5 +18,5 @@
     "ical>=10.0.0"
   ],
   "single_config_entry": true,
-  "version": "1.30.0"
+  "version": "1.31.0"
 }

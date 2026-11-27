@@ -98,13 +98,15 @@
               "url": "Immich address",
               "scan_interval": "How often to check",
               "owner": "Owner of the shared albums",
-              "share_albums": "Share albums with all users"
+              "share_albums": "Share albums with all users",
+              "on_upload": "Run when a photo is uploaded"
             },
             "data_description": {
               "url": "Leave empty to turn the Immich automation off.",
               "scan_interval": "Hours, minutes, seconds. All zero: only when the sync button is pressed.",
               "owner": "Person and trip albums are created in this user's account; the others are added as editors.",
-              "share_albums": "When on, every album a user owns (hand-made ones too) is shared with the other users."
+              "share_albums": "When on, every album a user owns (hand-made ones too) is shared with the other users.",
+              "on_upload": "When on, gungors sets up a \"gungors\" workflow in each user's Immich account that notifies Home Assistant on every new photo or video. gungors runs once the uploads stop and Immich has recognised the faces (a few minutes later). The API keys need workflow permissions. Turning it off disables the workflow. The timer still runs; with this on, a long interval (e.g. 1 hour) is enough."
             }
           },
           "users": {

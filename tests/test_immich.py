@@ -15,6 +15,7 @@ from custom_components.gungors.immich import (
     MODE_ALBUM,
     MODE_DRY,
     MODE_TRASH,
+    ImmichError,
     ImmichManager,
     Point,
     find_trips,
@@ -126,6 +127,9 @@ class FakeImmich:
         self.trashed: list[str] = []
         self.deleted: list[str] = []
         self.busy = False
+        self.queue_states: list[bool | None] = []
+        self.workflows: dict[str, dict[str, dict[str, Any]]] = {}
+        self.workflow_error: str | None = None
         self.partners = False  # searches also return the other user's assets
         self.writes = 0
 
@@ -218,6 +222,23 @@ class FakeApi:
 
     async def face_queue_busy(self):
         return self.s.busy
+
+    async def queues_busy(self, names):
+        return self.s.queue_states.pop(0) if self.s.queue_states else self.s.busy
+
+    async def workflows(self):
+        if self.s.workflow_error:
+            raise ImmichError(self.s.workflow_error)
+        return list(self.s.workflows.get(self.user, {}).values())
+
+    async def save_workflow(self, workflow_id, body):
+        own = self.s.workflows.setdefault(self.user, {})
+        if workflow_id:
+            own[workflow_id].update(body)
+        else:
+            workflow_id = f"wf-{self.user}-{len(own)}"
+            own[workflow_id] = {"id": workflow_id, **body}
+        return own[workflow_id]
 
 
 @pytest.fixture
@@ -758,3 +779,87 @@ async def test_video_faces_wait_for_references(video_setup, monkeypatch) -> None
     await manager.async_run()
     assert manager.summary["videos"]["durum"] == "referans yüzler hazırlanıyor"
     assert manager.summary["videos"]["taranan"] == 0
+
+
+async def test_on_upload_sets_up_one_workflow_per_user(setup, monkeypatch) -> None:
+    manager, server = setup
+    monkeypatch.setattr(
+        "custom_components.gungors.immich.webhook.async_generate_url",
+        lambda hass, wid, **kw: f"http://192.168.0.221:8123/api/webhook/{wid}",
+    )
+    manager.config = {**manager.config, "on_upload": True}
+    await manager._async_setup_upload()
+    webhook_id = manager._state["webhook_id"]
+    assert webhook_id in manager.hass.data["webhook"]
+    for user in ("sercan", "melike"):
+        (workflow,) = server.workflows[user].values()
+        assert workflow["name"] == "gungors" and workflow["enabled"]
+        assert workflow["trigger"] == "AssetMetadataExtraction"
+        assert workflow["steps"] == [{
+            "method": "immich-plugin-core#webhook",
+            "config": {"url": f"http://192.168.0.221:8123/api/webhook/{webhook_id}", "method": "POST"},
+        }]
+    assert manager.summary["upload"]["workflow"] == {"sercan": "kuruldu", "melike": "kuruldu"}
+    assert manager.summary["upload"]["adres"] == "http://192.168.0.221:8123"
+
+    # again: the same workflow is updated, the webhook id stays
+    await manager._async_setup_upload()
+    assert len(server.workflows["sercan"]) == 1
+    assert manager._state["webhook_id"] == webhook_id
+    assert manager.summary["upload"]["workflow"]["sercan"] == "güncellendi"
+
+    # off: workflows disabled, webhook gone
+    manager.config = {**manager.config, "on_upload": False}
+    manager._stop_upload()
+    await manager._async_setup_upload()
+    assert webhook_id not in manager.hass.data["webhook"]
+    assert all(not w["enabled"] for u in server.workflows.values() for w in u.values())
+    assert manager.summary["upload"]["workflow"] == {"sercan": "kapatıldı", "melike": "kapatıldı"}
+    assert "workflows" not in manager._state
+
+
+async def test_on_upload_without_workflow_permission(setup, monkeypatch) -> None:
+    manager, server = setup
+    monkeypatch.setattr(
+        "custom_components.gungors.immich.webhook.async_generate_url",
+        lambda hass, wid, **kw: f"http://ha/api/webhook/{wid}",
+    )
+    server.workflow_error = "GET /workflows: 403 Missing required permission"
+    manager.config = {**manager.config, "on_upload": True}
+    await manager._async_setup_upload()
+    assert "workflow izni yok" in manager.summary["upload"]["workflow"]["sercan"]
+    manager._stop_upload()
+
+
+async def test_upload_runs_after_the_queues_are_empty_twice(setup, monkeypatch) -> None:
+    manager, server = setup
+    monkeypatch.setattr("custom_components.gungors.immich.QUEUE_POLL", 0)
+    runs: list[int] = []
+
+    async def fake_run(force: bool = False) -> None:
+        runs.append(len(server.queue_states))
+
+    monkeypatch.setattr(manager, "async_run", fake_run)
+    await manager._async_webhook(manager.hass, "id", None)
+    await manager._async_webhook(manager.hass, "id", None)
+    assert manager._uploads == 2 and manager._debounce is not None
+    server.queue_states = [True, False, True, False, False, False]
+    manager._upload_settled(None)
+    await manager._waiter
+    # busy, idle, busy, idle, idle -> run (one state left)
+    assert runs == [1]
+    manager._stop_upload()
+
+
+async def test_upload_run_when_queues_unreadable(setup, monkeypatch) -> None:
+    manager, server = setup
+    monkeypatch.setattr("custom_components.gungors.immich.QUEUE_UNREADABLE_WAIT", 0)
+    runs: list[bool] = []
+
+    async def fake_run(force: bool = False) -> None:
+        runs.append(True)
+
+    monkeypatch.setattr(manager, "async_run", fake_run)
+    server.queue_states = [None]
+    await manager._async_wait_and_run()
+    assert runs == [True]
