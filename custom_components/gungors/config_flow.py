@@ -321,11 +321,6 @@ def _immich_schema(conf: dict[str, Any]) -> vol.Schema:
                         vol.Optional("ml_url"): selector.TextSelector(
                             selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
                         ),
-                        vol.Optional("per_run", default=3): selector.NumberSelector(
-                            selector.NumberSelectorConfig(
-                                min=1, max=50, step=1, mode=selector.NumberSelectorMode.BOX,
-                            )
-                        ),
                         vol.Optional("match", default=0.5): selector.NumberSelector(
                             selector.NumberSelectorConfig(
                                 min=0, max=1, step=0.01, mode=selector.NumberSelectorMode.BOX,
@@ -388,7 +383,7 @@ def _immich_form_values(conf: dict[str, Any]) -> dict[str, Any]:
         },
         "videos": {
             k: v for k, v in (conf.get("videos") or {}).items()
-            if k in ("ml_url", "per_run", "match", "maybe")
+            if k in ("ml_url", "match", "maybe")
         },
         "partou": {
             **{k: partou[k] for k in ("username", "after") if k in partou},
@@ -444,9 +439,8 @@ def _immich_from_form(old: dict[str, Any], user_input: dict[str, Any]) -> dict[s
     if ml_url:
         conf["videos"] = {
             # keys without a form field (frames, every, ref_per_month, ...) are kept
-            **(old.get("videos") or {}),
+            **{k: v for k, v in (old.get("videos") or {}).items() if k != "per_run"},
             "ml_url": ml_url,
-            "per_run": int(videos_in.get("per_run", 3)),
             "match": float(videos_in.get("match", 0.5)),
             "maybe": float(videos_in.get("maybe", 0)),
         }

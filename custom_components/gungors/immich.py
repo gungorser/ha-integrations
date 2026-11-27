@@ -20,7 +20,6 @@ gungors:
       trip: album               # album | keep | trash | delete (trip photos)
     videos:                     # faces on several video frames (video_faces.py)
       ml_url: http://immich-machine-learning:3003
-      per_run: 3                # videos per run
       match: 0.5                # similarity -> person album
       maybe: 0                  # similarity -> <album>_aday (0: off)
     partou:                     # daycare photos -> Immich (partou.py)
@@ -155,6 +154,7 @@ MONTHS = ["ocak", "subat", "mart", "nisan", "mayis", "haziran", "temmuz", "agust
 PAGE_SIZE = 1000
 VIDEO_MATCH = 0.5        # cosine similarity a video face needs to count as the person
 REFS_PER_RUN = 12        # reference faces made per run (one model call each)
+VIDEO_BATCH = 10         # videos between album updates of the background scan
 VIDEO_TRIES = 3          # a video that fails this often is left out
 VIDEO_SCAN_VERSION = 2   # 1.30.0 read Immich 3 durations (ms) as seconds: no frames, rescan
 ML_PAUSE = 1.0           # seconds between model calls: the ML server shares one CPU
@@ -250,7 +250,7 @@ IMMICH_SCHEMA = vol.Schema(
         vol.Optional("videos", default={}): vol.Schema(
             {
                 vol.Optional("ml_url"): cv.url,  # empty: no video face scan
-                vol.Optional("per_run", default=3): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Optional("per_run"): vol.Coerce(int),  # before 1.33.0; unused
                 vol.Optional("frames", default=10): vol.All(vol.Coerce(int), vol.Range(min=1)),
                 vol.Optional("every", default=3.0): vol.All(vol.Coerce(float), vol.Range(min=0.5)),
                 vol.Optional("match", default=VIDEO_MATCH): vol.All(
@@ -745,6 +745,9 @@ class ImmichManager:
         self._shared_checked: set[str] = set()  # shared albums whose users were checked
         # live video scan queue (sensor.immich_video_kuyrugu), updated after each video
         self.video_queue: dict[str, Any] = {}
+        self._video_summary: dict[str, Any] = {}
+        self._video_task: asyncio.Task | None = None
+        self._failed_this_scan: set[str] = set()  # failed videos wait for the next scan
         # run on upload: webhook -> debounce -> wait for the Immich queues -> run
         self._webhook_id: str | None = None
         self._debounce = None
@@ -795,6 +798,8 @@ class ImmichManager:
 
     @callback
     def async_stop(self) -> None:
+        if self._video_task and not self._video_task.done():
+            self._video_task.cancel()
         if self._unsub:
             self._unsub()
             self._unsub = None
@@ -969,7 +974,7 @@ class ImmichManager:
             trips, summary["trips"] = await self._run_trips()
             summary["faceless"] = await self._run_faceless(now, trips)
             if self.config["videos"].get("ml_url"):
-                summary["videos"] = await self._run_videos()
+                self._start_video_scan()
             if self.config["share_albums"]:
                 summary["shared"] = await self._run_share()
             if self.writing:
@@ -981,6 +986,8 @@ class ImmichManager:
             summary["error"] = str(err)
         finally:
             self._running = False
+        if self._video_summary:
+            summary["videos"] = self._video_summary
         summary["last_run"] = now.isoformat()
         if self._upload:
             summary["upload"] = {**self._upload, "yeni": uploads}
@@ -1353,13 +1360,48 @@ class ImmichManager:
 
     # videos (faces on more than Immich's one preview frame; video_faces.py)
 
+    @callback
+    def _start_video_scan(self) -> None:
+        """The video scan runs in the background until the queue is empty (no per-run limit).
+
+        Album runs go on meanwhile; a new album run does not start a second scan.
+        """
+        if self._video_task and not self._video_task.done():
+            return
+        self._video_task = self.hass.async_create_background_task(
+            self._video_worker(), "gungors immich video scan"
+        )
+
+    async def _video_worker(self) -> None:
+        self._failed_this_scan = set()
+        while self.mode != MODE_OFF and self.config["videos"].get("ml_url"):
+            try:
+                result = await self._run_videos()
+            except ImmichError as err:
+                _LOGGER.warning("Video face scan failed: %s", err)
+                result = {**self._video_summary, "hata": str(err)}
+                result.pop("_more", None)
+            more = result.pop("_more", False)
+            self._video_summary = result
+            self.summary = {**self.summary, "videos": result}
+            self._notify()
+            if not more:
+                return
+
     async def _run_videos(self) -> dict[str, Any]:
-        """Reference faces first, then up to `per_run` new videos; matches into person albums."""
+        """Reference faces first, then a batch of new videos; matches into person albums.
+
+        `_more` in the result: call again (references or videos left).
+        """
         conf = self.config["videos"]
         ml = MlApi(async_get_clientsession(self.hass), conf["ml_url"])
         result: dict[str, Any] = {}
+        tried = sum(len(r.get("tried", [])) for r in self._state["video_refs"].values())
         try:
             refs_done = await self._video_refs(ml)
+            refs_moved = tried < sum(
+                len(r.get("tried", [])) for r in self._state["video_refs"].values()
+            )
             result["referans"] = {
                 p: len(self._state["video_refs"].get(p, {}).get("refs", []))
                 for p in self.config["people"]
@@ -1367,17 +1409,22 @@ class ImmichManager:
             pending = await self._pending_videos()
             result["bekleyen"] = len(pending)
             self._set_queue(len(pending), scanning=bool(refs_done and pending))
+            batch = pending[:VIDEO_BATCH] if refs_done else []
             if refs_done and pending:
                 command = ffmpeg_command()
-                for done, (user, asset) in enumerate(pending[: conf["per_run"]], 1):
+                for done, (user, asset) in enumerate(batch, 1):
                     await self._scan_video(ml, command, user, asset)
                     await self._store.async_save(self._state)
                     self._set_queue(len(pending) - done, scanning=True)
             elif not refs_done:
                 result["durum"] = "referans yüzler hazırlanıyor"
+            result["bekleyen"] = len(pending) - len(batch)
+            # again while references are being made or videos are left
+            result["_more"] = refs_moved if not refs_done else len(pending) > len(batch)
         except MlError as err:
             _LOGGER.warning("Video face scan failed: %s", err)
             result["hata"] = str(err)
+            result["_more"] = False
         await self._store.async_save(self._state)
         scanned = {
             k: v for k, v in self._state["videos"].items()
@@ -1479,6 +1526,7 @@ class ImmichManager:
                     or ("faces" in record and (record["faces"] or record.get("v") == VIDEO_SCAN_VERSION))
                     or "skip" in record
                     or record.get("tries", 0) >= VIDEO_TRIES
+                    or aid in self._failed_this_scan
                     or (assigned and all(aid in found for found in assigned))
                 ):
                     continue
@@ -1514,6 +1562,7 @@ class ImmichManager:
                 raise ImmichError(f"no frames (duration {asset.get('duration')})")
         except (ImmichError, MlError) as err:
             old = self._state["videos"].get(aid) or {}
+            self._failed_this_scan.add(aid)
             self._state["videos"][aid] = {**record, "tries": old.get("tries", 0) + 1,
                                           "hata": str(err)[:200]}
             if isinstance(err, MlError):
