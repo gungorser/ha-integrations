@@ -739,6 +739,7 @@ class ImmichManager:
         self._unsub = None
         self._running = False
         self._partou_writing = False  # Partou writes in every mode but `Kapalı`
+        self._shared_checked: set[str] = set()  # shared albums whose users were checked
         # run on upload: webhook -> debounce -> wait for the Immich queues -> run
         self._webhook_id: str | None = None
         self._debounce = None
@@ -1023,7 +1024,9 @@ class ImmichManager:
         """The managed album for `key` (created in write mode); None in dry run."""
         api = self._apis[user]
         album_id = self._state["albums"].get(key)
-        if album_id and await api.album(album_id) is not None:
+        if album_id and (album := await api.album(album_id)) is not None:
+            if shared:
+                await self._ensure_shared(user, album)
             return album_id
         album_id = None
         for album in await api.albums(name=name):
@@ -1039,7 +1042,23 @@ class ImmichManager:
             others = [uid for u, uid in self._user_ids.items() if u != user] if shared else []
             album_id = (await api.create_album(name, others))["id"]
         self._state["albums"][key] = album_id
+        if shared and (album := await api.album(album_id)) is not None:
+            await self._ensure_shared(user, album)
         return album_id
+
+    async def _ensure_shared(self, user: str, album: dict[str, Any]) -> None:
+        """Other users join a shared album as editors (they add their own assets to it).
+
+        Also for an album found by name (made by hand) or created without its users.
+        """
+        if not self.writing or album["id"] in self._shared_checked:
+            return
+        members = {u.get("user", {}).get("id") for u in album.get("albumUsers") or []}
+        members.add((album.get("owner") or {}).get("id") or album.get("ownerId"))
+        missing = [uid for u, uid in self._user_ids.items() if u != user and uid not in members]
+        if missing:
+            await self._apis[user].share_album(album["id"], missing)
+        self._shared_checked.add(album["id"])
 
     async def _add(self, album_id: str | None, user: str, ids: set[str]) -> int:
         """Add the not yet added `ids` (owned by `user`); returns how many are new."""
@@ -1358,7 +1377,11 @@ class ImmichManager:
         result["hatalı"] = sum(1 for v in self._state["videos"].values() if "hata" in v)
         result["taranan"] = len(scanned)
         result["yüzsüz"] = sum(1 for v in scanned.values() if not v["faces"])
-        result["eşleşen"], result["aday"], result["skorlar"] = await self._video_albums(scanned)
+        try:
+            result["eşleşen"], result["aday"], result["skorlar"] = await self._video_albums(scanned)
+        except ImmichError as err:
+            _LOGGER.warning("Video albums failed: %s", err)
+            result["hata"] = str(err)
         return result
 
     async def _video_refs(self, ml: MlApi) -> bool:

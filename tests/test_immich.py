@@ -187,7 +187,10 @@ class FakeApi:
         return out
 
     async def album(self, album_id):
-        return self.s.albums.get(album_id)
+        alb = self.s.albums.get(album_id)
+        if alb is not None:
+            alb["albumUsers"] = [{"user": {"id": uid}} for uid in alb["_users"]]
+        return alb
 
     async def create_album(self, name, user_ids):
         self.s.writes += 1
@@ -892,3 +895,16 @@ async def test_video_without_frames_is_retried_and_old_empty_scans_rescanned(
     await manager.async_run()
     videos = manager.summary["videos"]
     assert videos["taranan"] == 2 and videos["eşleşen"] == {"Kaan": 1}
+
+
+async def test_shared_album_made_by_hand_gets_the_other_users(video_setup) -> None:
+    manager, server = video_setup
+    server.albums["hand"] = {"id": "hand", "albumName": "Kaan_aday", "_assets": set(),
+                             "_users": ["id-sercan"]}
+    server.asset("v2", "melike", t(3, 1), kind="VIDEO", duration=9000)
+    FakeMl.faces_by_image[b"frame-v2"] = kaan_face(0.45)
+    manager.mode = MODE_ALBUM
+    await manager.async_run()
+    assert manager.status == "tamam"
+    assert server.albums["hand"]["_users"] == ["id-sercan", "id-melike"]
+    assert server.albums["hand"]["_assets"] == {"v2"}
