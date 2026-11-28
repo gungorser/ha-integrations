@@ -909,11 +909,30 @@ async def test_series_rrule_can_change(hass: HomeAssistant, calls, hass_ws_clien
 # --- temporary allowance -----------------------------------------------------------
 
 
+async def user_turn_on(hass: HomeAssistant, user_id: str, **data) -> None:
+    from homeassistant.core import Context  # noqa: PLC0415
+
+    await hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, **data}, blocking=True,
+        context=Context(user_id=user_id),
+    )
+    await hass.async_block_till_done()
+
+
+async def button_request(hass: HomeAssistant, data: dict) -> bool:
+    """A request as a pushbutton sends it; True if a rule changed it."""
+    from custom_components.gungors.const import DOMAIN  # noqa: PLC0415
+    from custom_components.gungors.core import ENTITIES, Request  # noqa: PLC0415
+
+    request = Request(dict(data), tags={"button"})
+    await hass.data[DOMAIN][ENTITIES][LIGHT].gw_request(request)
+    await hass.async_block_till_done()
+    return request.adjusted
+
+
 async def test_allow_lets_a_user_go_against_a_rule_for_a_while(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
 ) -> None:
-    from homeassistant.core import Context  # noqa: PLC0415
-
     await setup_all(hass)
     popups = []
     hass.services.async_register("browser_mod", "popup", lambda call: popups.append(call.data))
@@ -922,10 +941,20 @@ async def test_allow_lets_a_user_go_against_a_rule_for_a_while(
                     timedelta(seconds=-1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(seconds=11))
     assert hass.states.get(LIGHT).state == "off"
-    # A user turns it on: applied as asked, back off after a minute.
+    # A user turns it on: not applied, a popup explains the rule and offers to apply it.
+    await user_turn_on(hass, hass_admin_user.id, brightness_pct=100)
+    assert hass.states.get(LIGHT).state == "off"
+    assert "program_allow" not in hass.states.get(LIGHT).attributes
+    popup = popups[-1]
+    assert "ışık kapalı kalmalı" in popup["content"] and "1 dk" in popup["content"]
+    assert popup["right_button"] == "Yine de uygula"
+    assert popup["right_button_action"] == {
+        "service": "gungors.program_allow", "data": {"entity_id": LIGHT},
+    }
+    # "Yine de uygula": applied as asked, back off after a minute.
+    action = popup["right_button_action"]
     await hass.services.async_call(
-        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 100}, blocking=True,
-        context=Context(user_id=hass_admin_user.id),
+        *action["service"].split("."), action["data"], blocking=True
     )
     await hass.async_block_till_done()
     assert hass.states.get(LIGHT).state == "on"
@@ -934,11 +963,7 @@ async def test_allow_lets_a_user_go_against_a_rule_for_a_while(
     assert "geçici izin verildi, 1 dk" in popups[-1]["content"]
     # Changes within the window are free and do not lengthen it.
     await tick(hass, freezer, timedelta(seconds=30))
-    await hass.services.async_call(
-        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 50}, blocking=True,
-        context=Context(user_id=hass_admin_user.id),
-    )
-    await hass.async_block_till_done()
+    await user_turn_on(hass, hass_admin_user.id, brightness_pct=50)
     assert hass.states.get(LIGHT).state == "on"
     await tick(hass, freezer, timedelta(seconds=31))
     assert hass.states.get(LIGHT).state == "off"
@@ -951,11 +976,77 @@ async def test_allow_lets_a_user_go_against_a_rule_for_a_while(
     assert "program_allow" not in hass.states.get(LIGHT).attributes
 
 
+async def test_allow_user_repeat_and_late_confirm(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
+) -> None:
+    await setup_all(hass)
+    await add_entry(hass, "uyku", {"target": LIGHT, "light": {"state": {"eq": "off", "allow": 1}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    # The popup's button pressed too late does nothing.
+    await user_turn_on(hass, hass_admin_user.id)
+    await tick(hass, freezer, timedelta(seconds=11))
+    await hass.services.async_call("gungors", "program_allow", {"entity_id": LIGHT}, blocking=True)
+    await hass.async_block_till_done()
+    assert hass.states.get(LIGHT).state == "off"
+    # The same request again from the UI within 10 s is applied.
+    await user_turn_on(hass, hass_admin_user.id)
+    assert hass.states.get(LIGHT).state == "off"
+    await tick(hass, freezer, timedelta(seconds=5))
+    await user_turn_on(hass, hass_admin_user.id)
+    assert hass.states.get(LIGHT).state == "on"
+    assert "program_allow" in hass.states.get(LIGHT).attributes
+
+
+async def test_allow_button_needs_a_second_press(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
+) -> None:
+    await setup_all(hass)
+    await add_entry(hass, "uyku", {"target": LIGHT, "light": {"state": {"eq": "off", "allow": 1}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    # The first press is refused; a second one after the window is a first press again.
+    assert await button_request(hass, {"on": True})
+    assert hass.states.get(LIGHT).state == "off"
+    await tick(hass, freezer, timedelta(seconds=11))
+    assert await button_request(hass, {"on": True})
+    assert hass.states.get(LIGHT).state == "off"
+    # A UI request does not count as the repeat of a press.
+    await tick(hass, freezer, timedelta(seconds=2))
+    await user_turn_on(hass, hass_admin_user.id)
+    assert hass.states.get(LIGHT).state == "off"
+    # ... nor a press as the repeat of a UI request.
+    await tick(hass, freezer, timedelta(seconds=2))
+    assert await button_request(hass, {"on": True})
+    assert hass.states.get(LIGHT).state == "off"
+    # Pressed again within 10 s: applied, for the allowed minute.
+    await tick(hass, freezer, timedelta(seconds=3))
+    assert not await button_request(hass, {"on": True})
+    assert hass.states.get(LIGHT).state == "on"
+    assert "program_allow" in hass.states.get(LIGHT).attributes
+    await tick(hass, freezer, timedelta(seconds=61))
+    assert hass.states.get(LIGHT).state == "off"
+
+
+async def test_no_allow_no_initiate_window(
+    hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
+) -> None:
+    await setup_all(hass)
+    await add_entry(hass, "akşam", {"target": LIGHT, "light": {"brightness_pct": {"max": 25}}},
+                    timedelta(seconds=-1), timedelta(hours=1))
+    await tick(hass, freezer, timedelta(seconds=11))
+    # Without allow a press is brought into the rule at once, also when repeated.
+    for _ in range(2):
+        assert await button_request(hass, {"on": True, "brightness": 255})
+        assert hass.states.get(LIGHT).state == "on"
+        assert brightness(hass) == round(255 * 25 / 100)
+        assert "program_allow" not in hass.states.get(LIGHT).attributes
+        await tick(hass, freezer, timedelta(seconds=2))
+
+
 async def test_allow_returns_to_the_state_before(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory, hass_admin_user
 ) -> None:
-    from homeassistant.core import Context  # noqa: PLC0415
-
     await setup_all(hass)
     lamp(hass, True, 51)
     await hass.async_block_till_done()
@@ -964,17 +1055,15 @@ async def test_allow_returns_to_the_state_before(
                     timedelta(seconds=-1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(seconds=11))
     assert brightness(hass) == 51
-    await hass.services.async_call(
-        "light", "turn_on", {"entity_id": LIGHT, "brightness_pct": 100}, blocking=True,
-        context=Context(user_id=hass_admin_user.id),
-    )
-    await hass.async_block_till_done()
+    await user_turn_on(hass, hass_admin_user.id, brightness_pct=100)
+    assert brightness(hass) == 51
+    await user_turn_on(hass, hass_admin_user.id, brightness_pct=100)
     assert brightness(hass) == 255
     await tick(hass, freezer, timedelta(minutes=2, seconds=1))
     assert brightness(hass) == 51
 
 
-async def test_allow_takes_a_wall_switch_too(
+async def test_allow_takes_a_wall_switch_switched_twice(
     hass: HomeAssistant, calls, freezer: FrozenDateTimeFactory
 ) -> None:
     await setup_all(hass)
@@ -982,10 +1071,17 @@ async def test_allow_takes_a_wall_switch_too(
                     timedelta(seconds=-1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(seconds=11))
     assert hass.states.get(LIGHT).state == "off"
-    # The lamp is switched on at the wall: kept on for the minute.
+    # Switched on at the wall: turned off again.
     lamp(hass, True, 200)
     await hass.async_block_till_done()
-    await tick(hass, freezer, timedelta(seconds=11))
+    await tick(hass, freezer, timedelta(seconds=4))
+    assert hass.states.get(LIGHT).state == "off"
+    assert "program_allow" not in hass.states.get(LIGHT).attributes
+    # Switched on again within 10 s: kept on for the minute.
+    lamp(hass, True, 200)
+    await hass.async_block_till_done()
+    await tick(hass, freezer, timedelta(seconds=1))
+    await tick(hass, freezer, timedelta(seconds=10))
     assert hass.states.get(LIGHT).state == "on"
     assert "program_allow" in hass.states.get(LIGHT).attributes
     await tick(hass, freezer, timedelta(seconds=50))
@@ -1001,11 +1097,8 @@ async def test_allow_window_closes_with_its_program(
     await add_entry(hass, "kısa", {"target": LIGHT, "light": {"state": {"eq": "off", "allow": 5}}},
                     timedelta(seconds=-1), timedelta(minutes=1))
     await tick(hass, freezer, timedelta(seconds=11))
-    await hass.services.async_call(
-        "light", "turn_on", {"entity_id": LIGHT}, blocking=True,
-        context=Context(user_id=hass_admin_user.id),
-    )
-    await hass.async_block_till_done()
+    await user_turn_on(hass, hass_admin_user.id)
+    await user_turn_on(hass, hass_admin_user.id)
     assert "program_allow" in hass.states.get(LIGHT).attributes
     await tick(hass, freezer, timedelta(minutes=1))
     assert "program_allow" not in hass.states.get(LIGHT).attributes

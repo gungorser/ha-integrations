@@ -215,8 +215,13 @@ climate:
   start: turning the light or heating off afterwards is free. (The older `set: true` reads
   as `on_start: true`; saved entries were rewritten once.)
 - `allow: <minutes>`: a user's request, a wall button or the device itself (a wall switch)
-  may go against the rule. The request is applied as given (the user gets a popup that it
-  is temporary) and an allowance window opens: the allowing rules are lifted for that many
+  may go against the rule, on the second try. The first one is not applied and opens a
+  10 s initiate window: a user gets a popup naming the rule with a "Yine de uygula" button
+  (`gungors.program_allow`, target the entity), a wall button is refused silently (only its
+  usual warning blink), a change at the device is brought back. The same kind of request
+  again within the 10 s (UI after UI, button after button, device after device; a UI request
+  never counts as a press's repeat or the other way round), or the popup's button, is
+  applied as given (the user gets a popup that it is temporary) and an allowance window opens: the allowing rules are lifted for that many
   minutes (further changes are free, the window does not grow), then the device returns to
   the state it had before, brought into the rules. Automations still follow the rule.
   Several programs' rules on one attribute allow only when all do (the shortest time). The

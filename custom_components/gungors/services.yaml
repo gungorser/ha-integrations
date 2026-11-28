@@ -141,6 +141,11 @@ delete_timeless_program:
       selector:
         text:
 
+program_allow:
+  target:
+    entity:
+      integration: gungors
+
 blink:
   target:
     entity:
