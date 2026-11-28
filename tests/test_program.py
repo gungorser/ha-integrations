@@ -1006,10 +1006,10 @@ async def test_allow_button_needs_a_second_press(
                     timedelta(seconds=-1), timedelta(hours=1))
     await tick(hass, freezer, timedelta(seconds=11))
     # The first press is refused; a second one after the window is a first press again.
-    assert await button_request(hass, {"on": True})
+    assert not await button_request(hass, {"on": True})  # held silently: no blink
     assert hass.states.get(LIGHT).state == "off"
     await tick(hass, freezer, timedelta(seconds=11))
-    assert await button_request(hass, {"on": True})
+    assert not await button_request(hass, {"on": True})  # held silently: no blink
     assert hass.states.get(LIGHT).state == "off"
     # A UI request does not count as the repeat of a press.
     await tick(hass, freezer, timedelta(seconds=2))
@@ -1017,7 +1017,7 @@ async def test_allow_button_needs_a_second_press(
     assert hass.states.get(LIGHT).state == "off"
     # ... nor a press as the repeat of a UI request.
     await tick(hass, freezer, timedelta(seconds=2))
-    assert await button_request(hass, {"on": True})
+    assert not await button_request(hass, {"on": True})  # held silently: no blink
     assert hass.states.get(LIGHT).state == "off"
     # Pressed again within 10 s: applied, for the allowed minute.
     await tick(hass, freezer, timedelta(seconds=3))

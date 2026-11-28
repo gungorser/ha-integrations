@@ -31,7 +31,7 @@ While programs are active the entity follows their rules:
   itself go against it, on the second try: the first one is not applied and
   opens a 10 s initiate window. A user gets a popup with the rule and a
   "Yine de uygula" button (`gungors.program_allow`); a wall button is refused
-  silently (its usual warning blink); a change at the device is brought back.
+  silently (no warning blink); a change at the device is brought back.
   The same kind of request again within the window (UI after UI, button after
   button, device after device; not one for another) or the popup's button is
   applied as given (a popup notes that it is temporary) and a window opens for
@@ -578,7 +578,8 @@ class Program(Feature):
                     "%s: %s held, the program allows it on a repeat within %ss",
                     self.entity_id, original, int(INITIATE),
                 )
-                request.adjusted = True
+                # Not `adjusted`: a held press does not blink its key (it would
+                # mix with other blinks in the room); it is silent.
                 if user is not None:
                     self.hass.async_create_task(self._prog_inform(
                         user, self._prog_explain(allowed["attrs"], allowed["minutes"]),

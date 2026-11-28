@@ -217,8 +217,8 @@ climate:
 - `allow: <minutes>`: a user's request, a wall button or the device itself (a wall switch)
   may go against the rule, on the second try. The first one is not applied and opens a
   10 s initiate window: a user gets a popup naming the rule with a "Yine de uygula" button
-  (`gungors.program_allow`, target the entity), a wall button is refused silently (only its
-  usual warning blink), a change at the device is brought back. The same kind of request
+  (`gungors.program_allow`, target the entity), a wall button is refused silently (no warning
+  blink), a change at the device is brought back. The same kind of request
   again within the 10 s (UI after UI, button after button, device after device; a UI request
   never counts as a press's repeat or the other way round), or the popup's button, is
   applied as given (the user gets a popup that it is temporary) and an allowance window opens: the allowing rules are lifted for that many
