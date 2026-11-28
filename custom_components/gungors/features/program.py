@@ -28,8 +28,14 @@ While programs are active the entity follows their rules:
   from leaving it; a request from outside the program (a user, a button, an
   automation) ends the start move.
 - An `allow: <minutes>` rule lets a user's request, a wall button or the device
-  itself go against it: the request is applied as given (no popup but a note that
-  it is temporary) and a window opens for the rules that allow it. Within the
+  itself go against it, on the second try: the first one is not applied and
+  opens a 10 s initiate window. A user gets a popup with the rule and a
+  "Yine de uygula" button (`gungors.program_allow`); a wall button is refused
+  silently (its usual warning blink); a change at the device is brought back.
+  The same kind of request again within the window (UI after UI, button after
+  button, device after device; not one for another) or the popup's button is
+  applied as given (a popup notes that it is temporary) and a window opens for
+  the rules that allow it. Within the
   window those rules are lifted (further changes are free; the window does not
   grow). When it closes the device returns to the state it had before the
   window, brought into the rules. Automations still follow the rules. The window
@@ -90,6 +96,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.template import Template
 from homeassistant.util import color as color_util, dt as dt_util
 
+from ..const import DOMAIN
 from ..core import SOURCE_REMOTE, Feature, Request, register
 from .button import TAG as BUTTON_TAG
 from ..rules import (
@@ -115,6 +122,11 @@ COOLDOWN = 10.0
 MAX_REPEATS = 3
 # s a service call's context counts as the request's origin
 CONTEXT_RECENT = 5.0
+# s the first request against an allowing rule waits for its repeat (the
+# initiate window), also how long the popup with "Yine de uygula" stays.
+INITIATE = 10.0
+# Tag of the request the popup's "Yine de uygula" (gungors.program_allow) replays.
+CONFIRM_TAG = "program_confirm"
 # Preheat: how often the window is checked, how close the room must get to count as there,
 # and how long after the start a window that never got there is given up.
 PREHEAT_CHECK = datetime.timedelta(minutes=1)
@@ -230,6 +242,38 @@ def _minutes(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:g}"
 
 
+_LABELS = {
+    "brightness": ("parlaklık", "%"),
+    "color_temp": ("renk sıcaklığı", " K"),
+    "temperature": ("sıcaklık", "°"),
+    "position": ("perde konumu", "%"),
+}
+
+
+def _describe(attr: str, constraint: Constraint) -> str:
+    """A rule in Turkish, for a popup ("ışık kapalı kalmalı", "parlaklık en fazla %25")."""
+    eq = constraint.eq
+    if attr == "on":
+        return f"ışık {'açık' if eq else 'kapalı'} kalmalı"
+    if attr == "hvac_mode":
+        return f"ısıtma {'açık' if eq == 'heat' else 'kapalı'} kalmalı"
+    if attr == "color":
+        return "ışık rengi sabit"
+    label, unit = _LABELS.get(attr, (NAMES.get(attr, attr), ""))
+
+    def num(value: float) -> str:
+        text = f"{value:g}"
+        return f"%{text}" if unit == "%" else f"{text}{unit}"
+
+    if eq is not None:
+        return f"{label} {num(eq)} olmalı"
+    if constraint.min is not None and constraint.max is not None:
+        return f"{label} {num(constraint.min)} ile {num(constraint.max)} arası olmalı"
+    if constraint.min is not None:
+        return f"{label} en az {num(constraint.min)}"
+    return f"{label} en fazla {num(constraint.max)}"
+
+
 def _shown(attr: str, constraint: Constraint) -> dict[str, Any]:
     result = constraint.as_dict()
     if "eq" in result:
@@ -281,6 +325,7 @@ def _own_defaults(value: Any) -> dict[str, Any]:
 class Program(Feature):
     feature_name = KEY
     schema = _own_defaults
+    services = {"program_allow": ({}, "gw_program_allow")}
 
     # [{uid, summary, start, end, rules: {attr: Constraint}}] for this entity
     _prog_active: list[dict[str, Any]] = []
@@ -303,6 +348,9 @@ class Program(Feature):
     _prog_plan: dict[str, Any] | None = None
     # The open allowance window: {attrs, minutes, until, restore, unsub}.
     _prog_allow: dict[str, Any] | None = None
+    # The first request against an allowing rule, waiting for its repeat:
+    # {kind ("ui", "button", "device"), until, original, user}.
+    _prog_initiate: dict[str, Any] | None = None
     _prog_lift: frozenset[str] = frozenset()  # attributes lifted for a trial clamp
 
     @property
@@ -518,10 +566,28 @@ class Program(Feature):
         original = dict(request.data)
         data = self._prog_clamp(dict(original))
         allowed = None
-        if data != original and (user is not None or BUTTON_TAG in request.tags):
-            allowed = self._prog_allow_request(original, data)
+        kind = (
+            "ui" if user is not None or CONFIRM_TAG in request.tags
+            else "button" if BUTTON_TAG in request.tags else None
+        )
+        if data != original and kind is not None:
+            allowed = self._prog_allow_request(original, data, kind, user)
+            if allowed is not None and allowed.get("held"):
+                # The first try: not applied; a repeat within INITIATE applies it.
+                _LOGGER.info(
+                    "%s: %s held, the program allows it on a repeat within %ss",
+                    self.entity_id, original, int(INITIATE),
+                )
+                request.adjusted = True
+                if user is not None:
+                    self.hass.async_create_task(self._prog_inform(
+                        user, self._prog_explain(allowed["attrs"], allowed["minutes"]),
+                        confirm=True,
+                    ))
+                return False
             if allowed is not None:
                 data = allowed["data"]
+                user = allowed["user"]
         if data is None:
             _LOGGER.info("%s: %s rejected by a program", self.entity_id, request.data)
             request.adjusted = True
@@ -557,9 +623,15 @@ class Program(Feature):
             self._prog_lift = frozenset()
 
     def _prog_allow_request(
-        self, original: dict[str, Any], clamped: dict[str, Any] | None
+        self, original: dict[str, Any], clamped: dict[str, Any] | None, kind: str,
+        user: str | None,
     ) -> dict[str, Any] | None:
-        """A request against an allowing rule: open the window, {data, minutes}; or None."""
+        """A request against an allowing rule.
+
+        The first one is held ({held, attrs, minutes}) and opens the initiate
+        window; a repeat of the same kind within it opens the allowance window
+        ({data, minutes, user}). None when no allowing rule refused it.
+        """
         if self._prog_allow is not None:
             return None
         allowable = self._prog_allowable()
@@ -569,18 +641,60 @@ class Program(Feature):
         data = self._prog_lifted(attrs, lambda: self._prog_clamp(dict(original)))
         if data == clamped:
             return None  # the rules that refused it don't allow
+        initiate = self._prog_initiated(kind)
+        if initiate is None:
+            if kind == "ui" and user is None:
+                return None  # a confirm whose initiate window has closed: just the rules
+            self._prog_initiate = {
+                "kind": kind, "original": dict(original), "user": user,
+                "until": dt_util.utcnow() + datetime.timedelta(seconds=INITIATE),
+            }
+            return {"held": True, "attrs": attrs, "minutes": minutes}
         self._prog_allow_open(attrs, minutes, self._prog_snapshot())
-        return {"data": data, "minutes": minutes}
+        return {"data": data, "minutes": minutes, "user": user or initiate["user"]}
+
+    def _prog_initiated(self, kind: str) -> dict[str, Any] | None:
+        """The open initiate window of a kind of request (taken: it is used once)."""
+        initiate, self._prog_initiate = self._prog_initiate, None
+        if initiate is None or initiate["kind"] != kind or dt_util.utcnow() >= initiate["until"]:
+            return None
+        return initiate
+
+    async def gw_program_allow(self) -> None:
+        """`gungors.program_allow`: the popup's "Yine de uygula" applies the held request."""
+        initiate = self._prog_initiate
+        if (
+            initiate is None or initiate["kind"] != "ui"
+            or dt_util.utcnow() >= initiate["until"]
+        ):
+            _LOGGER.info("%s: nothing to allow (the request is too old)", self.entity_id)
+            return
+        await self.gw_request(Request(dict(initiate["original"]), tags={CONFIRM_TAG}))
 
     def _prog_allow_device(self, before: dict[str, Any]) -> None:
-        """The device went against an allowing rule (a wall switch): open the window."""
+        """The device went against an allowing rule (a wall switch).
+
+        The first time it is brought back and the initiate window opens; done
+        again within it, the allowance window opens.
+        """
         correction = self._prog_domain_correction()
         allowable = self._prog_allowable()
         if not correction or allowable is None:
             return
         attrs, minutes = allowable
-        if self._prog_lifted(attrs, self._prog_domain_correction) != correction:
+        if self._prog_lifted(attrs, self._prog_domain_correction) == correction:
+            return
+        if self._prog_initiated("device") is not None:
             self._prog_allow_open(attrs, minutes, before)
+            return
+        _LOGGER.info(
+            "%s: changed at the device against the program; allowed if done again within %ss",
+            self.entity_id, int(INITIATE),
+        )
+        self._prog_initiate = {
+            "kind": "device", "original": {}, "user": None,
+            "until": dt_util.utcnow() + datetime.timedelta(seconds=INITIATE),
+        }
 
     def _prog_allow_open(
         self, attrs: frozenset[str], minutes: float, restore: dict[str, Any]
@@ -676,7 +790,26 @@ class Program(Feature):
     def _prog_state_changed(self, event: Event) -> None:
         # A blink (gungors.blink) is feedback, not a state the rules judge.
         if self._prog_active and not getattr(self, "gw_blinking", False):
+            self._prog_initiate_watch()
             self.hass.async_create_task(self._prog_enforce())
+
+    def _prog_initiate_watch(self) -> None:
+        """A device initiate window: the device changed again after it was brought back.
+
+        Covers a report the link takes as the result of the correction it just
+        sent (a wall switch switched again within seconds), which does not come
+        as a change at the device.
+        """
+        initiate = self._prog_initiate
+        if (
+            initiate is None or initiate["kind"] != "device" or self._prog_allow is not None
+            or dt_util.utcnow() >= initiate["until"]
+        ):
+            return
+        if not self._prog_domain_correction():
+            initiate["restore"] = self._prog_snapshot()  # brought back
+        elif "restore" in initiate:
+            self._prog_allow_device(initiate["restore"])
 
     async def _prog_enforce(self, force: bool = False) -> None:
         if not self._prog_active or not self.available:
@@ -743,7 +876,16 @@ class Program(Feature):
             return False
         return not rules["position"].holds(position) and self._prog_repeats < MAX_REPEATS
 
-    async def _prog_inform(self, user_id: str, text: str) -> None:
+    def _prog_explain(self, attrs: frozenset[str], minutes: float) -> str:
+        """The popup text of a held request: the rules that refused it."""
+        rules = self._prog_rules()
+        parts = [_describe(a, rules[a]) for a in sorted(attrs) if a in rules]
+        return (
+            f"{', '.join(parts) or 'kurala aykırı'}. Yine de uygularsan "
+            f"{_minutes(minutes)} dk sonra kurala dönecek"
+        )
+
+    async def _prog_inform(self, user_id: str, text: str, confirm: bool = False) -> None:
         """A popup on the browsers of the user whose request was adjusted or ignored."""
         person = next(
             (s.entity_id for s in self.hass.states.async_all("person")
@@ -763,6 +905,13 @@ class Program(Feature):
             "tag": f"gungors_program_{self.entity_id}",
             "timeout": 15000,
         }
+        if confirm:
+            data["timeout"] = int(INITIATE * 1000)
+            data["right_button"] = "Yine de uygula"
+            data["right_button_action"] = {
+                "service": f"{DOMAIN}.program_allow",
+                "data": {"entity_id": self.entity_id},
+            }
         try:
             await self.hass.services.async_call("browser_mod", "popup", data, blocking=False)
         except Exception as err:  # noqa: BLE001  (a popup must never break a request)
